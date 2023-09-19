@@ -1,10 +1,13 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SLToken<'a> {
     Space,
     Keyword(Keyword),
     Ident(&'a str),
     Int(i128),
-    IntTooBig(&'a str),
+    IntImag(i128),
+    NumLiteralInvalid(&'a str),
+    Float(f64),
+    FloatImag(f64),
     BracketOpen(BracketType),
     BracketClose(BracketType),
     Separator(SeparatorType),
@@ -34,22 +37,62 @@ pub enum SeparatorType {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperatorType {
-    /** `+` */
+    /** `x ~ y` exclusive or (bitwise, boolean) */
+    Xor,
+    /** `! x` not (bitwise, boolean) */
+    Not,
+    /** `x | y` or (bitwise) */
+    BitOr,
+    /** `x & y` and (bitwise) */
+    BitAnd,
+    /** `x || y` or (boolean) */
+    Or,
+    /** `x && y` and (boolean) */
+    And,
+    /** `x >> y` left shift */
+    Shl,
+    /** `x << y` right shift */
+    Shr,
+
+    /** `x + y` addition */
     Plus,
-    /** `-` */
+    /** `x - y` subtraction */
     Minus,
-    /** `*` */
+    /** `x * y` scalar / elementwise multiply */
     ScalarTimes,
-    /** `/` */
+    /** `x / y` scalar / elementwise divide */
     ScalarDiv,
-    /** `@` */
+    /** `x ^ y` scalar / elementwise exponentiation */
+    ScalarExp,
+    /** `x % y` modulo, using floormod */
+    ScalarModulo,
+
+    /** `x @ y` matrix multiplication */
     MatTimes,
-    /** `'` */
-    Transpose,
-    /** `~` */
+    /** `x ^^ y` matrix exponentiation */
+    MatExp,
+    /** `x '` hermitian conjugate (transpose + complex conjugate) */
     HermitianConjugate,
-    /** `=` */
+    /** `x "` non-complex-conjugating transpose */
+    Transpose,
+    /** `x $` matrix inverse */
+    Inverse,
+
+    /** `x = y` variable assignment */
     Assign,
+
+    /** `x == y` equals comparison */
+    Equal,
+    /** `x >= y` greater than or equals comparison */
+    GreaterEqual,
+    /** `x <= y` less than or equals comparison */
+    LessEqual,
+    /** `x < y` less than comparison */
+    LessThan,
+    /** `x > y` greater than comparison */
+    GreaterThan,
+    /** `x != y` not equals comparison */
+    NotEqual,
 }
 
 macro_rules! restr_whitespace {
@@ -62,14 +105,34 @@ macro_rules! restr_int {
         r#"[+-]?[0-9]+(\b|$)"#
     };
 }
+macro_rules! restr_int_imag {
+    () => {
+        r#"[+-]?[0-9]+i(\b|$)"#
+    };
+}
+macro_rules! restr_float {
+    () => {
+        r#"[+-]?[0-9]*\.[0-9]+([eE][+-]?[0-9]+)?(\b|$)"#
+    };
+}
+macro_rules! restr_float_imag {
+    () => {
+        r#"[+-]?[0-9]*\.[0-9]+([eE][+-]?[0-9]+)?i(\b|$)"#
+    };
+}
 macro_rules! restr_ident {
     () => {
         r#"(^|\b)[a-zA-Z_][a-zA-Z_0-9]*(\b|$)"#
     };
 }
+macro_rules! restr_brackets {
+    () => {
+        r#"[\[\]\(\)\{\}]"#
+    };
+}
 macro_rules! restr_symbols {
     () => {
-        r#"[\[\]\(\)\{\},;+\-*/@~'=]"#
+        r#"[=!<>]=|&&|\|\||<<|>>|\^\^|[,;]|[+\-*\/^%@'"$~=!<>\|&]"#
     };
 }
 
@@ -78,7 +141,15 @@ macro_rules! re_main {
         regex::Regex::new(concat!(
             restr_whitespace!(),
             "|",
+            restr_float!(),
+            "|",
+            restr_float_imag!(),
+            "|",
             restr_int!(),
+            "|",
+            restr_int_imag!(),
+            "|",
+            restr_brackets!(),
             "|",
             restr_symbols!(),
             "|",
@@ -100,6 +171,9 @@ struct SLTokenizerRegexes {
     part_whitespace: regex::Regex,
     part_ident: regex::Regex,
     part_int: regex::Regex,
+    part_int_imag: regex::Regex,
+    part_float: regex::Regex,
+    part_float_imag: regex::Regex,
 }
 impl SLTokenizerRegexes {
     fn new() -> Self {
@@ -108,6 +182,9 @@ impl SLTokenizerRegexes {
             part_whitespace: re_particle!(restr_whitespace!()),
             part_ident: re_particle!(restr_ident!()),
             part_int: re_particle!(restr_int!()),
+            part_int_imag: re_particle!(restr_int_imag!()),
+            part_float: re_particle!(restr_float!()),
+            part_float_imag: re_particle!(restr_float_imag!()),
         }
     }
 }
@@ -146,16 +223,41 @@ impl SLTokenizer {
                     "," => Some(SLToken::Separator(SeparatorType::Comma)),
                     ";" => Some(SLToken::Separator(SeparatorType::Semicolon)),
 
+                    "~" => Some(SLToken::Operator(OperatorType::Xor)),
+                    "!" => Some(SLToken::Operator(OperatorType::Not)),
+                    "|" => Some(SLToken::Operator(OperatorType::BitOr)),
+                    "&" => Some(SLToken::Operator(OperatorType::BitAnd)),
                     "+" => Some(SLToken::Operator(OperatorType::Plus)),
                     "-" => Some(SLToken::Operator(OperatorType::Minus)),
                     "*" => Some(SLToken::Operator(OperatorType::ScalarTimes)),
                     "/" => Some(SLToken::Operator(OperatorType::ScalarDiv)),
-
+                    "^" => Some(SLToken::Operator(OperatorType::ScalarExp)),
+                    "%" => Some(SLToken::Operator(OperatorType::ScalarModulo)),
                     "@" => Some(SLToken::Operator(OperatorType::MatTimes)),
-                    "'" => Some(SLToken::Operator(OperatorType::Transpose)),
-                    "~" => Some(SLToken::Operator(OperatorType::HermitianConjugate)),
-
+                    "'" => Some(SLToken::Operator(OperatorType::HermitianConjugate)),
+                    "\"" => Some(SLToken::Operator(OperatorType::Transpose)),
+                    "$" => Some(SLToken::Operator(OperatorType::Inverse)),
                     "=" => Some(SLToken::Operator(OperatorType::Assign)),
+                    "<" => Some(SLToken::Operator(OperatorType::LessThan)),
+                    ">" => Some(SLToken::Operator(OperatorType::GreaterThan)),
+
+                    _ => None,
+                } {
+                    tokens.push(token);
+                    continue;
+                }
+            }
+            if str.len() == 2 {
+                if let Some(token) = match str {
+                    "||" => Some(SLToken::Operator(OperatorType::Or)),
+                    "&&" => Some(SLToken::Operator(OperatorType::And)),
+                    ">>" => Some(SLToken::Operator(OperatorType::Shl)),
+                    "<<" => Some(SLToken::Operator(OperatorType::Shr)),
+                    "^^" => Some(SLToken::Operator(OperatorType::MatExp)),
+                    "==" => Some(SLToken::Operator(OperatorType::Equal)),
+                    ">=" => Some(SLToken::Operator(OperatorType::GreaterEqual)),
+                    "<=" => Some(SLToken::Operator(OperatorType::LessEqual)),
+                    "!=" => Some(SLToken::Operator(OperatorType::NotEqual)),
 
                     _ => None,
                 } {
@@ -166,11 +268,31 @@ impl SLTokenizer {
 
             tokens.push(if self.re.part_whitespace.is_match(str) {
                 SLToken::Space
+            } else if self.re.part_float.is_match(str) {
+                if let Ok(val) = str.parse::<f64>() {
+                    SLToken::Float(val)
+                } else {
+                    SLToken::NumLiteralInvalid(str)
+                }
+            } else if self.re.part_float_imag.is_match(str) {
+                // `str.len()` is valid here because /[0-9+\-eEi]/ is all ascii. 
+                if let Ok(val) = (&str[0..str.len()-1]).parse::<f64>() {
+                    SLToken::FloatImag(val)
+                } else {
+                    SLToken::NumLiteralInvalid(str)
+                }
             } else if self.re.part_int.is_match(str) {
-                if let Ok(val) = i128::from_str_radix(str, 10) {
+                if let Ok(val) = str.parse::<i128>() {
                     SLToken::Int(val)
                 } else {
-                    SLToken::IntTooBig(str)
+                    SLToken::NumLiteralInvalid(str)
+                }
+            } else if self.re.part_int_imag.is_match(str) {
+                // `str.len()` is valid here because /[0-9\-i]/ is all ascii. 
+                if let Ok(val) = (&str[0..str.len()-1]).parse::<i128>()  {
+                    SLToken::IntImag(val)
+                } else {
+                    SLToken::NumLiteralInvalid(str)
                 }
             } else if self.re.part_ident.is_match(str) {
                 if let Some(keyword) = Keyword::from_str(str) {
@@ -189,23 +311,26 @@ impl SLTokenizer {
 
 #[cfg(test)]
 mod test {
-    use crate::{SLTokenizer, SLToken};
+    use crate::{SLToken, SLTokenizer};
 
     #[test]
     fn tokenization() {
         let t = SLTokenizer::new();
         assert_eq!(
-            t.tokenize(" -3+东西[[(];ide_nt"),
+            t.tokenize(" -3+东西69420621i[5.32e+43i[(];^^ide_nt"),
             vec![
                 SLToken::Space,
                 SLToken::Int(-3),
                 SLToken::Operator(crate::OperatorType::Plus),
                 SLToken::Unk("东西"),
+                SLToken::IntImag(69420621),
                 SLToken::BracketOpen(crate::BracketType::Square),
+                SLToken::FloatImag(5.32e+43),
                 SLToken::BracketOpen(crate::BracketType::Square),
                 SLToken::BracketOpen(crate::BracketType::Paren),
                 SLToken::BracketClose(crate::BracketType::Square),
                 SLToken::Separator(crate::SeparatorType::Semicolon),
+                SLToken::Operator(crate::OperatorType::MatExp),
                 SLToken::Ident("ide_nt"),
             ],
         );

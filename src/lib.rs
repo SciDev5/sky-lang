@@ -506,7 +506,7 @@ pub mod parser {
         tokens: Peekable<I>,
     ) -> Option<(SLIRExpression, Peekable<I>)> {
         /*
-        A finite state machine should be able to handle expression tokenization.
+        A finite state machine should be able to handle expression parsing.
 
         >> List of possible expressions
         <expr> = <literal>

@@ -1,7 +1,12 @@
-
 use std::iter::Peekable;
 
-use super::{tokenization::{SLToken, BracketType}, slir::{SLIRStatement, SLIRExpression, SLIRLiteral, SLIRVarAccessExpression}, ops::SLOperator};
+use crate::math::tensor::Tensor;
+
+use super::{
+    ops::SLOperator,
+    slir::{SLIRArray, SLIRExpression, SLIRLiteral, SLIRStatement, SLIRVarAccessExpression},
+    tokenization::{BracketType, SLToken, SeparatorType},
+};
 
 pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<Vec<SLIRStatement>, ()> {
     // TODO proper errors
@@ -226,9 +231,86 @@ fn next_expression_paren<'a, I: Iterator<Item = SLToken<'a>>>(
 fn next_expression_array<'a, I: Iterator<Item = SLToken<'a>>>(
     tokens: Peekable<I>,
 ) -> Option<(SLIRExpression, Peekable<I>)> {
+    let mut tokens = tokens;
     // TODO expr_array = "[" (expr S)* "]"
-    dbg!(tokens.collect::<Vec<_>>());
-    todo!("SLParser::next_expression_array")
+    let mut elts = vec![];
+    loop {
+        skip_whitespace(&mut tokens);
+        let next_elt = match tokens.peek() {
+            Some(SLToken::BracketClose(BracketType::Square)) => {
+                tokens.next();
+                break;
+            }
+            Some(_) => {
+                if let Some(next) = next_expression(tokens) {
+                    next
+                } else {
+                    // Failed to match inner expression.
+                    return None;
+                }
+            }
+            None => {
+                // Unexpected end.
+                return None;
+            }
+        };
+        tokens = next_elt.1;
+        let next_elt = next_elt.0;
+
+        skip_whitespace(&mut tokens);
+        let sep = match tokens.peek() {
+            Some(SLToken::Separator(typ)) => {
+                let typ = *typ;
+                tokens.next();
+                Some(typ)
+            }
+            _ => None,
+        }
+        .unwrap_or(super::tokenization::SeparatorType::Comma); // spaces become implicit commas
+
+        elts.push((next_elt, sep));
+    }
+
+    if elts.len() == 0 {
+        return Some((
+            SLIRExpression::Array(SLIRArray(Tensor::new_matrix::<0, 0>([]))),
+            tokens,
+        ));
+    }
+
+    let width = elts
+        .iter()
+        .enumerate()
+        .find(|(_, (_, styp))| {
+            if let SeparatorType::Semicolon = styp {
+                true
+            } else {
+                false
+            }
+        })
+        .map(|(i, _)| i + 1)
+        .unwrap_or(elts.len());
+    dbg!(width);
+    dbg!(elts.len());
+    if elts.len() % width != 0 {
+        return None; // Invalid array length, guaranteed illegal/ragged
+    }
+    let height = elts.len() / width;
+    for (i, (_, styp)) in elts[..elts.len() - 1].iter().enumerate() {
+        let is_row_break = match styp {
+            SeparatorType::Comma => false,
+            SeparatorType::Semicolon => true,
+        };
+        if is_row_break != ((i + width - 1) % width == 0) {
+            // Ragged (inconsistent width), not allowed.
+            return None;
+        }
+    }
+
+    let matrix =
+        Tensor::new_matrix_iter(&mut elts.into_iter().map(|(expr, _)| expr), width, height);
+
+    Some((SLIRExpression::Array(SLIRArray(matrix)), tokens))
 }
 
 fn next_if_postfix_ops<'a, I: Iterator<Item = SLToken<'a>>>(

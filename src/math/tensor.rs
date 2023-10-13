@@ -39,6 +39,7 @@ pub trait Linear:
     + std::iter::Sum
     + std::ops::Mul<Output = Self>
     + Clone
+    + Default
 {
     fn hermitian_conj(self) -> Self;
     fn commutator(self, rhs: Self) -> Self;
@@ -61,9 +62,8 @@ impl Linear for f64 {
     }
 }
 
-
 #[derive(Debug, Clone)]
-pub struct Tensor<T: Linear> {
+pub struct Tensor<T> {
     /// Dimensionality and shape of this tensor.
     ///
     /// In matrices (rank 2), this is in the format (width, height).
@@ -73,7 +73,7 @@ pub struct Tensor<T: Linear> {
     data: Vec<T>,
 }
 
-impl<T: Linear> Tensor<T> {
+impl<T> Tensor<T> {
     pub fn rank(&self) -> usize {
         self.shape.len()
     }
@@ -101,13 +101,13 @@ impl<T: Linear> Tensor<T> {
         Some(i)
     }
 
-    pub fn map<R: Linear, F: Fn(T) -> R>(self, map: F) -> Tensor<R> {
+    pub fn map<R, F: Fn(T) -> R>(self, map: F) -> Tensor<R> {
         Tensor {
             shape: self.shape,
             data: self.data.into_iter().map(|v| map(v)).collect(),
         }
     }
-    pub fn op_elementwise<U: Linear, R: Linear, F: Fn(T, U) -> R>(
+    pub fn op_elementwise<U, R, F: Fn(T, U) -> R>(
         self,
         rhs: Tensor<U>,
         map: F,
@@ -158,7 +158,8 @@ impl<T: Linear> Tensor<T> {
             data,
         }
     }
-
+}
+impl<T: Clone + Default> Tensor<T> {
     pub fn transpose(mut self) -> Option<Self> {
         if self.rank() != 2 {
             None
@@ -185,6 +186,22 @@ impl<T: Linear> Tensor<T> {
             Some(self)
         }
     }
+    pub fn new_matrix_iter<I: Iterator<Item = T>>(
+        iter: &mut I,
+        width: usize,
+        height: usize,
+    ) -> Self {
+        let data: Vec<T> = iter
+            .chain(std::iter::repeat(Default::default()))
+            .take(width * height)
+            .collect();
+        Self {
+            shape: vec![width, height],
+            data,
+        }
+    }
+}
+impl<T: Linear> Tensor<T> {
     pub fn hermitian_conj(self) -> Option<Self> {
         Some(self.transpose()?.map(|v| v.hermitian_conj()))
     }
@@ -266,14 +283,14 @@ impl<T: Linear> std::ops::Mul for Tensor<T> {
     }
 }
 
-impl<T: Linear + std::cmp::PartialEq> std::cmp::PartialEq for Tensor<T> {
+impl<T: std::cmp::PartialEq> std::cmp::PartialEq for Tensor<T> {
     fn eq(&self, other: &Self) -> bool {
         self.shape == other.shape && self.data == other.data
     }
 }
-impl<T: Linear + std::cmp::Eq> std::cmp::Eq for Tensor<T> {}
+impl<T: std::cmp::Eq> std::cmp::Eq for Tensor<T> {}
 
-impl<T: Linear> std::ops::Index<&[usize]> for Tensor<T> {
+impl<T> std::ops::Index<&[usize]> for Tensor<T> {
     type Output = T;
     fn index(&self, index: &[usize]) -> &Self::Output {
         let i = self._data_index(index).unwrap_or_else(|| {
@@ -286,7 +303,7 @@ impl<T: Linear> std::ops::Index<&[usize]> for Tensor<T> {
         &self.data[i]
     }
 }
-impl<T: Linear> std::ops::IndexMut<&[usize]> for Tensor<T> {
+impl<T> std::ops::IndexMut<&[usize]> for Tensor<T> {
     fn index_mut(&mut self, index: &[usize]) -> &mut Self::Output {
         let i = self._data_index(index).unwrap_or_else(|| {
             panic!(
@@ -298,7 +315,7 @@ impl<T: Linear> std::ops::IndexMut<&[usize]> for Tensor<T> {
         &mut self.data[i]
     }
 }
-impl<T: Linear + std::fmt::Display + std::fmt::Debug> std::fmt::Display for Tensor<T> {
+impl<T: std::fmt::Display + std::fmt::Debug> std::fmt::Display for Tensor<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.rank() == 2 {
             let width = self.shape[0];
@@ -362,11 +379,13 @@ mod test {
             .expect("should only be None if non-matrix");
 
         assert_eq!(
-            mat3x2, Tensor::new_matrix([[1.1, 2.1, 3.1], [1.2, 2.2, 3.2]]),
+            mat3x2,
+            Tensor::new_matrix([[1.1, 2.1, 3.1], [1.2, 2.2, 3.2]]),
             "transposed matrix is what is expected"
         );
         assert_eq!(
-            mat3x2_hc, Tensor::new_matrix([[1.1, 2.1, 3.1], [1.2, 2.2, 3.2]]),
+            mat3x2_hc,
+            Tensor::new_matrix([[1.1, 2.1, 3.1], [1.2, 2.2, 3.2]]),
             "hermitian conjugate matrix is what is expected"
         );
 

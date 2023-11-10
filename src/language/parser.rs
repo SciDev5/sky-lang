@@ -123,9 +123,9 @@ fn next_expression_no_infix<'a, I: Iterator<Item = SLToken<'a>>>(
         SLToken::BracketClose(_) => None, // can't start expression with a closing bracket
         SLToken::Separator(_) => None,    // can't start expression with a separator
 
-        SLToken::Float(_, _) | SLToken::Int(_, _) => next_expression_literal_num(next, tokens),
+        SLToken::Float { .. } | SLToken::Int { .. } => next_expression_literal_num(next, tokens),
 
-        SLToken::Ident(name) => Some((
+        SLToken::Identifier(name) => Some((
             SLIRExpression::VarRead(SLIRVarAccessExpression::Ident(
                 name.to_string().into_boxed_str(),
             )),
@@ -133,12 +133,14 @@ fn next_expression_no_infix<'a, I: Iterator<Item = SLToken<'a>>>(
         )),
 
         SLToken::Operator(op) => next_expression_prefix(op, tokens),
+        // angle brackets act as operators in expressions (though this should always fail because `<` and `>` are never prefixes)
+        SLToken::AmbiguityAngleBracket(b) => next_expression_prefix(b.to_operator(), tokens),
 
         // keywords not expected here
         SLToken::Keyword(_) => None,
         // always invalid
         SLToken::NumLiteralInvalid(_) => None,
-        SLToken::Unk(_) => None,
+        SLToken::Unknown(_) => None,
         // should have skipped all spaces
         SLToken::Space { .. } => panic!("impossible, just skipped all whitespace"),
     }
@@ -149,18 +151,18 @@ fn next_expression_literal_num<'a, I: Iterator<Item = SLToken<'a>>>(
     tokens: Peekable<I>,
 ) -> Option<(SLIRExpression, Peekable<I>)> {
     let val = match initial {
-        SLToken::Float(v, imag) => {
-            if imag {
-                SLIRLiteral::Float { re: 0.0, im: v }
+        SLToken::Float { value, imaginary } => {
+            if imaginary {
+                SLIRLiteral::Float { re: 0.0, im: value }
             } else {
-                SLIRLiteral::Float { re: v, im: 0.0 }
+                SLIRLiteral::Float { re: value, im: 0.0 }
             }
         }
-        SLToken::Int(v, imag) => {
-            if imag {
-                SLIRLiteral::Int { re: 0, im: v }
+        SLToken::Int { value, imaginary } => {
+            if imaginary {
+                SLIRLiteral::Int { re: 0, im: value }
             } else {
-                SLIRLiteral::Int { re: v, im: 0 }
+                SLIRLiteral::Int { re: value, im: 0 }
             }
         }
         _ => {
@@ -205,6 +207,7 @@ fn next_expression_grouping<'a, I: Iterator<Item = SLToken<'a>>>(
         BracketType::Curly => todo!(),
         BracketType::Paren => next_expression_paren(tokens),
         BracketType::Square => next_expression_array(tokens),
+        BracketType::Angle => todo!("tensor dim spec uses angle brackets"), // TODO tensor dim spec uses angle brackets, but not implemented
     }?;
 
     for op in next_if_postfix_ops(&mut tokens) {
@@ -259,11 +262,14 @@ fn next_expression_array<'a, I: Iterator<Item = SLToken<'a>>>(
 
         skip_whitespace(&mut tokens);
         let sep = match tokens.peek() {
-            Some(SLToken::Separator(typ)) => {
-                let typ = *typ;
-                tokens.next();
-                Some(typ)
-            }
+            Some(SLToken::Separator(typ)) => match typ {
+                SeparatorType::Comma | SeparatorType::Semicolon => {
+                    let typ = *typ;
+                    tokens.next();
+                    Some(typ)
+                }
+                _ => None,
+            },
             _ => None,
         }
         .unwrap_or(super::tokenization::SeparatorType::Comma); // spaces become implicit commas
@@ -300,6 +306,7 @@ fn next_expression_array<'a, I: Iterator<Item = SLToken<'a>>>(
         let is_row_break = match styp {
             SeparatorType::Comma => false,
             SeparatorType::Semicolon => true,
+            _ => panic!("only expecting comma and semicolon in matrix (this should have been marked as invalid already)"),
         };
         if is_row_break != ((i + width - 1) % width == 0) {
             // Ragged (inconsistent width), not allowed.

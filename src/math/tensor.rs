@@ -125,6 +125,12 @@ impl<T> Tensor<T> {
                 .collect(),
         })
     }
+    pub fn new_raw(data: Vec<T>, shape: Vec<usize>) -> Self {
+        if shape.iter().product::<usize>() != data.len() {
+            panic!("Invalid tensor dimensions");
+        }
+        Self { shape, data }
+    }
 
     pub fn new_matrix<const W: usize, const H: usize>(arr: [[T; W]; H]) -> Self {
         Self {

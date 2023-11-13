@@ -1,3 +1,5 @@
+use crate::math::shunting_yard::ShuntingYardOperator;
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SLOperator {
@@ -101,7 +103,9 @@ impl SLOperator {
             _ => false,
         }
     }
-    pub fn precedence(self) -> u8 {
+}
+impl ShuntingYardOperator for SLOperator {
+    fn precedence(self) -> u8 {
         match self {
             // comparison -> 0
             Self::Equal => 0,
@@ -143,7 +147,7 @@ impl SLOperator {
             Self::Assign => panic!("never part of expressions"),
         }
     }
-    pub fn right_associative(self) -> bool {
+    fn right_associative(self) -> bool {
         match self {
             Self::MatExp => true,
             Self::ScalarExp => true,

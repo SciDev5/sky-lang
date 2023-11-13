@@ -13,6 +13,7 @@ pub enum SLToken<'a> {
     Separator(SeparatorType),
     Operator(SLOperator),
     AmbiguityAngleBracket(AngleBracketShape),
+    SyntacticSugar(SyntacticSugarType),
     Unknown(&'a str),
 }
 
@@ -79,6 +80,12 @@ pub enum SeparatorType {
     Comma,
     Semicolon,
     Colon,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntacticSugarType {
+    /** `#` hash/pound symbol, used to denote array/matrix/tensor stuff mostly. */
+    Hash,
 }
 
 macro_rules! impl_tokenizer {
@@ -226,9 +233,14 @@ subtokenize_sub_enum! {
 }
 subtokenize_sub_enum! {
     tokenize_ambiguity_angle_bracket;
-    SLToken : |sep| SLToken::AmbiguityAngleBracket(sep);
+    SLToken : |which| SLToken::AmbiguityAngleBracket(which);
     "<" => AngleBracketShape::OpenOrLessThan,
     ">" => AngleBracketShape::CloseOrGreaterThan,
+}
+subtokenize_sub_enum! {
+    tokenize_syntactic_sugar;
+    SLToken : |it| SLToken::SyntacticSugar(it);
+    "#" => SyntacticSugarType::Hash,
 }
 subtokenize_fn! {
     tokenize_whitespace;
@@ -344,6 +356,7 @@ impl_tokenizer! {
         tokenize_ambiguity_angle_bracket,
         tokenize_brackets,
         tokenize_ops,
+        tokenize_syntactic_sugar,
         tokenize_separators,
         tokenize_keyword,
 

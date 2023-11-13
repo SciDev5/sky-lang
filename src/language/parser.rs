@@ -1,6 +1,9 @@
 use std::iter::Peekable;
 
-use crate::math::tensor::Tensor;
+use crate::math::{
+    shunting_yard::{treeify_infix, ShuntingYardObj},
+    tensor::Tensor,
+};
 
 use super::{
     ops::SLOperator,
@@ -97,10 +100,10 @@ fn next_expression<'a, I: Iterator<Item = SLToken<'a>>>(
         skip_whitespace(&mut tokens); // skip whitespace before peeking the next token in the `while let`
     }
 
-    let mut postfix_expr_reversed = shunting_yard(infix_expr.into_iter()).into_iter().rev();
-
     Some((
-        treeify_reversed_postfix_ops(&mut postfix_expr_reversed),
+        treeify_infix(&mut infix_expr.into_iter(), &|op, a, b| {
+            SLIRExpression::BinaryOp(op, Box::new(a), Box::new(b))
+        }),
         tokens,
     ))
 }
@@ -141,6 +144,7 @@ fn next_expression_no_infix<'a, I: Iterator<Item = SLToken<'a>>>(
         // always invalid
         SLToken::NumLiteralInvalid(_) => None,
         SLToken::Unknown(_) => None,
+        SLToken::SyntacticSugar(_) => None, // invalid because im lazy and this code is getting archived
         // should have skipped all spaces
         SLToken::Space { .. } => panic!("impossible, just skipped all whitespace"),
     }
@@ -279,7 +283,7 @@ fn next_expression_array<'a, I: Iterator<Item = SLToken<'a>>>(
 
     if elts.len() == 0 {
         return Some((
-            SLIRExpression::Array(SLIRArray(Tensor::new_matrix::<0, 0>([]))),
+            SLIRExpression::Array(SLIRArray::Matrix(Tensor::new_matrix::<0, 0>([]))),
             tokens,
         ));
     }
@@ -317,7 +321,7 @@ fn next_expression_array<'a, I: Iterator<Item = SLToken<'a>>>(
     let matrix =
         Tensor::new_matrix_iter(&mut elts.into_iter().map(|(expr, _)| expr), width, height);
 
-    Some((SLIRExpression::Array(SLIRArray(matrix)), tokens))
+    Some((SLIRExpression::Array(SLIRArray::Matrix(matrix)), tokens))
 }
 
 fn next_if_postfix_ops<'a, I: Iterator<Item = SLToken<'a>>>(
@@ -353,63 +357,6 @@ fn skip_soft_whitespace<'a, I: Iterator<Item = SLToken<'a>>>(tokens: &mut Peekab
     if let Some(SLToken::Space { hard }) = tokens.peek().copied() {
         if !hard {
             tokens.next();
-        }
-    }
-}
-
-enum ShuntingYardObj {
-    Expr(SLIRExpression),
-    Op(SLOperator),
-}
-
-fn shunting_yard(input_stream: impl Iterator<Item = ShuntingYardObj>) -> Vec<ShuntingYardObj> {
-    let mut output_queue = vec![];
-    let mut operator_stack = vec![];
-
-    for token in input_stream {
-        match token {
-            ShuntingYardObj::Expr(expr) => output_queue.push(ShuntingYardObj::Expr(expr)),
-            ShuntingYardObj::Op(op) => {
-                while let Some(&top_op) = operator_stack.last() {
-                    if shunting_yard_should_pop_operator(&op, &top_op) {
-                        output_queue.push(ShuntingYardObj::Op(operator_stack.pop().unwrap()));
-                    } else {
-                        break;
-                    }
-                }
-                operator_stack.push(op);
-            }
-        }
-    }
-
-    while let Some(op) = operator_stack.pop() {
-        output_queue.push(ShuntingYardObj::Op(op));
-    }
-
-    output_queue
-}
-
-fn shunting_yard_should_pop_operator(new_op: &SLOperator, top_op: &SLOperator) -> bool {
-    if new_op.right_associative() {
-        new_op.precedence() < top_op.precedence()
-    } else {
-        new_op.precedence() <= top_op.precedence()
-    }
-}
-
-fn treeify_reversed_postfix_ops(
-    stream: &mut impl Iterator<Item = ShuntingYardObj>,
-) -> SLIRExpression {
-    match stream
-        .next()
-        .expect("treeifying postfix output of shunting yard failed: ran out of nodes")
-    {
-        ShuntingYardObj::Expr(expr) => expr,
-        ShuntingYardObj::Op(op) => {
-            // Remember we're reading the list in reverse.
-            let second = treeify_reversed_postfix_ops(stream);
-            let first = treeify_reversed_postfix_ops(stream);
-            SLIRExpression::BinaryOp(op, Box::new(first), Box::new(second))
         }
     }
 }

@@ -38,4 +38,8 @@ pub enum SLIRLiteral {
 }
 
 #[derive(Debug, Clone)]
-pub struct SLIRArray(pub Tensor<SLIRExpression>);
+pub enum SLIRArray {
+    List(Vec<SLIRExpression>),
+    Matrix(Tensor<SLIRExpression>),
+    Tensor(Tensor<SLIRExpression>),
+}

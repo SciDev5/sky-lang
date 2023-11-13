@@ -1,362 +1,629 @@
-use std::iter::Peekable;
+use super::{slir::SLIRStatement, tokenization::SLToken};
 
-use crate::math::{
-    shunting_yard::{treeify_infix, ShuntingYardObj},
-    tensor::Tensor,
-};
+#[derive(Debug, Clone, Copy)]
+pub struct Tokens<'vec, 'token_content> {
+    index: usize,
+    tokens: &'vec [SLToken<'token_content>],
+}
 
-use super::{
-    ops::SLOperator,
-    slir::{SLIRArray, SLIRExpression, SLIRLiteral, SLIRStatement, SLIRVarAccessExpression},
-    tokenization::{BracketType, SLToken, SeparatorType},
-};
-
-pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<Vec<SLIRStatement>, ()> {
-    // TODO proper errors
-    let mut statements = vec![];
-    let mut tokens = tokens.into_iter().peekable();
-    loop {
-        skip_whitespace(&mut tokens);
-        if tokens.peek().is_none() {
-            break Ok(statements); // Hit end without issue.
+impl<'a, 'b> Tokens<'a, 'b> {
+    pub fn new(tokens: &'a [SLToken<'b>]) -> Self {
+        Self { index: 0, tokens }
+    }
+    fn peek(&self) -> Option<&'a SLToken<'b>> {
+        self.tokens.get(self.index)
+    }
+    fn peek_skip_space(&self) -> Option<&'a SLToken<'b>> {
+        for token in self.peek_slice() {
+            match token {
+                SLToken::Space { .. } => continue,
+                token => return Some(token),
+            }
         }
-        if let Some((next, tokens_advanced)) = next_statement(tokens.clone()) {
-            statements.push(next);
-            tokens = tokens_advanced;
+        return None;
+    }
+    fn peek_slice(&self) -> &'a [SLToken<'b>] {
+        if self.index < self.tokens.len() {
+            &self.tokens[self.index..]
         } else {
-            break Err(());
+            &[]
+        }
+    }
+    fn peek_is_hard_space(&self) -> bool {
+        matches!(self.peek(), Some(SLToken::Space { hard: true }))
+    }
+    fn next(&mut self) -> Option<&'a SLToken<'b>> {
+        let output = self.tokens.get(self.index);
+        self.index += 1;
+        return output;
+    }
+    fn next_skip_space(&mut self) -> Option<&'a SLToken<'b>> {
+        loop {
+            match self.next() {
+                Some(SLToken::Space { .. }) => continue,
+                token => break token,
+            }
+        }
+    }
+    fn next_skip_soft_space(&mut self) -> Option<&'a SLToken<'b>> {
+        loop {
+            match self.next() {
+                Some(SLToken::Space { hard: false }) => continue,
+                token => break token,
+            }
+        }
+    }
+    fn next_skip_space_if_matches<F: Fn(Option<&SLToken<'b>>) -> bool>(&mut self, f: F) -> bool {
+        let mut self_advanced = *self;
+        let matched = f(self_advanced.next_skip_space());
+        if matched {
+            *self = self_advanced
+        }
+        matched
+    }
+    fn step_back(&mut self) {
+        self.index = self.index.saturating_sub(1);
+    }
+    /// Run the parser function passed in and advance the token index if successful.
+    fn next_parse<T, F: Fn(Self) -> Option<(Self, T)>>(&mut self, parser: F) -> Option<T> {
+        let (tokens_out, data_out) = parser(*self)?;
+        *self = tokens_out;
+        Some(data_out)
+    }
+}
+
+macro_rules! parse_rule {
+    // parse_rule!(fn name<T: Default, R>(tokens) -> matched: T, _failed { T::default() })
+    (
+        // code documenting comment
+        $(#[$($comments_and_attrss:tt)*])*
+        // generated function name and visibility modifier (ex. pub)
+        $vis: vis fn $name: ident
+        // optional additional function generic type/lifetime parameters.
+        $(<$($typ: tt),*>)?
+        // function parameter names, usually just `tokens`.
+        ($tokens: ident $(, $(($param: ident) : $param_ty: ty)+ $(,)?)?)
+        ->
+        // `matched : $ty`, creates a macro named `matched!` that takes the current value of tokens and data and returns.
+        $macro_name_return_match: ident : $ty: ty,
+        // `failed: None`, creates a macro named `failed!` that
+        $macro_name_return_fail: ident : None
+        // function contents (value is type $ty, can `return None` to abort early)
+        $code: block
+    ) => {
+        $(#[$($comments_and_attrss)*])*
+        $vis fn $name <'tv, 'tc, $($typ),*> (
+            #[allow(unused_mut)]
+            mut $tokens : Tokens<'tv, 'tc>,
+            $($($param : $param_ty),+)?
+        ) -> Option<(Tokens<'tv, 'tc>, $ty)> {
+            macro_rules! $macro_name_return_match {
+                ($data: ident) => {
+                    return Some(($tokens, $data))
+                };
+                (tokens = $tokens_override: ident, $data: ident) => {
+                    return Some(($tokens_override, $data))
+                };
+            }
+            macro_rules! $macro_name_return_fail {
+                () => { return None };
+            }
+            let _res: $ty = $code;
+            #[allow(unreachable_code)]
+            Some(($tokens, _res))
         }
     }
 }
 
-fn next_statement<'a, I: Iterator<Item = SLToken<'a>>>(
-    tokens: Peekable<I>,
-) -> Option<(SLIRStatement, Peekable<I>)> {
-    // TODO not just expressions
-    let (expr, tokens) = next_expression(tokens)?;
-    Some((SLIRStatement::Expr(Box::new(expr)), tokens))
-}
+mod expr {
+    use super::Tokens;
+    use crate::{
+        language::{
+            ops::SLOperator,
+            slir::{SLIRArray, SLIRExpression, SLIRIdent, SLIRLiteral, SLIRVarAccessExpression},
+            tokenization::{
+                AngleBracketShape, BracketType, SLToken, SeparatorType, SyntacticSugarType,
+            },
+        },
+        math::{
+            shunting_yard::{treeify_infix, ShuntingYardObj},
+            tensor::Tensor,
+        },
+    };
 
-fn next_expression<'a, I: Iterator<Item = SLToken<'a>>>(
-    tokens: Peekable<I>,
-) -> Option<(SLIRExpression, Peekable<I>)> {
     /*
     A finite state machine should be able to handle expression parsing.
 
-    >> List of possible expressions
+    ///////////////// List of possible expressions /////////////////
     <expr> = <literal>
+    <expr> = <identifier>
     <expr> = <expr> <infix> <expr>
     <expr> = <prefix> <expr>
-    <expr> = <expr> <postfix>
+    <expr> = <expr> (<postfix> | ("[" (<expr>)","* "]") | ("(" (<expr>)","* ")"))
+    <expr> = <block>
     <expr> = "(" <expr> ")"
-    <expr> = "[" ((<expr> ",")... ";")... "]"
+    <expr> = "[" (<expr>)","* ","? "]"
+    <expr> = "#" [" ( (<expr>)","* )";"* ";"? "]"
+    <expr> = "#" "<" [rank] ">" "[" // nested arrays to depth [rank] // "]"
+    // <expr> = <<ARRAY COMPREHENSIONS>>
 
-    >> Whole thing in a regex-like format
-    $ = (
-        L |
-        I |
-        P $ A? |
-        (
-            "(" $ ")" |
-            "[" ($ S)* "]"
-        ) A?
-    ) (I $)*
+    ///////////////// Expression parsing in smaller chunks /////////////////
 
-    >> Broken apart into separate smaller functions, seen below in code.
-    expr = expr_no_infix (I expr_no_infix)*
-    expr_no_infix = (
-        L |
-        I |
-        expr_prefix |  >> initiated by Any Operator (matching will determine if valid)
-        expr_grouping  >> initiated by "(" | "["
+    <expr> = <expr_no_infix> (<infix> <expr_no_infix>)*
+
+    <expr_no_infix> = <prefix>* (
+        | <literal>
+        | <identifier>
+        | <expr_grouping>
+        | <expr_extras>
+    ) <postfix>*
+
+    <expr_grouping> = (
+        //// parentheses
+        | "(" <expr> ")"
+        //// normal arrays/lists/whatever
+        | "[" (<expr>)","* ","? "]"
+        //// matrices
+        | "#" [" ( (<expr>)","* )";"* ";"? "]"
+        //// tensors
+        | "#" "<" [rank] ">" "[" // nested arrays to depth [rank] // "]"
     )
-    expr_prefix = P expr_no_infix A?
-    expr_grouping = (
-        expr_paren |    >> initiated by "("
-        expr_array      >> initiated by "["
-    ) A?
-    expr_paren = "(" expr ")"
-    expr_array = "[" (expr S)* "]"
 
-    I'm qualified bet.
-    */
+    <prefix> = (
+        | <postfix_operator>   // ~operators_and_such
+    )
 
-    let mut infix_expr = vec![];
+    <postfix> = (
+        | <postfix_operator>   // operators_and_such'
+        | <postfix_func_call> //  function_calls(like, this, 4)
+        | <postfix_index>    //   indexing_data[i,j,k]
+    )
 
-    let (expr, mut tokens) = next_expression_no_infix(tokens)?;
-
-    infix_expr.push(ShuntingYardObj::Expr(expr));
-
-    skip_whitespace(&mut tokens);
-    while let Some(SLToken::Operator(op)) = tokens.peek().copied() {
-        if !op.is_infix() {
-            break;
-        }
-        tokens.next();
-        let (expr, tokens_) = next_expression_no_infix(tokens)?;
-        tokens = tokens_;
-        infix_expr.push(ShuntingYardObj::Op(op));
-        infix_expr.push(ShuntingYardObj::Expr(expr));
-        skip_whitespace(&mut tokens); // skip whitespace before peeking the next token in the `while let`
-    }
-
-    Some((
-        treeify_infix(&mut infix_expr.into_iter(), &|op, a, b| {
-            SLIRExpression::BinaryOp(op, Box::new(a), Box::new(b))
-        }),
-        tokens,
-    ))
-}
-
-fn next_expression_no_infix<'a, I: Iterator<Item = SLToken<'a>>>(
-    mut tokens: Peekable<I>,
-) -> Option<(SLIRExpression, Peekable<I>)> {
-    /*
-    expr_no_infix = (
-        L |
-        I |
-        expr_prefix |  >> initiated by Any Operator (matching will determine if valid)
-        expr_grouping  >> initiated by "(" | "["
+    <expr_extras> = (
+        // TODO
+        // ... array comprehensions and such ...
     )
     */
-    skip_whitespace(&mut tokens);
-    let next = tokens.next()?;
-    match next {
-        SLToken::BracketOpen(bracket_type) => next_expression_grouping(bracket_type, tokens),
-        SLToken::BracketClose(_) => None, // can't start expression with a closing bracket
-        SLToken::Separator(_) => None,    // can't start expression with a separator
 
-        SLToken::Float { .. } | SLToken::Int { .. } => next_expression_literal_num(next, tokens),
+    parse_rule! {
+        /// Parse expressions.
+        ///
+        /// ```plaintext
+        /// <expr> = <expr_no_infix> (<infix> <expr_no_infix>)*
+        /// ```
+        pub fn parse_expr(tokens) -> _matched: SLIRExpression, failed: None {
+            let first_expr = tokens.next_parse(parse_expr_no_infix)?;
 
-        SLToken::Identifier(name) => Some((
-            SLIRExpression::VarRead(SLIRVarAccessExpression::Ident(
-                name.to_string().into_boxed_str(),
-            )),
-            tokens,
-        )),
+            let mut infix = vec![ShuntingYardObj::Expr(first_expr)];
 
-        SLToken::Operator(op) => next_expression_prefix(op, tokens),
-        // angle brackets act as operators in expressions (though this should always fail because `<` and `>` are never prefixes)
-        SLToken::AmbiguityAngleBracket(b) => next_expression_prefix(b.to_operator(), tokens),
+            while let Some(op) = tokens.next_parse(parse_expr_infix_op) {
+                if let Some(expr) = tokens.next_parse(parse_expr_no_infix) {
+                    infix.push(ShuntingYardObj::Op(op));
+                    infix.push(ShuntingYardObj::Expr(expr));
+                } else {
+                    // saw infix operator follwed by something unexpected.
+                    failed!();
+                }
+            }
 
-        // keywords not expected here
-        SLToken::Keyword(_) => None,
-        // always invalid
-        SLToken::NumLiteralInvalid(_) => None,
-        SLToken::Unknown(_) => None,
-        SLToken::SyntacticSugar(_) => None, // invalid because im lazy and this code is getting archived
-        // should have skipped all spaces
-        SLToken::Space { .. } => panic!("impossible, just skipped all whitespace"),
+            treeify_infix(&mut infix.into_iter(), &|op, a, b| {
+                SLIRExpression::BinaryOp(op, Box::new(a), Box::new(b))
+            })
+        }
     }
-}
-
-fn next_expression_literal_num<'a, I: Iterator<Item = SLToken<'a>>>(
-    initial: SLToken<'a>,
-    tokens: Peekable<I>,
-) -> Option<(SLIRExpression, Peekable<I>)> {
-    let val = match initial {
-        SLToken::Float { value, imaginary } => {
-            if imaginary {
-                SLIRLiteral::Float { re: 0.0, im: value }
-            } else {
-                SLIRLiteral::Float { re: value, im: 0.0 }
+    parse_rule! {
+        fn parse_expr_infix_op(tokens) -> matched: SLOperator, failed: None {
+            let had_hard_space = tokens.peek_is_hard_space();
+            match tokens.next_skip_space()? {
+                SLToken::Operator(op) => {
+                    // hard space (newline) check prevents unexpected behavior for infix ops that are also prefixes (such as `-`)
+                    if op.is_infix() && !(had_hard_space && op.is_prefix()) {
+                        let result = *op;
+                        matched!(result);
+                    } else {
+                        failed!();
+                    }
+                }
+                _ => failed!(),
             }
         }
-        SLToken::Int { value, imaginary } => {
-            if imaginary {
-                SLIRLiteral::Int { re: 0, im: value }
-            } else {
-                SLIRLiteral::Int { re: value, im: 0 }
+    }
+    macro_rules! parse_match_first {
+        ($tokens: ident; $($parser: ident => |$param: ident| $success_transform: expr ),+ $(,)?) => {
+            $(
+                if let Some($param) = $tokens.next_parse($parser) {
+                    Some($success_transform)
+                } else
+            )+ {
+                None
+            }
+        };
+    }
+    parse_rule! {
+        /// Parse expressions, excluding expressions with infix operators at the top level.
+        ///
+        /// ```plaintext
+        /// <expr_no_infix> = <prefix>* (
+        ///     | <literal>
+        ///     | <identifier>
+        ///     | <expr_grouping>
+        ///     | <expr_extras>
+        /// ) <postfix>*
+        /// ```
+        fn parse_expr_no_infix(tokens) -> _matched: SLIRExpression, _failed: None {
+            // prefixes
+            let mut prefixes = vec![];
+            while let Some(prefix) = tokens.next_parse(parse_expr_prefix) {
+                prefixes.push(prefix);
+            }
+            // main data
+            let expr_main = parse_match_first!(
+                tokens;
+                parse_expr_literal => |literal| SLIRExpression::Literal(literal),
+                parse_expr_identifier => |ident| SLIRExpression::VarRead(SLIRVarAccessExpression::Ident(ident)),
+                parse_expr_grouping => |it| it,
+            )?;
+            // postfixes
+            let mut postfixes = vec![];
+            while let Some(postfix) = tokens.next_parse(parse_expr_postfix) {
+                postfixes.push(postfix);
+            }
+            //
+            let mut expr = expr_main;
+            for affix in postfixes.into_iter().chain(prefixes.into_iter().rev()) {
+                expr = affix.apply_to_expr(expr);
+            }
+            expr
+        }
+    }
+    enum ExprAffix {
+        Op(SLOperator),
+        Indexing(Vec<SLIRExpression>),
+        FunctionCall(Vec<SLIRExpression>), // TODO template types, callback block
+    }
+    impl ExprAffix {
+        fn apply_to_expr(self, expr: SLIRExpression) -> SLIRExpression {
+            match self {
+                ExprAffix::Op(op) => SLIRExpression::UnaryOp(op, Box::new(expr)),
+                ExprAffix::FunctionCall(_arguments) => todo!(), // TODO ExprAffix::FunctionCall
+                ExprAffix::Indexing(_indices) => todo!(),       // TODO ExprAffix::Indexing
             }
         }
-        _ => {
-            return None;
+    }
+    parse_rule! {
+        fn parse_expr_prefix(tokens) -> matched: ExprAffix, failed: None {
+            match tokens.next_skip_space()? {
+                SLToken::Operator(op) => {
+                    if op.is_prefix() {
+                        let result = ExprAffix::Op(*op);
+                        matched!(result);
+                    } else {
+                        failed!();
+                    }
+                }
+                _ => failed!(),
+            }
         }
-    };
-    // TODO: automatically merge stuff like 1+2i into a single primitive
-    Some((SLIRExpression::Literal(val), tokens))
-}
-
-fn next_expression_prefix<'a, I: Iterator<Item = SLToken<'a>>>(
-    op: SLOperator,
-    tokens: Peekable<I>,
-) -> Option<(SLIRExpression, Peekable<I>)> {
-    // expr_prefix = P expr_no_infix A?
-
-    if !op.is_prefix() {
-        // Not scientifically possible!
-        return None; // (i lied, it actually is if someone writes like `(^3)`. `^` is not a prefix operator)
     }
-
-    let (mut expr, mut tokens) = next_expression_no_infix(tokens)?;
-
-    for postfix_op in next_if_postfix_ops(&mut tokens) {
-        expr = SLIRExpression::UnaryOp(postfix_op, Box::new(expr))
+    parse_rule! {
+        ///
+        /// Parse postfixes/suffixes/whateveryouwannacallem. This is shockingly complicated,
+        /// because there is also function calls (`...[...]`), indexing  (`...[]...]`), and others
+        /// beyond just operators like `'` (hermitian conjugate).
+        ///
+        /// ```plaintext
+        /// <postfix> = (
+        ///     | <postfix_operator>   // operators_and_such'
+        ///     | <postfix_func_call> //  function_calls(param_a * 69 + 420, 4)
+        ///     | <postfix_index>    //   indexing_data[i,j,k]
+        /// )
+        /// ```
+        fn parse_expr_postfix(tokens) -> matched: ExprAffix, failed: None {
+            // only skipping soft spaces, postfixes dangling after postfixes are hard
+            // to spot or often not actually meant to be postfixes.
+            match tokens.next_skip_soft_space()? {
+                SLToken::Operator(op) => {
+                    if op.is_postfix() {
+                        let result = ExprAffix::Op(*op);
+                        matched!(result);
+                    } else {
+                        failed!();
+                    }
+                }
+                SLToken::BracketOpen(BracketType::Square) => {
+                    let indices = tokens.next_parse(|tokens| parse_list(tokens,
+                        &parse_expr,
+                        |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
+                        |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
+                    ))?;
+                    let result = ExprAffix::Indexing(indices);
+                    matched!(result);
+                }
+                SLToken::BracketOpen(BracketType::Paren) => {
+                    let arguments = tokens.next_parse(|tokens| parse_list(tokens,
+                        &parse_expr,
+                        |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
+                        |token| matches!(token, SLToken::BracketClose(BracketType::Paren)),
+                    ))?;
+                    let result = ExprAffix::FunctionCall(arguments);
+                    matched!(result);
+                }
+                // TODO function calls with callback blocks like the_func { it -> it[1] }
+                _ => failed!(),
+            }
+        }
     }
+    ///
+    /// Parses a list structure from tokens, by matching against a data, separator, and end pattern.
+    ///
+    /// NOTICE: this does not capture the INITIAL token, only separator and ending tokens.
+    ///
+    /// Ex:
+    ///
+    /// ```plaintext
+    /// let tokens = parse("1,3,4,5]6,7,8")
+    /// parse_list(tokens, &parse_number, |it| matches!(it,COMMA), |it| matches!(it, CLOSE_BRACKET))
+    /// ```
+    /// returns `vec![1,2,3,4,5]`, tokens = `6,7,8`
+    ///
+    fn parse_list<
+        'a,
+        'b,
+        T,
+        Match: Fn(Tokens<'a, 'b>) -> Option<(Tokens<'a, 'b>, T)>,
+        MatchSep: Fn(&SLToken<'b>) -> bool,
+        MatchEnd: Fn(&SLToken<'b>) -> bool,
+    >(
+        mut tokens: Tokens<'a, 'b>,
+        fn_match: &Match,
+        fn_match_sep: MatchSep,
+        fn_match_end: MatchEnd,
+    ) -> Option<(Tokens<'a, 'b>, Vec<T>)> {
+        if fn_match_end(tokens.peek_skip_space()?) {
+            tokens.next_skip_space();
+            return Some((tokens, vec![]));
+        }
 
-    Some((SLIRExpression::UnaryOp(op, Box::new(expr)), tokens))
-}
-
-fn next_expression_grouping<'a, I: Iterator<Item = SLToken<'a>>>(
-    bracket_type: BracketType,
-    tokens: Peekable<I>,
-) -> Option<(SLIRExpression, Peekable<I>)> {
-    /*
-    expr_grouping = (
-        expr_paren |    >> initiated by "("
-        expr_array      >> initiated by "["
-    ) A?
-    */
-    let (mut expr, mut tokens) = match bracket_type {
-        BracketType::Curly => todo!(),
-        BracketType::Paren => next_expression_paren(tokens),
-        BracketType::Square => next_expression_array(tokens),
-        BracketType::Angle => todo!("tensor dim spec uses angle brackets"), // TODO tensor dim spec uses angle brackets, but not implemented
-    }?;
-
-    for op in next_if_postfix_ops(&mut tokens) {
-        expr = SLIRExpression::UnaryOp(op, Box::new(expr))
-    }
-
-    Some((expr, tokens))
-}
-
-fn next_expression_paren<'a, I: Iterator<Item = SLToken<'a>>>(
-    tokens: Peekable<I>,
-) -> Option<(SLIRExpression, Peekable<I>)> {
-    // expr_paren = "(" expr ")"
-    let (expr, mut tokens) = next_expression(tokens)?;
-
-    skip_whitespace(&mut tokens);
-    if let Some(SLToken::BracketClose(BracketType::Paren)) = tokens.next() {
-        Some((expr, tokens))
-    } else {
-        None
-    }
-}
-
-fn next_expression_array<'a, I: Iterator<Item = SLToken<'a>>>(
-    tokens: Peekable<I>,
-) -> Option<(SLIRExpression, Peekable<I>)> {
-    let mut tokens = tokens;
-    // TODO expr_array = "[" (expr S)* "]"
-    let mut elts = vec![];
-    loop {
-        skip_whitespace(&mut tokens);
-        let next_elt = match tokens.peek() {
-            Some(SLToken::BracketClose(BracketType::Square)) => {
-                tokens.next();
+        let mut contents = vec![];
+        loop {
+            if tokens
+                .peek_skip_space()
+                .map(|v| fn_match_end(v))
+                .unwrap_or(false)
+                && tokens.peek_is_hard_space()
+            {
+                // allow trailing separators if there's a hard space before the end token.
                 break;
             }
-            Some(_) => {
-                if let Some(next) = next_expression(tokens) {
-                    next
-                } else {
-                    // Failed to match inner expression.
-                    return None;
-                }
-            }
-            None => {
-                // Unexpected end.
+            contents.push(tokens.next_parse(fn_match)?);
+            let next = tokens.next_skip_space()?;
+            if fn_match_end(next) {
+                break;
+            } else if fn_match_sep(next) {
+                continue;
+            } else {
                 return None;
             }
-        };
-        tokens = next_elt.1;
-        let next_elt = next_elt.0;
+        }
 
-        skip_whitespace(&mut tokens);
-        let sep = match tokens.peek() {
-            Some(SLToken::Separator(typ)) => match typ {
-                SeparatorType::Comma | SeparatorType::Semicolon => {
-                    let typ = *typ;
-                    tokens.next();
-                    Some(typ)
+        Some((tokens, contents))
+    }
+    parse_rule! {
+        fn parse_expr_grouping(tokens) -> _matched: SLIRExpression, failed: None {
+            let had_array_symbol = tokens.next_skip_space_if_matches(|token| matches!(token, Some(SLToken::SyntacticSugar(SyntacticSugarType::Hash))));
+            match (
+                had_array_symbol,
+                (if had_array_symbol {
+                    tokens.next_skip_soft_space()
+                } else {
+                    tokens.next_skip_space()
+                })?,
+            ) {
+                // matrix `#< $rank >[ $($( $data_expr ),* );* $(;)? ]`
+                (true, SLToken::BracketOpen(BracketType::Square)) => {
+                    let mat = {
+                        let data = tokens.next_parse(|tokens| {
+                            parse_list(
+                                tokens,
+                                &|mut tokens| { // capture one row ... , ... , ... ]
+                                    let res = tokens.next_parse(|tokens| {
+                                        parse_list(
+                                            tokens,
+                                            &parse_expr,
+                                            |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
+                                            |token| matches!(token, SLToken::Separator(SeparatorType::Semicolon) | SLToken::BracketClose(BracketType::Square)),
+                                        )
+                                    })?;
+                                    tokens.step_back(); // step back so the outer `parse_list` can read the separator that ended the row.
+                                    Some((tokens, res))
+                                },
+                                |token| matches!(token, SLToken::Separator(SeparatorType::Semicolon)),
+                                |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
+                            )
+                        })?;
+
+                        if data.len() == 0 {
+                            Tensor::new_matrix::<0,0>([])
+                        } else {
+                            let width = data[0].len();
+                            let height = data.len();
+                            if !data.iter().all(|row| row.len() == width) {
+                                failed!();
+                            }
+                            Tensor::new_matrix_iter(&mut data.into_iter().flat_map(|row|row.into_iter()), width, height)
+                        }
+                    };
+                    SLIRExpression::Array(SLIRArray::Matrix(mat))
                 }
-                _ => None,
-            },
-            _ => None,
+                // tensor `#< $rank >[ $... ]` something-something it's recursive.
+                (
+                    true,
+                    SLToken::BracketOpen(BracketType::Angle)
+                    | SLToken::AmbiguityAngleBracket(AngleBracketShape::OpenOrLessThan),
+                ) => {
+                    let rank = if let Some(SLToken::Int { value, imaginary }) = tokens.next_skip_space() {
+                        if *imaginary || *value < 0 || *value > std::usize::MAX as i128 {
+                            failed!()
+                        }
+                        *value as usize
+                    } else {
+                        failed!()
+                    };
+                    if !matches!(tokens.next_skip_space(),
+                        Some(SLToken::BracketOpen(BracketType::Angle)
+                            | SLToken::AmbiguityAngleBracket(AngleBracketShape::OpenOrLessThan))
+                    ) {
+                        failed!()
+                    }
+                    let (contents, dim) = tokens.next_parse(|tokens| parse_expr_tensor_entries(tokens, rank))?;
+                    
+                    SLIRExpression::Array(SLIRArray::Tensor(Tensor::new_raw(contents, dim)))
+                }
+
+                // TODO array comprehension
+                // (also probably move it to it's own parser function)
+
+                // list/array `[ $( $data_expr ),* $(,)? ]`
+                (false, SLToken::BracketOpen(BracketType::Square)) => {
+                    SLIRExpression::Array(SLIRArray::List(tokens.next_parse(|tokens| {
+                        parse_list(
+                            tokens,
+                            &parse_expr,
+                            |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
+                            |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
+                        )
+                    })?))
+                }
+
+                // parentheses `( $data_expr )`
+                (false, SLToken::BracketOpen(BracketType::Paren)) => {
+                    let result = tokens.next_parse(parse_expr)?;
+                    if !matches!(
+                        tokens.next_skip_space(),
+                        Some(SLToken::BracketClose(BracketType::Paren))
+                    ) {
+                        // failed to match closing parentheses
+                        failed!()
+                    }
+                    result
+                }
+                _ => failed!(),
+            }
         }
-        .unwrap_or(super::tokenization::SeparatorType::Comma); // spaces become implicit commas
-
-        elts.push((next_elt, sep));
     }
-
-    if elts.len() == 0 {
-        return Some((
-            SLIRExpression::Array(SLIRArray::Matrix(Tensor::new_matrix::<0, 0>([]))),
-            tokens,
-        ));
-    }
-
-    let width = elts
-        .iter()
-        .enumerate()
-        .find(|(_, (_, styp))| {
-            if let SeparatorType::Semicolon = styp {
-                true
+    parse_rule! {
+        fn parse_expr_tensor_entries(tokens, (rank): usize) -> _matched: (Vec<SLIRExpression>, Vec<usize>), failed: None {
+            if rank == 0 {
+                (vec![tokens.next_parse(parse_expr)?], vec![])
             } else {
-                false
-            }
-        })
-        .map(|(i, _)| i + 1)
-        .unwrap_or(elts.len());
-    dbg!(width);
-    dbg!(elts.len());
-    if elts.len() % width != 0 {
-        return None; // Invalid array length, guaranteed illegal/ragged
-    }
-    let height = elts.len() / width;
-    for (i, (_, styp)) in elts[..elts.len() - 1].iter().enumerate() {
-        let is_row_break = match styp {
-            SeparatorType::Comma => false,
-            SeparatorType::Semicolon => true,
-            _ => panic!("only expecting comma and semicolon in matrix (this should have been marked as invalid already)"),
-        };
-        if is_row_break != ((i + width - 1) % width == 0) {
-            // Ragged (inconsistent width), not allowed.
-            return None;
-        }
-    }
-
-    let matrix =
-        Tensor::new_matrix_iter(&mut elts.into_iter().map(|(expr, _)| expr), width, height);
-
-    Some((SLIRExpression::Array(SLIRArray::Matrix(matrix)), tokens))
-}
-
-fn next_if_postfix_ops<'a, I: Iterator<Item = SLToken<'a>>>(
-    tokens: &mut Peekable<I>,
-) -> Vec<SLOperator> {
-    let mut ops = vec![];
-    loop {
-        skip_soft_whitespace(tokens);
-        if let Some(SLToken::Operator(op)) = tokens.peek().copied() {
-            if op.is_postfix() {
-                tokens.next();
-                ops.push(op);
-                continue;
+                if !matches!(
+                    tokens.next_skip_space(),
+                    Some(SLToken::BracketOpen(BracketType::Square))
+                ) {
+                    // expect "["
+                    failed!();
+                }
+                let parsed = tokens
+                    .next_parse(|tokens| {
+                        parse_list(
+                            tokens,
+                            &|tokens| parse_expr_tensor_entries(tokens, rank - 1),
+                            |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
+                            |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
+                        )
+                    })?;
+                if parsed.is_empty() {
+                    (vec![], vec![0; rank])
+                } else {
+                    let mut dim = parsed[0].1.clone();
+                    if !parsed.iter().all(|(_,dim_other)| &dim == dim_other) {
+                        // ragged tensors are not allowed.
+                        failed!();
+                    }
+                    dim.push(parsed.len());
+                    (parsed.into_iter().flat_map(|(data,_)| data).collect(), dim)
+                }
             }
         }
-        break;
     }
-    ops
-}
-
-/// Skips whitespace, returning true if there was a "hard" space (aka. a line break)
-/// and false if no skip or "soft" whitespace.
-fn skip_whitespace<'a, I: Iterator<Item = SLToken<'a>>>(tokens: &mut Peekable<I>) -> bool {
-    if let Some(SLToken::Space { hard }) = tokens.peek().copied() {
-        tokens.next();
-        return hard;
-    }
-    return false;
-}
-
-/// Skips soft whitespace (eg. spaces/tabs but not line breaks).
-fn skip_soft_whitespace<'a, I: Iterator<Item = SLToken<'a>>>(tokens: &mut Peekable<I>) {
-    if let Some(SLToken::Space { hard }) = tokens.peek().copied() {
-        if !hard {
-            tokens.next();
+    parse_rule! {
+        /// Parse literal values in expressions, such as `133.45` and `"hello world"`
+        fn parse_expr_literal(tokens) -> _matched: SLIRLiteral, failed: None {
+            match tokens.next_skip_space()? {
+                SLToken::Float { value, imaginary: false } => SLIRLiteral::Float { re: *value, im: 0.0 },
+                SLToken::Float { value, imaginary: true } => SLIRLiteral::Float { re: 0.0, im: *value },
+                SLToken::Int { value, imaginary: false } => SLIRLiteral::Int { re: *value, im: 0 },
+                SLToken::Int { value, imaginary: true } => SLIRLiteral::Int { re: 0, im: *value },
+                // TODO strings
+                _ => failed!(),
+            }
         }
+    }
+    parse_rule! {
+        /// Parse identifiers in expressions.
+        ///
+        /// Identifiers are named variables and funcitons.
+        fn parse_expr_identifier(tokens) -> _matched: SLIRIdent, failed: None {
+            match tokens.next_skip_space()? {
+                SLToken::Identifier(str) => {
+                    str.to_string().into_boxed_str()
+                }
+                _ => failed!(),
+            }
+        }
+    }
+}
+
+pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<Vec<SLIRStatement>, ()> {
+    let mut tokens = Tokens::new(&tokens);
+
+    let expr = tokens.next_parse(expr::parse_expr).ok_or(())?;
+    Ok(vec![SLIRStatement::Expr(Box::new(expr))])
+}
+
+#[cfg(test)]
+mod d {
+    use crate::language::{parser::Tokens, tokenization::SLToken};
+
+    #[test]
+    fn parser_tokens_advancing_and_peeking() {
+        let a = SLToken::Unknown("a");
+        let b = SLToken::Unknown("b");
+        let c = SLToken::Unknown("c");
+        let space_soft = SLToken::Space { hard: false };
+        let space_hard = SLToken::Space { hard: true };
+        let vv = [a, space_soft, b, space_hard, c];
+        let v = Tokens::new(&vv);
+
+        let mut v0 = v;
+        assert_eq!(v0.peek(), Some(&a));
+        assert_eq!(v0.next(), Some(&a));
+        assert_eq!(v0.next(), Some(&space_soft));
+        assert_eq!(v0.next(), Some(&b));
+        assert_eq!(v0.peek(), Some(&space_hard));
+
+        let mut v1 = v;
+
+        assert_eq!(v1.peek_skip_space(), Some(&a));
+        assert_eq!(v1.next_skip_space(), Some(&a));
+        //
+        assert_eq!(v1.peek(), Some(&space_soft));
+        assert_eq!(v1.peek_skip_space(), Some(&b));
+        assert_eq!(v1.next_skip_space(), Some(&b));
+        //
+        assert_eq!(v1.peek(), Some(&space_hard));
+        assert_eq!(v1.peek_skip_space(), Some(&c));
+        assert_eq!(v1.next_skip_space(), Some(&c));
+        //
+        assert_eq!(v1.peek(), None);
+        assert_eq!(v1.peek_skip_space(), None);
+
+        let mut v2 = v;
+        assert_eq!(v2.next_skip_soft_space(), Some(&a));
+        assert_eq!(v2.peek_is_hard_space(), false);
+        assert_eq!(v2.next_skip_soft_space(), Some(&b));
+        assert_eq!(v2.peek_is_hard_space(), true);
+        assert_eq!(v2.next_skip_soft_space(), Some(&space_hard));
+        assert_eq!(v2.next_skip_soft_space(), Some(&c));
     }
 }

@@ -6,16 +6,60 @@ pub type SLIRIdent = Box<str>;
 
 #[derive(Debug, Clone)]
 pub enum SLIRVarAccessExpression {
-    Ident(SLIRIdent),
+    Read(SLIRIdent),
+    Index {
+        expr: Box<SLIRVarAccessExpression>,
+        indices: Vec<SLIRExpression>,
+    },
+    PropertyAccess {
+        expr: Box<SLIRVarAccessExpression>,
+        property_ident: SLIRIdent,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum SLIRExpression {
-    VarRead(SLIRVarAccessExpression),
+    Read(SLIRIdent),
+    Call {
+        callable: Box<SLIRExpression>,
+        arguments: Vec<SLIRExpression>,
+    },
+    Index {
+        expr: Box<SLIRExpression>,
+        indices: Vec<SLIRExpression>,
+    },
+    PropertyAccess {
+        expr: Box<SLIRExpression>,
+        property_ident: SLIRIdent,
+    },
+
+    Literal(SLIRLiteral),
+    Range {
+        start: Option<Box<SLIRExpression>>,
+        step: Option<Box<SLIRExpression>>,
+        end: Option<Box<SLIRExpression>>,
+    },
+    Array(SLIRArray),
+    AnonymousFunction {
+        params: Vec<SLIRIdent>,
+        block: SLIRBlock,
+    },
+
     BinaryOp(SLOperator, Box<SLIRExpression>, Box<SLIRExpression>),
     UnaryOp(SLOperator, Box<SLIRExpression>),
-    Literal(SLIRLiteral),
-    Array(SLIRArray),
+
+    Conditional {
+        condition: Box<SLIRExpression>,
+        block: SLIRBlock,
+        elifs: Vec<(SLIRExpression, SLIRBlock)>,
+        else_block: Option<SLIRBlock>,
+    },
+    Loop(SLIRBlock),
+    For {
+        loop_var: SLIRIdent,
+        iterator: Box<SLIRExpression>,
+        block: SLIRBlock,
+    },
 }
 
 impl Default for SLIRExpression {
@@ -25,9 +69,19 @@ impl Default for SLIRExpression {
 }
 
 #[derive(Debug, Clone)]
+pub struct SLIRBlock(pub Vec<SLIRStatement>);
+
+#[derive(Debug, Clone)]
 pub enum SLIRStatement {
+    FunctionDefinition {
+        ident: SLIRIdent,
+        params: Vec<SLIRExpression>,
+        block: SLIRBlock,
+    },
+
     VarDeclare(SLIRIdent),
     VarAssign(SLIRVarAccessExpression, Box<SLIRExpression>),
+
     Expr(Box<SLIRExpression>),
 }
 
@@ -35,6 +89,7 @@ pub enum SLIRStatement {
 pub enum SLIRLiteral {
     Int { re: i128, im: i128 },
     Float { re: f64, im: f64 },
+    String(String),
 }
 
 #[derive(Debug, Clone)]

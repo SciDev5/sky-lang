@@ -15,6 +15,39 @@ pub enum SLToken<'a> {
     AmbiguityAngleBracket(AngleBracketShape),
     SyntacticSugar(SyntacticSugarType),
     Unknown(&'a str),
+    Comment { content: &'a str, documenting: bool },
+}
+
+pub enum SLTokenBreakType {
+    None,
+    Break { hard: bool },
+}
+impl SLTokenBreakType {
+    pub fn is_hard(self) -> bool {
+        matches!(self, SLTokenBreakType::Break { hard: true })
+    }
+    pub fn is_soft(self) -> bool {
+        matches!(self, SLTokenBreakType::Break { hard: false })
+    }
+    pub fn is_some(self) -> bool {
+        matches!(self, SLTokenBreakType::Break { .. })
+    }
+}
+
+impl<'a> SLToken<'a> {
+    pub fn break_type(&self) -> SLTokenBreakType {
+        match self {
+            Self::Comment { .. } => SLTokenBreakType::Break { hard: false },
+            Self::Space { hard } => SLTokenBreakType::Break { hard: *hard },
+            _ => SLTokenBreakType::None,
+        }
+    }
+    pub fn is_whitespace(&self) -> bool {
+        matches!(self, SLToken::Space { .. })
+    }
+    pub fn is_break(&self) -> bool {
+        self.break_type().is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,8 +111,10 @@ pub enum BracketType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeparatorType {
     Comma,
+    Period,
     Semicolon,
     Colon,
+    ThinArrowRight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,12 +259,31 @@ macro_rules! subtokenize_bracket_sub_enum {
     };
 }
 
+subtokenize_fn! {
+    tokenize_comment;
+    SLToken;
+    r"\/\/[^\n]*|\/\*.*\*\/" => |str| {
+        if str.starts_with("///") {
+            SLToken::Comment { content: str.strip_prefix("///").unwrap().trim(), documenting: true }
+        } else if str.starts_with("//") {
+            SLToken::Comment { content: str.strip_prefix("//").unwrap().trim(), documenting: false }
+        } else if str.starts_with("/**") && str != "/**/" {
+            SLToken::Comment { content: str.strip_prefix("/**").unwrap().strip_suffix("*/").unwrap().trim(), documenting: true }
+        } else if str.starts_with("/*") {
+            SLToken::Comment { content: str.strip_prefix("/*").unwrap().strip_suffix("*/").unwrap().trim(), documenting: false }
+        } else {
+            panic!("tokenize_comment -> should be impossible unless the regex is wrong");
+        }
+    }
+}
 subtokenize_sub_enum! {
     tokenize_separators;
     SLToken : |sep| SLToken::Separator(sep);
     "," => SeparatorType::Comma,
+    "." => SeparatorType::Period,
     ";" => SeparatorType::Semicolon,
     ":" => SeparatorType::Colon,
+    "->" => SeparatorType::ThinArrowRight,
 }
 subtokenize_sub_enum! {
     tokenize_ambiguity_angle_bracket;
@@ -245,7 +299,7 @@ subtokenize_sub_enum! {
 subtokenize_fn! {
     tokenize_whitespace;
     SLToken;
-    r#"\s+"# => |str| SLToken::Space { hard: str.contains("\n") }
+    r"\s+" => |str| SLToken::Space { hard: str.contains("\n") }
 }
 subtokenize_bracket_sub_enum! {
     tokenize_brackets;
@@ -261,7 +315,7 @@ subtokenize_fn! {
     tokenize_number;
     SLToken;
     // forgive the nightmare regex, it matches ints and floats with an optional "i" at the end.
-    r#"(\b|^)?\d*(\d|\.\d+([eE][+-]\d+)?)( ?i)?(\b|$)"# => |str| {
+    r"(\b|^)?\d*(\d|\.\d+([eE][+-]\d+)?)( ?i)?(\b|$)" => |str| {
         let str_trimmed = str.trim_end_matches('i').trim_start_matches(&['-','+']).trim();
 
         let imaginary = str.ends_with("i");
@@ -344,7 +398,7 @@ subtokenize_sub_enum! {
 subtokenize_fn! {
     tokenize_identifiers;
     SLToken;
-    r#"(^|\b)[a-zA-Z_][a-zA-Z_0-9]*(\b|$)"# => |str| {
+    r"(^|\b)[a-zA-Z_][a-zA-Z_0-9]*(\b|$)" => |str| {
         SLToken::Identifier(str)
     }
 }
@@ -352,12 +406,15 @@ impl_tokenizer! {
     pub SLTokenizer.tokenize<'a>(program: &str) -> Vec<SLToken<'a>>;
     unknown_token (txt) => SLToken::Unknown(txt);
     [
+        // comments
+        // tokenize_comment,
+
         // key symbols
         tokenize_ambiguity_angle_bracket,
         tokenize_brackets,
+        tokenize_separators,
         tokenize_ops,
         tokenize_syntactic_sugar,
-        tokenize_separators,
         tokenize_keyword,
 
         // many-valued symbols

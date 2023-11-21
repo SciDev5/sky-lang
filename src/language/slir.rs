@@ -57,7 +57,7 @@ pub enum SLIRExpression {
     Loop(SLIRBlock),
     For {
         loop_var: SLIRIdent,
-        iterator: Box<SLIRExpression>,
+        iterable: Box<SLIRExpression>,
         block: SLIRBlock,
     },
 }
@@ -74,12 +74,18 @@ pub struct SLIRBlock(pub Vec<SLIRStatement>);
 #[derive(Debug, Clone)]
 pub enum SLIRStatement {
     FunctionDefinition {
+        doc_comment: Option<String>,
         ident: SLIRIdent,
-        params: Vec<SLIRExpression>,
+        params: Vec<SLIRIdent>,
         block: SLIRBlock,
     },
 
-    VarDeclare(SLIRIdent),
+    VarDeclare {
+        doc_comment: Option<String>,
+        ident: SLIRIdent,
+        is_const: bool,
+        initial_assignment: Option<Box<SLIRExpression>>,
+    },
     VarAssign(SLIRVarAccessExpression, Box<SLIRExpression>),
 
     Expr(Box<SLIRExpression>),

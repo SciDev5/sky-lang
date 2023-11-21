@@ -1,5 +1,7 @@
+use crate::language::tokenization::BracketType;
+
 use super::{
-    slir::SLIRBlock,
+    slir::{SLIRBlock, SLIRIdent},
     tokenization::SLToken,
 };
 
@@ -16,11 +18,6 @@ impl<'a, 'b> Tokens<'a, 'b> {
     fn peek(&self) -> Option<&'a SLToken<'b>> {
         self.tokens.get(self.index)
     }
-    fn peek_skip_whitespace(&self) -> Option<&'a SLToken<'b>> {
-        self.peek_slice()
-            .iter()
-            .find(|token| !token.is_whitespace())
-    }
     fn peek_skip_break(&self) -> Option<&'a SLToken<'b>> {
         self.peek_slice().iter().find(|token| !token.is_break())
     }
@@ -32,8 +29,7 @@ impl<'a, 'b> Tokens<'a, 'b> {
         }
     }
     fn peek_is_hard_break(&self) -> bool {
-        self.peek()
-            .map_or(false, |it| it.break_type().is_hard())
+        self.peek().map_or(false, |it| it.break_type().is_hard())
     }
     fn next(&mut self) -> Option<&'a SLToken<'b>> {
         let output = self.tokens.get(self.index);
@@ -44,6 +40,14 @@ impl<'a, 'b> Tokens<'a, 'b> {
         loop {
             match self.next()? {
                 token if token.is_break() => continue,
+                token => break Some(token),
+            }
+        }
+    }
+    fn next_skip_whitespace(&mut self) -> Option<&'a SLToken<'b>> {
+        loop {
+            match self.next()? {
+                token if token.is_whitespace() => continue,
                 token => break Some(token),
             }
         }
@@ -81,21 +85,24 @@ impl<'a, 'b> Tokens<'a, 'b> {
         *self = tokens_out;
         Some(data_out)
     }
-    fn next_match_skip_break<F: Fn(&'a SLToken<'b>) -> bool>(&mut self, f: F) -> Option<&'a SLToken<'b>> {
-        let token = self.next_skip_break()?;
-        if f(token) {
-            Some(token)
+}
+
+/// `tokens, <pattern>`
+macro_rules! try_match {
+    ($inp: expr, $pattern:pat $(if $guard:expr)? $(,)?) => {
+        if let Some(token) = $inp {
+            match &token {
+                $pattern $(if $guard)? => Some(token),
+                _ => None,
+            }
         } else {
             None
         }
-    }
-}
-
-macro_rules! next_match_skip_break {
-    ($tokens: ident, $pattern:pat $(if $guard:expr)? $(,)?) => {
-        if let Some(token) = $tokens.next_skip_break() {
+    };
+    ($inp: expr, $pattern:pat $(if $guard:expr)? => $out: expr $(,)?) => {
+        if let Some(token) = $inp {
             match &token {
-                $pattern $(if $guard)? => Some(token),
+                $pattern $(if $guard)? => Some($out),
                 _ => None,
             }
         } else {
@@ -147,6 +154,9 @@ macro_rules! parse_rule {
     }
 }
 
+/**
+ * `tokens; parser_fn => |it| map(it), ...`
+ */
 macro_rules! parse_match_first {
     ($tokens: ident; $($parser: ident => |$param: ident| $success_transform: expr ),+ $(,)?) => {
         $(
@@ -160,14 +170,14 @@ macro_rules! parse_match_first {
 }
 
 mod expr {
-    use super::Tokens;
+    use super::{parse_list, Tokens};
     use crate::{
         language::{
             ops::SLOperator,
-            parser::parse_block,
+            parser::{parse_block, parse_curly_block, parse_type_labelled_ident},
             slir::{SLIRArray, SLIRExpression, SLIRIdent, SLIRLiteral},
             tokenization::{
-                AngleBracketShape, BracketType, SLToken, SeparatorType, SyntacticSugarType,
+                AngleBracketShape, BracketType, Keyword, SLToken, SeparatorType, SyntacticSugarType,
             },
         },
         math::{
@@ -203,6 +213,7 @@ mod expr {
         | <identifier>
         | <expr_grouping>
         | <expr_anonfunc>
+        | <expr_sub_blocking>
         | <expr_extras>
     ) <postfix>*
 
@@ -308,6 +319,7 @@ mod expr {
         ///     | <literal>
         ///     | <identifier>
         ///     | <expr_grouping>
+        ///     | <expr_sub_blocking>
         ///     | <expr_extras>
         /// ) <postfix>*
         /// ```
@@ -323,6 +335,7 @@ mod expr {
                 parse_expr_literal => |literal| SLIRExpression::Literal(literal),
                 parse_expr_identifier => |ident| SLIRExpression::Read(ident),
                 parse_expr_anonfunc => |it| it,
+                parse_expr_sub_blocking => |it| it,
                 parse_expr_grouping => |it| it,
             )?;
             // postfixes
@@ -406,15 +419,17 @@ mod expr {
                     matched!(result);
                 }
                 SLToken::BracketOpen(BracketType::Paren) => {
-                    let arguments = tokens.next_parse(|tokens| parse_list(tokens,
+                    let mut arguments = tokens.next_parse(|tokens| parse_list(tokens,
                         &parse_expr,
                         |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
                         |token| matches!(token, SLToken::BracketClose(BracketType::Paren)),
                     ))?;
+                    if let Some(final_param_anonfunc) = tokens.next_parse(parse_expr_anonfunc) {
+                        arguments.push(final_param_anonfunc)
+                    }
                     let result = ExprAffix::FunctionCall(arguments);
                     matched!(result);
                 }
-                // TODO function calls with callback blocks like the_func { it -> it[1] }
                 _ => failed!(),
             }
         }
@@ -448,61 +463,6 @@ mod expr {
                 _failed!();
             }
         }
-    }
-    ///
-    /// Parses a list structure from tokens, by matching against a data, separator, and end pattern.
-    ///
-    /// NOTICE: this does not capture the INITIAL token, only separator and ending tokens.
-    ///
-    /// Ex:
-    ///
-    /// ```plaintext
-    /// let tokens = parse("1,3,4,5]6,7,8")
-    /// parse_list(tokens, &parse_number, |it| matches!(it,COMMA), |it| matches!(it, CLOSE_BRACKET))
-    /// ```
-    /// returns `vec![1,2,3,4,5]`, tokens = `6,7,8`
-    ///
-    fn parse_list<
-        'a,
-        'b,
-        T,
-        Match: Fn(Tokens<'a, 'b>) -> Option<(Tokens<'a, 'b>, T)>,
-        MatchSep: Fn(&SLToken<'b>) -> bool,
-        MatchEnd: Fn(&SLToken<'b>) -> bool,
-    >(
-        mut tokens: Tokens<'a, 'b>,
-        fn_match: &Match,
-        fn_match_sep: MatchSep,
-        fn_match_end: MatchEnd,
-    ) -> Option<(Tokens<'a, 'b>, Vec<T>)> {
-        if fn_match_end(tokens.peek_skip_break()?) {
-            tokens.next_skip_break();
-            return Some((tokens, vec![]));
-        }
-
-        let mut contents = vec![];
-        loop {
-            if tokens
-                .peek_skip_break()
-                .map(|v| fn_match_end(v))
-                .unwrap_or(false)
-                && tokens.peek_is_hard_break()
-            {
-                // allow trailing separators if there's a hard break before the end token.
-                break;
-            }
-            contents.push(tokens.next_parse(fn_match)?);
-            let next = tokens.next_skip_break()?;
-            if fn_match_end(next) {
-                break;
-            } else if fn_match_sep(next) {
-                continue;
-            } else {
-                return None;
-            }
-        }
-
-        Some((tokens, contents))
     }
     parse_rule! {
         fn parse_expr_grouping(tokens) -> _matched: SLIRExpression, failed: None {
@@ -648,17 +608,15 @@ mod expr {
         /// ```plaintext
         /// <expr_anonfunc> = "{" ( (<identifier> (":" <type>)? )","+ (",")? "->")? <expr> "}"
         /// ```
-        fn parse_expr_anonfunc(tokens) -> _matched: SLIRExpression, failed: None {
-            if !tokens.next_skip_break_if(|it| matches!(it, Some(SLToken::BracketOpen(BracketType::Curly)))) {
-                // anonymous functions must start with `{`
-                failed!();
-            }
+        fn parse_expr_anonfunc(tokens) -> _matched: SLIRExpression, _failed: None {
+            // "{"
+            try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
+
             let params = tokens.next_parse(parse_expr_anonfunc_parameters).unwrap_or(vec![]);
             let block = tokens.next_parse(parse_block)?;
-            if !tokens.next_skip_break_if(|it| matches!(it, Some(SLToken::BracketClose(BracketType::Curly)))) {
-                // anonymous functions must start with `{`
-                failed!();
-            }
+
+            // "}"
+            try_match!(tokens.next_skip_break(), SLToken::BracketClose(BracketType::Curly))?;
 
             SLIRExpression::AnonymousFunction { params, block }
         }
@@ -668,18 +626,15 @@ mod expr {
             tokens.next_parse(|tokens| {
                 parse_list(
                     tokens,
-                    &parse_expr_anonfunc_parameter_entry,
+                    &|mut tokens| {
+                        // TODO merge function parameter matchers
+                        let (param_ident,) = tokens.next_parse(parse_type_labelled_ident)?;
+                        Some((tokens, param_ident))
+                    },
                     |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
                     |token| matches!(token, SLToken::Separator(SeparatorType::ThinArrowRight)),
                 )
             })?
-        }
-    }
-    parse_rule! {
-        fn parse_expr_anonfunc_parameter_entry(tokens) -> _matched: SLIRIdent, _failed: None {
-            let ident = tokens.next_parse(parse_expr_identifier)?;
-            // TODO anonymous function parameter types
-            ident
         }
     }
     parse_rule! {
@@ -708,29 +663,375 @@ mod expr {
             }
         }
     }
+
+    /*
+
+
+
+    <expr_sub_blocking> = (
+        | "if" <expr> <curly_block> ("elif" <expr> <curly_block>)* ("else" <curly_block>)?
+        | "loop" <curly_block>
+        | "for" <ident> in <expr> <curly_block>
+        | "" <ident> in <expr> <curly_block>
+    )
+
+    <curly_block> = "{" <block> "}"
+
+    */
+
+    parse_rule! {
+        fn parse_expr_sub_blocking(tokens) -> _matched: SLIRExpression, failed: None {
+            let keyword = match tokens.next_skip_break()? {
+                SLToken::Keyword(k) => Some(*k),
+                _ => None,
+            }?;
+
+            match keyword {
+                Keyword::ConditionalIf => tokens.next_parse(parse_if)?,
+                Keyword::LoopFor => tokens.next_parse(parse_for)?,
+                Keyword::LoopForever => tokens.next_parse(parse_loop)?,
+                _ => failed!(),
+            }
+        }
+    }
+    parse_rule! {
+        /// ... after the `if`
+        fn parse_if(tokens) -> _matched: SLIRExpression, _failed: None {
+            let condition = Box::new(tokens.next_parse(parse_expr)?);
+            let block = tokens.next_parse(parse_curly_block)?;
+            let mut elifs = vec![];
+            while try_match!(tokens.peek_skip_break(), SLToken::Keyword(Keyword::ConditionalElseIf)).is_some() {
+                tokens.next_skip_break(); // actualize the peek.
+                let elif_condition = tokens.next_parse(parse_expr)?;
+                let elif_block = tokens.next_parse(parse_curly_block)?;
+                elifs.push((elif_condition, elif_block));
+            }
+            let else_block = if try_match!(tokens.peek_skip_break(), SLToken::Keyword(Keyword::ConditionalElse)).is_some() {
+                tokens.next_skip_break(); // actualize the peek.
+                Some(tokens.next_parse(parse_curly_block)?)
+            } else {
+                None
+            };
+            SLIRExpression::Conditional { condition, block, elifs, else_block }
+        }
+    }
+    parse_rule! {
+        /// ... after the `loop`
+        fn parse_loop(tokens) -> _matched: SLIRExpression, _failed: None {
+            // `$block` code to loop
+            let block = tokens.next_parse(parse_curly_block)?;
+
+            SLIRExpression::Loop(block)
+        }
+    }
+    parse_rule! {
+        /// ... after the `for`
+        fn parse_for(tokens) -> _matched: SLIRExpression, _failed: None {
+            // declaration for loop variable
+            let (loop_var,) = tokens.next_parse(parse_type_labelled_ident)?;
+
+            // `in` keyword
+            try_match!(tokens.next_skip_break(), SLToken::Keyword(Keyword::In))?;
+
+            // `$expr` data to source loop data from
+            let iterable = Box::new(tokens.next_parse(parse_expr)?);
+
+            // `$block` code to loop
+            let block = tokens.next_parse(parse_curly_block)?;
+
+            SLIRExpression::For { loop_var, iterable, block }
+        }
+    }
+}
+
+mod varaccessexpr {
+    use crate::language::{
+        parser::{expr::parse_expr, parse_list, Tokens},
+        slir::{SLIRExpression, SLIRIdent, SLIRVarAccessExpression},
+        tokenization::{BracketType, SLToken, SeparatorType},
+    };
+
+    parse_rule! {
+        pub fn parse_varaccessexpr(tokens) -> _matched: SLIRVarAccessExpression, _failed: None {
+            let ident: SLIRIdent = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
+
+            let mut access_expr = SLIRVarAccessExpression::Read(ident);
+            while let Some(postfix) = tokens.next_parse(parse_varaccessexpr_postfix) {
+                access_expr = postfix.apply(access_expr);
+            }
+
+            access_expr
+        }
+    }
+
+    enum VarAccessExprPostfix {
+        Indexing(Vec<SLIRExpression>),
+    }
+    impl VarAccessExprPostfix {
+        fn apply(self, child: SLIRVarAccessExpression) -> SLIRVarAccessExpression {
+            match self {
+                Self::Indexing(indices) => SLIRVarAccessExpression::Index {
+                    expr: Box::new(child),
+                    indices,
+                },
+            }
+        }
+    }
+
+    parse_rule! {
+        fn parse_varaccessexpr_postfix(tokens) -> matched: VarAccessExprPostfix, failed: None {
+            // only skipping soft breaks, postfixes dangling after newlines are hard
+            // to spot or often not actually meant to be postfixes.
+            match tokens.next_skip_soft_break()? {
+                SLToken::BracketOpen(BracketType::Square) => {
+                    let indices = tokens.next_parse(|tokens| parse_list(tokens,
+                        &parse_expr,
+                        |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
+                        |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
+                    ))?;
+                    let result = VarAccessExprPostfix::Indexing(indices);
+                    matched!(result);
+                }
+                _ => failed!(),
+            }
+        }
+    }
 }
 
 mod statement {
+    use super::parse_list;
     use crate::language::{
-        parser::{expr, Tokens},
-        slir::{SLIRStatement, SLIRBlock}, tokenization::{SLToken, BracketType},
+        ops::SLOperator,
+        parser::{
+            expr::parse_expr, parse_curly_block, parse_type_labelled_ident,
+            varaccessexpr::parse_varaccessexpr, Tokens,
+        },
+        slir::{SLIRExpression, SLIRIdent, SLIRStatement},
+        tokenization::{BracketType, Keyword, SLToken, SeparatorType},
     };
 
     parse_rule! {
         pub fn parse_statement(tokens) -> _matched: SLIRStatement, _failed: None {
-            SLIRStatement::Expr(Box::new(tokens.next_parse(expr::parse_expr)?))
+            parse_match_first!(tokens;
+                parse_func_def => |it| it,
+                parse_var_def => |it| it,
+                parse_var_assign => |it| it,
+                parse_expr => |it| SLIRStatement::Expr(Box::new(it)),
+            )?
         }
     }
 
     parse_rule! {
-        /// Parse a block bounded by curly braces
-        fn parse_curly_block(tokens) -> _matched: SLIRBlock, _failed: None {
-            next_match_skip_break!(tokens, SLToken::BracketOpen(BracketType::Curly))?;
-            let block = tokens.next_parse(super::parse_block)?;
-            next_match_skip_break!(tokens, SLToken::BracketClose(BracketType::Curly))?;
-            block
+        fn parse_ident(tokens) -> _matched: SLIRIdent, _failed: None {
+            try_match!(tokens.next_skip_break(),
+                SLToken::Identifier(key) => *key
+            )?.to_string().into_boxed_str()
         }
     }
+
+    parse_rule! {
+        fn parse_func_def(tokens) -> _matched: SLIRStatement, _failed: None {
+            let doc_comment = tokens.next_parse(parse_doc_comment);
+
+            // function keyword `fn`
+            try_match!(tokens.next_skip_break(), SLToken::Keyword(Keyword::FunctionDefinition))?;
+
+            // name `$ident`
+            let ident: SLIRIdent = tokens.next_parse(parse_ident)?;
+
+            // parameters `( $( $expr ),* )`
+            try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Paren))?;
+            let params = tokens.next_parse(|tokens| {
+                parse_list(
+                    tokens,
+                    &|mut tokens| {
+                        let (param_ident,) = tokens.next_parse(parse_type_labelled_ident)?;
+                        Some((tokens, param_ident))
+                    },
+                    |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
+                    |token| matches!(token, SLToken::BracketClose(BracketType::Paren)),
+                )
+            })?;
+            // TODO function return type
+
+            // content block `{ $block }`
+            let block = tokens.next_parse(parse_curly_block)?;
+
+            SLIRStatement::FunctionDefinition { doc_comment, ident, params, block }
+        }
+    }
+
+    parse_rule! {
+        /// Match for the right hand side of an assignment
+        ///
+        /// `= $expr`
+        fn parse_var_assignment_rhs(tokens) -> _matched: SLIRExpression, _failed: None {
+            // `=`
+            try_match!(tokens.next_skip_break(), SLToken::Operator(SLOperator::Assign))?;
+
+            // assigned value `$expr`
+            tokens.next_parse(parse_expr)?
+        }
+    }
+
+    parse_rule! {
+        fn parse_var_def(tokens) -> _matched: SLIRStatement, failed: None {
+            let doc_comment = tokens.next_parse(parse_doc_comment);
+
+            // `let` / `const` keyword
+            let is_const = match tokens.next_skip_break()? {
+                SLToken::Keyword(Keyword::VarDeclare) => false,
+                SLToken::Keyword(Keyword::VarConstDeclare) => true,
+                _ => failed!(),
+            };
+
+            // name `$ident` and type
+            let (ident,) = tokens.next_parse(parse_type_labelled_ident)?;
+
+            // optional initial assignment
+            let initial_assignment = tokens.next_parse(parse_var_assignment_rhs).map(Box::new);
+
+            SLIRStatement::VarDeclare {
+                doc_comment,
+                ident,
+                is_const,
+                initial_assignment,
+            }
+        }
+    }
+
+    parse_rule! {
+        fn parse_var_assign(tokens) -> _matched: SLIRStatement, _failed: None {
+            // variable access expr (ex. `var.abc[34]`)
+            let access_expr = tokens.next_parse(parse_varaccessexpr)?;
+            // optional initial assignment
+            let assignment = Box::new(tokens.next_parse(parse_var_assignment_rhs)?);
+
+            SLIRStatement::VarAssign(access_expr, assignment)
+        }
+    }
+
+    parse_rule! {
+        fn parse_doc_comment(tokens) -> _matches: String, failed: None {
+            let mut x = vec![];
+            while let Some((content, is_documenting)) = tokens.next_parse(|mut tokens| {
+                let content = try_match!(tokens.next_skip_whitespace(),
+                    SLToken::Comment { content, documenting } => (*content, *documenting),
+                )?;
+                Some((tokens, content))
+            }) {
+                if !is_documenting {
+                    continue;
+                }
+                if content.starts_with(&"///") {
+                    // single line doc comment
+                    x.push(content.strip_prefix("///").unwrap().trim());
+                } else {
+                    // multiline doc comment
+                    let mut sublist = content
+                        .strip_prefix("/**").unwrap()
+                        .strip_suffix("/").unwrap() // intentionally omitting asterisk here so it has a chance to be picked up by `strip_asterisk`
+                        .split("\n");
+                    let strip_asterisk = sublist.clone().skip(1).all(|it| it.trim_start().starts_with("*"));
+
+                    if let Some(first_elt) = sublist.next() {
+                        x.push(first_elt.trim());
+                    }
+                    for elt in sublist {
+                        x.push(if strip_asterisk {
+                            elt.trim_start().strip_prefix("*").unwrap().trim()
+                        } else {
+                            elt.trim()
+                        });
+                    }
+                }
+            }
+            if x.is_empty() {
+                failed!()
+            } else {
+                x.join("\n").trim().to_string()
+            }
+        }
+    }
+}
+
+parse_rule! {
+    fn parse_type_labelled_ident(tokens) -> _matched: (SLIRIdent,), _failed: None {
+        // TODO generalized declaration identifier parser (with destructuring, etc.)
+
+        // variable identifier
+        let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
+
+        // TODO type annotations
+
+        (ident,)
+    }
+}
+
+parse_rule! {
+    /// Parse a block bounded by curly braces
+    fn parse_curly_block(tokens) -> _matched: SLIRBlock, _failed: None {
+        try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
+        let block = tokens.next_parse(parse_block)?;
+        try_match!(tokens.next_skip_break(), SLToken::BracketClose(BracketType::Curly))?;
+        block
+    }
+}
+
+///
+/// Parses a list structure from tokens, by matching against a data, separator, and end pattern.
+///
+/// NOTICE: this does not capture the INITIAL token, only separator and ending tokens.
+///
+/// Ex:
+///
+/// ```plaintext
+/// let tokens = parse("1,3,4,5]6,7,8")
+/// parse_list(tokens, &parse_number, |it| matches!(it,COMMA), |it| matches!(it, CLOSE_BRACKET))
+/// ```
+/// returns `vec![1,2,3,4,5]`, tokens = `6,7,8`
+///
+fn parse_list<
+    'a,
+    'b,
+    T,
+    Match: Fn(Tokens<'a, 'b>) -> Option<(Tokens<'a, 'b>, T)>,
+    MatchSep: Fn(&SLToken<'b>) -> bool,
+    MatchEnd: Fn(&SLToken<'b>) -> bool,
+>(
+    mut tokens: Tokens<'a, 'b>,
+    fn_match: &Match,
+    fn_match_sep: MatchSep,
+    fn_match_end: MatchEnd,
+) -> Option<(Tokens<'a, 'b>, Vec<T>)> {
+    if fn_match_end(tokens.peek_skip_break()?) {
+        tokens.next_skip_break();
+        return Some((tokens, vec![]));
+    }
+
+    let mut contents = vec![];
+    loop {
+        if tokens
+            .peek_skip_break()
+            .map(|v| fn_match_end(v))
+            .unwrap_or(false)
+            && tokens.peek_is_hard_break()
+        {
+            // allow trailing separators if there's a hard break before the end token.
+            break;
+        }
+        contents.push(tokens.next_parse(fn_match)?);
+        let next = tokens.next_skip_break()?;
+        if fn_match_end(next) {
+            break;
+        } else if fn_match_sep(next) {
+            continue;
+        } else {
+            return None;
+        }
+    }
+
+    Some((tokens, contents))
 }
 
 parse_rule! {

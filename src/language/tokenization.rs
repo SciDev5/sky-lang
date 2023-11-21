@@ -79,10 +79,14 @@ impl AngleBracketShape {
 pub enum Keyword {
     /** `let` Declare variable */
     VarDeclare,
+    /** `const` Declare constant variable */
+    VarConstDeclare,
     /** `del` Delete/destroy variable */
     VarDestroy,
     /** `for` For loop keyword */
     LoopFor,
+    /** `in` In keyword */
+    In,
     /** `while` While loop keyword */
     LoopWhile,
     /** `loop` Forever loop keyword */
@@ -262,13 +266,13 @@ macro_rules! subtokenize_bracket_sub_enum {
 subtokenize_fn! {
     tokenize_comment;
     SLToken;
-    r"\/\/[^\n]*|\/\*.*\*\/" => |str| {
+    r"\/\/[^\n]*|\/\*(.|\s)*\*\/" => |str| {
         if str.starts_with("///") {
-            SLToken::Comment { content: str.strip_prefix("///").unwrap().trim(), documenting: true }
+            SLToken::Comment { content: str, documenting: true } // str will be cleaned in doc comment formatting
         } else if str.starts_with("//") {
             SLToken::Comment { content: str.strip_prefix("//").unwrap().trim(), documenting: false }
         } else if str.starts_with("/**") && str != "/**/" {
-            SLToken::Comment { content: str.strip_prefix("/**").unwrap().strip_suffix("*/").unwrap().trim(), documenting: true }
+            SLToken::Comment { content: str, documenting: true } // str will be cleaned in doc comment formatting
         } else if str.starts_with("/*") {
             SLToken::Comment { content: str.strip_prefix("/*").unwrap().strip_suffix("*/").unwrap().trim(), documenting: false }
         } else {
@@ -384,8 +388,10 @@ subtokenize_sub_enum! {
     tokenize_keyword;
     SLToken : |op| SLToken::Keyword(op);
     "let" => Keyword::VarDeclare,
+    "const" => Keyword::VarConstDeclare,
     "del" => Keyword::VarDestroy,
     "for" => Keyword::LoopFor,
+    "in" => Keyword::In,
     "while" => Keyword::LoopWhile,
     "loop" => Keyword::LoopForever,
     "break" => Keyword::LoopBreak,
@@ -407,7 +413,7 @@ impl_tokenizer! {
     unknown_token (txt) => SLToken::Unknown(txt);
     [
         // comments
-        // tokenize_comment,
+        tokenize_comment,
 
         // key symbols
         tokenize_ambiguity_angle_bracket,

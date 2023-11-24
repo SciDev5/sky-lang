@@ -60,6 +60,9 @@ pub enum SLIRExpression {
         iterable: Box<SLIRExpression>,
         block: SLIRBlock,
     },
+    Break(Option<Box<SLIRExpression>>),
+    Continue,
+    Return(Box<SLIRExpression>),
 }
 
 impl Default for SLIRExpression {
@@ -86,7 +89,7 @@ pub enum SLIRStatement {
         is_const: bool,
         initial_assignment: Option<Box<SLIRExpression>>,
     },
-    VarAssign(SLIRVarAccessExpression, Box<SLIRExpression>),
+    Assign(SLIRVarAccessExpression, Box<SLIRExpression>),
 
     Expr(Box<SLIRExpression>),
 }

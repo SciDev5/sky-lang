@@ -907,7 +907,7 @@ mod statement {
             // optional initial assignment
             let assignment = Box::new(tokens.next_parse(parse_var_assignment_rhs)?);
 
-            SLIRStatement::VarAssign(access_expr, assignment)
+            SLIRStatement::Assign(access_expr, assignment)
         }
     }
 

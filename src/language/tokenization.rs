@@ -5,6 +5,7 @@ pub enum SLToken<'a> {
     Space { hard: bool },
     Keyword(Keyword),
     Identifier(&'a str),
+    Bool(bool),
     Int { value: i128, imaginary: bool },
     Float { value: f64, imaginary: bool },
     NumLiteralInvalid(&'a str),
@@ -401,6 +402,12 @@ subtokenize_sub_enum! {
     "else" => Keyword::ConditionalElse,
     "fn" => Keyword::FunctionDefinition,
 }
+subtokenize_sub_enum! {
+    tokenize_boolean;
+    SLToken : |b| SLToken::Bool(b);
+    "true" => true,
+    "false" => false,
+}
 subtokenize_fn! {
     tokenize_identifiers;
     SLToken;
@@ -424,6 +431,7 @@ impl_tokenizer! {
         tokenize_keyword,
 
         // many-valued symbols
+        tokenize_boolean,
         tokenize_number,
         tokenize_identifiers,
 

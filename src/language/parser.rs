@@ -645,6 +645,7 @@ mod expr {
                 SLToken::Float { value, imaginary: true } => SLIRLiteral::Float { re: 0.0, im: *value },
                 SLToken::Int { value, imaginary: false } => SLIRLiteral::Int { re: *value, im: 0 },
                 SLToken::Int { value, imaginary: true } => SLIRLiteral::Int { re: 0, im: *value },
+                SLToken::Bool(value) => SLIRLiteral::Bool(*value),
                 // TODO strings
                 _ => failed!(),
             }
@@ -879,9 +880,9 @@ mod statement {
             let doc_comment = tokens.next_parse(parse_doc_comment);
 
             // `let` / `const` keyword
-            let is_const = match tokens.next_skip_break()? {
-                SLToken::Keyword(Keyword::VarDeclare) => false,
-                SLToken::Keyword(Keyword::VarConstDeclare) => true,
+            let writable = match tokens.next_skip_break()? {
+                SLToken::Keyword(Keyword::VarDeclare) => true,
+                SLToken::Keyword(Keyword::VarConstDeclare) => false,
                 _ => failed!(),
             };
 
@@ -894,7 +895,7 @@ mod statement {
             SLIRStatement::VarDeclare {
                 doc_comment,
                 ident,
-                is_const,
+                writable,
                 initial_assignment,
             }
         }

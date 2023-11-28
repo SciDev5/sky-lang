@@ -86,7 +86,7 @@ pub enum SLIRStatement {
     VarDeclare {
         doc_comment: Option<String>,
         ident: SLIRIdent,
-        is_const: bool,
+        writable: bool,
         initial_assignment: Option<Box<SLIRExpression>>,
     },
     Assign(SLIRVarAccessExpression, Box<SLIRExpression>),
@@ -98,6 +98,7 @@ pub enum SLIRStatement {
 pub enum SLIRLiteral {
     Int { re: i128, im: i128 },
     Float { re: f64, im: f64 },
+    Bool(bool),
     String(String),
 }
 

@@ -25,59 +25,199 @@
 
 */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::RandomState};
 
 use crate::language::{
     ops::SLOperator,
-    slir::{SLIRBlock, SLIRExpression, SLIRLiteral, SLIRStatement},
+    slir::{
+        SLIRArray, SLIRBlock, SLIRExpression, SLIRLiteral, SLIRStatement, SLIRVarAccessExpression,
+    },
 };
 
 type Identifier = Box<str>;
 
 #[derive(Debug, Clone, Copy)]
-enum Value<'gc_data> {
-    Int { real: i128, imag: i128 },
-    Float { real: f64, imag: i128 },
-    Ref(&'gc_data Object<'gc_data>),
+pub enum Value {
+    Int { re: i128, im: i128 },
+    Float { re: f64, im: f64 },
+    Bool(bool),
+    Ref(GCObjectId),
+}
+
+macro_rules! impl_unary_op {
+    ($name: ident; $($pat: pat => $expr: expr),* $(,)?) => {
+        fn $name (self) -> Result<Value, IrrecoverableError> {
+            match self {
+                $($pat => Ok($expr),)*
+                _ => Err(IrrecoverableError::IllegalOperator),
+            }
+        }
+    };
+    ($name: ident; TODO) => {
+        fn $name (self) -> Result<Value, IrrecoverableError> {
+            todo!()
+        }
+    };
+}
+macro_rules! impl_binary_op {
+    ($name: ident; $($pat: pat => $expr: expr),* $(,)?) => {
+        fn $name (self, rhs: Self) -> Result<Value, IrrecoverableError> {
+            match (self, rhs) {
+                $($pat => Ok($expr),)*
+                _ => Err(IrrecoverableError::IllegalOperator),
+            }
+        }
+    };
+    ($name: ident; TODO) => {
+        fn $name (self, rhs: Self) -> Result<Value, IrrecoverableError> {
+            todo!()
+        }
+    };
+}
+impl Value {
+    impl_unary_op!(not;
+        Self::Bool(it) => Self::Bool(!it)
+    );
+    impl_unary_op!(unary_plus;
+        Self::Int { re, im } => Self::Int { re, im },
+        Self::Float { re, im } => Self::Float { re, im },
+    );
+    impl_unary_op!(unary_minus;
+        Self::Int { re, im } => Self::Int { re: -re, im: -im },
+        Self::Float { re, im } => Self::Float { re: -re, im: -im },
+    );
+    impl_unary_op!(hermitian_conjugate; TODO);
+    impl_unary_op!(transpose; TODO);
+    impl_unary_op!(inverse; TODO);
+
+    fn apply_op_unary(self, op: SLOperator) -> Result<Value, IrrecoverableError> {
+        match op {
+            SLOperator::Not => self.not(),
+            SLOperator::Plus => self.unary_plus(),
+            SLOperator::Minus => self.unary_minus(),
+            SLOperator::HermitianConjugate => self.hermitian_conjugate(),
+            SLOperator::Transpose => self.transpose(),
+            SLOperator::Inverse => self.inverse(),
+            _ => Err(IrrecoverableError::IllegalOperator),
+        }
+    }
+
+    impl_binary_op!(plus;
+        (Self::Int { re: r0, im: i0 }, Self::Int { re: r1, im: i1 }) => Self::Int { re: r0+r1, im: i0+i1 },
+        (Self::Float { re: r0, im: i0 }, Self::Int { re: r1, im: i1 }) => Self::Float { re: r0+r1 as f64, im: i0+i1 as f64 },
+        (Self::Int { re: r0, im: i0 }, Self::Float { re: r1, im: i1 }) => Self::Float { re: r0 as f64+r1, im: i0 as f64+i1 },
+        (Self::Float { re: r0, im: i0 }, Self::Float { re: r1, im: i1 }) => Self::Float { re: r0+r1, im: i0+i1 },
+    );
+
+    fn apply_op_binary(self, rhs: Self, op: SLOperator) -> Result<Value, IrrecoverableError> {
+        match op {
+            SLOperator::Plus => self.plus(rhs),
+            _ => Err(IrrecoverableError::IllegalOperator),
+        }
+    }
 }
 
 #[derive(Debug)]
-struct Function<'gc_data> {
+struct Function {
     params: Vec<Identifier>,
-    closure: Scope<'gc_data>,
+    closure: Scope,
     code: Vec<Instruction>,
 }
 
 #[derive(Debug)]
-enum Object<'gc_data> {
-    Function(Box<Function<'gc_data>>),
-    List(Vec<Value<'gc_data>>),
+enum Object {
+    Function(Box<Function>),
+    List(Vec<Value>),
+    String(String),
+}
+impl Object {
+    fn index(&self, indices: &Vec<Value>) -> Option<Value> {
+        match self {
+            Object::Function(_) => None,
+            Object::List(values) => {
+                if indices.len() == 1 {
+                    todo!()
+                } else {
+                    None
+                }
+            }
+            Object::String(_) => todo!(),
+        }
+    }
+    fn index_mut(&mut self, indices: &Vec<Value>) -> Option<&mut Value> {
+        match self {
+            Object::Function(_) => None,
+            Object::List(values) => {
+                if indices.len() == 1 {
+                    todo!()
+                } else {
+                    None
+                }
+            }
+            Object::String(_) => todo!(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum DataRef {
+    Index(GCObjectId, Vec<Value>),
+    Identifier(Identifier),
+    None,
+}
+impl DataRef {
+    fn read(self, scope: &Scope, gc: &GarbageCollector) -> Option<Value> {
+        match self {
+            Self::None => None,
+            Self::Index(obj_id, indices) => gc.borrow(obj_id).index(&indices),
+            Self::Identifier(ident) => scope.read(&ident).ok(),
+        }
+    }
+    fn write<'a>(
+        self,
+        scope: &'a mut Scope,
+        gc: &'a mut GarbageCollector,
+        value: Value,
+    ) -> Option<()> {
+        match self {
+            Self::None => None,
+            Self::Identifier(ident) => {
+                scope.get_var_mut(&ident).ok()?.write(value).ok()?;
+                Some(())
+            }
+            Self::Index(obj_id, indices) => {
+                let value_ref = gc.borrow_mut(obj_id).index_mut(&indices)?;
+                *value_ref = value;
+                Some(())
+            }
+        }
+    }
+    fn index(self, scope: &Scope, gc: &GarbageCollector, index: Vec<Value>) -> Option<DataRef> {
+        match self.read(scope, gc) {
+            Some(Value::Ref(obj_id)) => Some(DataRef::Index(obj_id, index)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Var<'gc_data> {
+struct Var {
     writable: bool,
-    value: Value<'gc_data>,
+    value: Option<Value>,
 }
-
-struct GarbageCollector<'data> {
-    objects: Vec<Box<Object<'data>>>,
-
-    root_scopes: Vec<ScopeStackFrame<'data>>,
-}
-
-#[derive(Debug, Clone)]
-struct ScopeStackFrame<'gc_data> {
-    vars: HashMap<Identifier, Var<'gc_data>>,
-}
-
-#[derive(Debug, Clone)]
-struct Scope<'gc_data> {
-    stack: Vec<ScopeStackFrame<'gc_data>>,
-}
-
-struct CallStackFrame<'gc_data> {
-    scope: Scope<'gc_data>,
+impl Var {
+    fn read(&self) -> Result<Value, IrrecoverableError> {
+        self.value
+            .ok_or(IrrecoverableError::VarReadBeforeInitialized)
+    }
+    fn write(&mut self, value: Value) -> Result<(), IrrecoverableError> {
+        if !self.writable && self.value.is_some() {
+            Err(IrrecoverableError::VarNotWritable)
+        } else {
+            self.value = Some(value);
+            Ok(())
+        }
+    }
 }
 
 /// The instruction index
@@ -93,16 +233,23 @@ type InstructionIndex = usize;
 ///
 /// These instructions use:
 /// - one `Voidable`, called the "working value"
+/// - one `DataRef`, called the "working mutable reference"
 /// - stack of `Value`s, called the "intermediate value stack"
 /// - the `Scope` stack
 #[derive(Debug, Clone)]
 pub enum Instruction {
     /// Reads the value of the variable with the given identifier to the working value.
     ReadVar(Identifier),
-    /// Writes the working value to the variable with the given identifier.
+    /// Gets a reference to the current piece of data stored in the working mutable reference
+    RefVar(Identifier),
+    /// Indexes into the working mutable reference, indices given by popping the given number of values from the intermediate value stack
+    IndexRef(usize),
+    /// Writes the working value to the working mutable reference.
+    WriteRef,
+    /// Writes the working value to the variable given by the identifier.
     WriteVar(Identifier),
     /// Creates a new variable with the given identifier and writability status
-    CreateVar { ident: Identifier, is_const: bool },
+    CreateVar { ident: Identifier, writable: bool },
     /// Push the working value to the intermediate value stack.
     PushIntermediate,
     /// Applies the given operator to the working value.
@@ -111,6 +258,8 @@ pub enum Instruction {
     BinaryOp(SLOperator),
     /// Calls the callable represented by the working value, arguments given by popping the given number of values from the intermediate value stack.
     Call(usize),
+    /// Indexes into the working value, indices given by popping the given number of values from the intermediate value stack.
+    Index(usize),
     /// Create a list of the given length by popping [length] values from the intermediate value stack.
     CreateList(usize),
     /// Create a function value, capturing the current scope.
@@ -198,13 +347,20 @@ impl Instruction {
     }
 }
 
-fn inst_translate(instructions: &mut Vec<Instruction>, delta: usize) {
-    for inst in instructions {
-        inst.translate(delta);
-    }
-}
-
 fn concat_instructions<const T: usize>(parts: [Vec<Instruction>; T]) -> Vec<Instruction> {
+    let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
+    let mut offset = 0;
+    for mut part in parts {
+        let len = part.len();
+        for inst in &mut part {
+            inst.translate(offset);
+        }
+        out.append(&mut part);
+        offset += len;
+    }
+    out
+}
+fn concat_instructions_vec(parts: Vec<Vec<Instruction>>) -> Vec<Instruction> {
     let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
     let mut offset = 0;
     for mut part in parts {
@@ -225,7 +381,7 @@ fn concat_instructions_no_translate<const T: usize>(
 fn build_loop(mut body: Vec<Instruction>) -> Vec<Instruction> {
     const CONTINUE_JUMP_I: usize = 1;
     let break_jump_i = 1 + body.len() + 2;
-    let body_offset = 1 + 1;
+    let body_offset = 1;
     for inst in &mut body {
         inst.translate(body_offset);
         inst.finalize_loop_flow_controls(CONTINUE_JUMP_I, break_jump_i)
@@ -299,19 +455,29 @@ pub enum IrrecoverableError {
     IllegalBreakValue,
     IllegalContinue,
     IllegalReturn,
+    IllegalOperator,
+    NonBooleanCondition,
     VoidAsValue,
     VarNotFound,
+    VarReadBeforeInitialized,
     VarNotWritable,
-    VarNotCallable,
+    VarRedeclaration,
+    NotCallable,
+    NotIndexable,
+    InternalError(&'static str),
 }
-enum Voidable<'gc_data> {
+#[derive(Debug, Clone, Copy)]
+pub enum Voidable {
     Void,
-    Value(Value<'gc_data>),
+    Value(Value),
 }
-enum ExecOutput<'gc_data> {
-    Return(Voidable<'gc_data>),
-    Complete(Voidable<'gc_data>),
-    Irrecoverable(IrrecoverableError),
+impl Voidable {
+    fn as_value(&self) -> Result<Value, IrrecoverableError> {
+        match self {
+            Self::Value(v) => Ok(*v),
+            _ => Err(IrrecoverableError::VarNotFound),
+        }
+    }
 }
 
 fn serialize_expr_instructions(
@@ -345,7 +511,23 @@ fn serialize_expr_instructions(
             vec![Instruction::Primitive(literal)]
         }
         crate::language::slir::SLIRExpression::Range { start, step, end } => todo!(),
-        crate::language::slir::SLIRExpression::Array(_) => todo!(),
+        crate::language::slir::SLIRExpression::Array(array) => match array {
+            SLIRArray::List(list) => {
+                let len = list.len();
+                concat_instructions_vec(
+                    list.into_iter()
+                        .flat_map(|it| {
+                            [
+                                serialize_expr_instructions(it, context),
+                                vec![Instruction::PushIntermediate],
+                            ]
+                        })
+                        .chain(std::iter::once(vec![Instruction::CreateList(len)]))
+                        .collect(),
+                )
+            }
+            _ => todo!(),
+        },
         crate::language::slir::SLIRExpression::AnonymousFunction { params, block } => {
             vec![Instruction::CreateFunction {
                 params,
@@ -367,7 +549,94 @@ fn serialize_expr_instructions(
             block,
             elifs,
             else_block,
-        } => todo!("// TODO conditionals"),
+        } => {
+            let mut condition = serialize_expr_instructions(*condition, context);
+            let mut block = serialize_block_instructions(block, context);
+            let elifs = elifs
+                .into_iter()
+                .map(|(condition, block)| {
+                    (
+                        serialize_expr_instructions(condition, context),
+                        serialize_block_instructions(block, context),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let else_block = else_block.map(|block| serialize_block_instructions(block, context));
+
+            /*
+            >>
+                [condition -> bool]
+                jmp_false(ELIF_0)
+                scope_push(0)
+                [block -> T]
+                jmp(END)
+
+                ELIF_0:
+                [condition_elif_0 -> bool]
+                jmp_false(ELSE)
+                scope_push(0)
+                [block_elif_0 -> T]
+                jmp(END)
+
+                ELSE:
+                scope_push(0)
+                [block_else -> T]
+                // jmp(END) // omit because last
+
+                END:
+                scope_pop(0)
+
+                */
+
+            let mut condition_locations = vec![];
+            let mut total_len = 0;
+            total_len += condition.len() + 2 + block.len() + 1;
+            for (condition, block) in &elifs {
+                condition_locations.push(total_len);
+                total_len += condition.len() + 2 + block.len() + 1;
+            }
+            condition_locations.push(total_len); // add location else block or after the scope_pop
+            if let Some(block) = &else_block {
+                total_len += 1 + block.len() + 1;
+            }
+
+            let mut condition_jump_locations = condition_locations.into_iter();
+            let end_location = total_len - 1; // make sure to catch the one last PopScope at the end
+
+            let mut instr = vec![];
+
+            // positive condition
+            instr.append(&mut condition);
+            instr.push(Instruction::JumpFalse(
+                condition_jump_locations.next().unwrap(),
+            ));
+            // positive block
+            instr.push(Instruction::PushScope(0));
+            instr.append(&mut block);
+
+            for (mut condition, mut block) in elifs {
+                instr.push(Instruction::Jump(end_location));
+                // elif condition
+                instr.append(&mut condition);
+                instr.push(Instruction::JumpFalse(
+                    condition_jump_locations.next().unwrap(),
+                ));
+                // elif block
+                instr.push(Instruction::PushScope(0));
+                instr.append(&mut block);
+            }
+
+            if let Some(mut block) = else_block {
+                instr.push(Instruction::Jump(end_location));
+                // else block
+                instr.push(Instruction::PushScope(0));
+                instr.append(&mut block);
+            }
+
+            instr.push(Instruction::PopScope(0));
+
+            instr
+        }
         crate::language::slir::SLIRExpression::Loop(block) => {
             let mut context = context.clone();
             context.push_loop_info(LoopInfo {
@@ -437,14 +706,14 @@ fn serialize_statement_instructions(
                 },
                 Instruction::CreateVar {
                     ident: ident.clone(),
-                    is_const: true,
+                    writable: true,
                 },
                 Instruction::WriteVar(ident),
             ]
         }
         SLIRStatement::VarDeclare {
             ident,
-            is_const,
+            writable,
             initial_assignment,
             ..
         } => {
@@ -454,16 +723,25 @@ fn serialize_statement_instructions(
                     vec![
                         Instruction::CreateVar {
                             ident: ident.clone(),
-                            is_const,
+                            writable,
                         },
                         Instruction::WriteVar(ident),
                     ],
                 ])
             } else {
-                vec![Instruction::CreateVar { ident, is_const }]
+                vec![Instruction::CreateVar { ident, writable }]
             }
         }
-        SLIRStatement::Assign(accessor, expr) => todo!("// TODO variable data access"),
+        SLIRStatement::Assign(accessor, expr) => {
+            if let SLIRVarAccessExpression::Read(ident) = accessor {
+                concat_instructions_no_translate([
+                    serialize_expr_instructions(*expr, context),
+                    vec![Instruction::RefVar(ident), Instruction::WriteRef],
+                ])
+            } else {
+                todo!("// TODO variable data access")
+            }
+        }
         SLIRStatement::Expr(expr) => serialize_expr_instructions(*expr, context),
     }
 }
@@ -471,12 +749,317 @@ fn serialize_block_instructions(
     code: SLIRBlock,
     context: &InstructionBuildingContext,
 ) -> Vec<Instruction> {
-    code.0
-        .into_iter()
-        .flat_map(|it| serialize_statement_instructions(it, context))
-        .collect()
+    concat_instructions_vec(
+        code.0
+            .into_iter()
+            .map(|it| serialize_statement_instructions(it, context))
+            .collect(),
+    )
 }
 
 pub fn serialize_program(code: SLIRBlock) -> Vec<Instruction> {
     serialize_block_instructions(code, &InstructionBuildingContext { loop_infos: vec![] })
+}
+
+type GCObjectId = u64;
+#[derive(Debug)]
+pub struct GarbageCollector {
+    objects: HashMap<GCObjectId, Object>,
+    current_id: GCObjectId,
+
+    root_scopes: Vec<ScopeStackFrame>,
+}
+impl<'data> GarbageCollector {
+    pub fn new() -> Self {
+        Self {
+            objects: HashMap::new(),
+            current_id: 0,
+            root_scopes: vec![],
+        }
+    }
+    fn next_free_id(&mut self) -> GCObjectId {
+        while self.objects.contains_key(&self.current_id) {
+            self.current_id += 1;
+        }
+        let selected_id = self.current_id;
+        self.current_id += 1;
+        selected_id
+    }
+    fn alloc(&mut self, object: Object) -> GCObjectId {
+        let id = self.next_free_id();
+        self.objects.insert(id, object);
+        id
+    }
+    fn borrow(&self, id: GCObjectId) -> &Object {
+        self.objects
+            .get(&id)
+            .expect("reference to object managed to outlive object")
+    }
+    fn borrow_mut(&mut self, id: GCObjectId) -> &mut Object {
+        self.objects
+            .get_mut(&id)
+            .expect("reference to object managed to outlive object")
+    }
+    // fn mark_and_sweep(&mut self) {
+    //     let encounter: HashMap<u64, bool, RandomState> = HashMap::from_iter(self.objects.keys().map(|it| (*it, false)));
+    //     self.root_scopes.
+
+    // }
+}
+
+#[derive(Debug, Clone)]
+pub struct ScopeStackFrame {
+    vars: HashMap<Identifier, Var>,
+    id: InstructionIndex,
+    intermediate_value_stack: Vec<Value>,
+}
+impl ScopeStackFrame {
+    pub fn empty(id: InstructionIndex) -> Self {
+        ScopeStackFrame {
+            vars: HashMap::new(),
+            id,
+            intermediate_value_stack: vec![],
+        }
+    }
+    pub fn base() -> Self {
+        ScopeStackFrame {
+            vars: HashMap::new(),
+            id: InstructionIndex::MAX,
+            intermediate_value_stack: vec![],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Scope {
+    stack: Vec<ScopeStackFrame>,
+}
+impl Scope {
+    fn stack_top(&mut self) -> &mut ScopeStackFrame {
+        self.stack
+            .last_mut()
+            .expect("scope stack should never empty")
+    }
+    fn read(&self, ident: &Identifier) -> Result<Value, IrrecoverableError> {
+        for frame in &self.stack {
+            if let Some(value) = frame.vars.get(ident) {
+                return Ok(value.read()?);
+            }
+        }
+        Err(IrrecoverableError::VarNotFound)
+    }
+    fn get_var_mut(&mut self, ident: &Identifier) -> Result<&mut Var, IrrecoverableError> {
+        for frame in &mut self.stack {
+            if let Some(value) = frame.vars.get_mut(ident) {
+                return Ok(value);
+            }
+        }
+        Err(IrrecoverableError::VarNotFound)
+    }
+    fn create_var(&mut self, ident: &Identifier, writable: bool) -> Result<(), IrrecoverableError> {
+        let stack_top = self.stack_top();
+        if stack_top.vars.contains_key(ident) {
+            Err(IrrecoverableError::VarRedeclaration)
+        } else {
+            stack_top.vars.insert(
+                ident.clone(),
+                Var {
+                    writable,
+                    value: None,
+                },
+            );
+            Ok(())
+        }
+    }
+}
+
+struct CallStackFrame {
+    scope: Scope,
+    code: Vec<Instruction>,
+    exec_index: InstructionIndex,
+}
+
+pub fn execute_serialized(
+    code: Vec<Instruction>,
+    root_scope_stack_frame: ScopeStackFrame,
+    gc: &mut GarbageCollector,
+) -> Result<Voidable, IrrecoverableError> {
+    let mut call_stack = vec![CallStackFrame {
+        scope: Scope {
+            stack: vec![root_scope_stack_frame],
+        },
+        code,
+        exec_index: 0,
+    }];
+
+    let mut working_value = Voidable::Void;
+    let mut working_mut_ref = DataRef::None;
+
+    while let Some(call) = call_stack.last_mut() {
+        if call.exec_index == call.code.len() {
+            // reached end of function, return working value
+            call_stack.pop();
+            continue;
+        }
+        match &call.code[call.exec_index] {
+            Instruction::ReadVar(ident) => {
+                working_value = Voidable::Value(call.scope.read(ident)?);
+            }
+            Instruction::RefVar(ident) => {
+                working_mut_ref = DataRef::Identifier(ident.clone());
+            }
+            Instruction::IndexRef(n_args) => {
+                let intermediate_value_stack = &mut call.scope.stack_top().intermediate_value_stack;
+                let arg_values = intermediate_value_stack
+                    .drain(intermediate_value_stack.len() - n_args..)
+                    .collect::<Vec<_>>();
+
+                working_mut_ref = working_mut_ref
+                    .index(&call.scope, gc, arg_values)
+                    .ok_or(IrrecoverableError::NotIndexable)?;
+            }
+            Instruction::WriteRef => {
+                working_mut_ref
+                    .write(&mut call.scope, gc, working_value.as_value()?)
+                    .ok_or(IrrecoverableError::VarNotWritable)?;
+                working_mut_ref = DataRef::None;
+                working_value = Voidable::Void;
+            }
+            Instruction::WriteVar(ident) => call
+                .scope
+                .get_var_mut(ident)?
+                .write(working_value.as_value()?)?,
+            Instruction::CreateVar { ident, writable } => {
+                call.scope.create_var(ident, *writable)?;
+            }
+            Instruction::PushIntermediate => {
+                let intermediate_value_stack = &mut call.scope.stack_top().intermediate_value_stack;
+                intermediate_value_stack.push(match working_value {
+                    Voidable::Value(value) => value,
+                    Voidable::Void => return Err(IrrecoverableError::VoidAsValue),
+                });
+                working_value = Voidable::Void;
+            }
+            Instruction::UnaryOp(op) => {
+                working_value = Voidable::Value(working_value.as_value()?.apply_op_unary(*op)?);
+            }
+            Instruction::BinaryOp(op) => {
+                let lhs = call
+                    .scope
+                    .stack_top()
+                    .intermediate_value_stack
+                    .pop()
+                    .ok_or(IrrecoverableError::InternalError(
+                        "intermediate value stack exhausted",
+                    ))?;
+                let rhs = working_value.as_value()?;
+                working_value = Voidable::Value(lhs.apply_op_binary(rhs, *op)?);
+            }
+            Instruction::Call(n_args) => {
+                let intermediate_value_stack = &mut call.scope.stack_top().intermediate_value_stack;
+                let arg_values = intermediate_value_stack
+                    .drain(intermediate_value_stack.len() - n_args..)
+                    .collect::<Vec<_>>();
+                let func = match working_value {
+                    Voidable::Value(Value::Ref(id)) => match gc.borrow(id) {
+                        Object::Function(func) => func.as_ref(),
+                        _ => return Err(IrrecoverableError::NotCallable),
+                    },
+                    _ => return Err(IrrecoverableError::NotCallable),
+                };
+
+                let mut new_stack_frame = ScopeStackFrame::base();
+                for (i, value) in arg_values.into_iter().enumerate() {
+                    new_stack_frame.vars.insert(
+                        func.params[i].clone(),
+                        Var {
+                            writable: false,
+                            value: Some(value),
+                        },
+                    );
+                }
+
+                call.exec_index += 1;
+                call_stack.push(CallStackFrame {
+                    scope: Scope {
+                        stack: func
+                            .closure
+                            .stack
+                            .iter()
+                            .map(|it| it.clone())
+                            .chain(std::iter::once(new_stack_frame))
+                            .collect(),
+                    },
+                    code: func.code.clone(),
+                    exec_index: 0,
+                });
+                continue;
+            }
+            Instruction::Index(_) => todo!(),
+            Instruction::CreateList(n) => {
+                let intermediate_value_stack = &mut call.scope.stack_top().intermediate_value_stack;
+                let values = intermediate_value_stack
+                    .drain(intermediate_value_stack.len() - n..)
+                    .collect::<Vec<_>>();
+
+                let list_obj = Object::List(values);
+
+                working_value = Voidable::Value(Value::Ref(gc.alloc(list_obj)));
+            }
+            Instruction::CreateFunction { params, code } => {
+                let func_object = Object::Function(Box::new(Function {
+                    closure: call.scope.clone(),
+                    params: params.clone(),
+                    code: code.clone(),
+                }));
+                working_value = Voidable::Value(Value::Ref(gc.alloc(func_object)))
+            }
+            Instruction::PushScope(idx) => call.scope.stack.push(ScopeStackFrame::empty(*idx)),
+            Instruction::PopScope(idx) => loop {
+                let top = call
+                    .scope
+                    .stack
+                    .pop()
+                    .ok_or(IrrecoverableError::InternalError(
+                        "matching open stack frame missing",
+                    ))?;
+                if top.id == *idx {
+                    break;
+                }
+            },
+            Instruction::Jump(i) => {
+                call.exec_index = *i;
+                continue;
+            }
+            Instruction::JumpFalse(i) => {
+                match working_value {
+                    Voidable::Value(Value::Bool(condition)) => {
+                        if condition == false {
+                            call.exec_index = *i;
+                            continue;
+                        } else {
+                            // do nothing
+                        }
+                    }
+                    _ => return Err(IrrecoverableError::NonBooleanCondition),
+                }
+            }
+            Instruction::Fail(failure) => return Err(*failure),
+            Instruction::Primitive(v) => {
+                working_value = Voidable::Value(match v {
+                    SLIRLiteral::Int { re, im } => Value::Int { re: *re, im: *im },
+                    SLIRLiteral::Float { re, im } => Value::Float { re: *re, im: *im },
+                    SLIRLiteral::Bool(v) => Value::Bool(*v),
+                    SLIRLiteral::String(v) => Value::Ref(gc.alloc(Object::String(v.clone()))),
+                });
+            }
+            Instruction::Return => {
+                call_stack.pop();
+                continue;
+            }
+        }
+        call.exec_index += 1;
+    }
+
+    Ok(working_value)
 }

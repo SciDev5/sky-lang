@@ -46,30 +46,61 @@ fn main() {
     // let tokens = dbg!(t.tokenize(r"
     //      { s -> s } (1)
     // "));
+    // let tokens = dbg!(t.tokenize(r"
+    //     let x = 3 + (-4) // should be -1
+    //     let b = [1,2,3]
+    //     /// functions!!! :3c
+    //     fn add5(x) {
+    //         x + 5
+    //     }
+    //     let z = if false {
+    //         1
+    //     } elif false {
+    //         2
+    //     } elif false {
+    //         3
+    //     } elif true {
+    //         add5(x) // should be -1+5 = 4
+    //     } elif false {
+    //         5
+    //     } else {
+    //         6
+    //     } + 100
+
+    //     let r = [z,b]
+
+    //     z
+    // "));
     let tokens = dbg!(t.tokenize(r"
-        let x = 3 + (-4) // should be -1
-        let b = [1,2,3]
-        /// functions!!! :3c
-        fn add5(x) {
-            x + 5
+        // fn whatever(inner_fun) {
+        //     inner_fun(4)
+        // }
+
+        // let k = whatever { x -> x + 2 }
+
+        // if true {
+        //     if (whatever { _ -> true }) {
+        //         if true {
+        //             if false {
+        //                 1
+        //             } else {
+        //                 k
+        //             }
+        //         } else {
+        //             3
+        //         }
+        //     }
+        // }
+
+        let i = 0
+        let k = 1
+        loop {
+            i = i + 1
+            k = k * i
+            if i >= 5 {
+                break k
+            }
         }
-        let z = if false {
-            1
-        } elif false {
-            2
-        } elif false {
-            3
-        } elif true {
-            add5(x) // should be -1+5 = 4
-        } elif false {
-            5
-        } else {
-            6
-        } + 100
-
-        let r = [z,b]
-
-        z
     "));
 
     let parsed = dbg!(skylab::language::parser::parse(tokens));
@@ -82,5 +113,5 @@ fn main() {
 
     let mut gc = GarbageCollector::new();
     dbg!(skylab::interpreter::interpreter::execute_serialized(serialized_code, ScopeStackFrame::base(), &mut gc)).unwrap();
-    dbg!(&gc);
+    // dbg!(&gc);
 }

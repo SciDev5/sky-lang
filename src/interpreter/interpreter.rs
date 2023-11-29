@@ -25,7 +25,7 @@
 
 */
 
-use std::collections::{HashMap, hash_map::RandomState};
+use std::collections::HashMap;
 
 use crate::language::{
     ops::SLOperator,
@@ -38,7 +38,7 @@ type Identifier = Box<str>;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Value {
-    Int { re: i128, im: i128 },
+    Int(i128),
     Float { re: f64, im: f64 },
     Bool(bool),
     Ref(GCObjectId),
@@ -79,11 +79,11 @@ impl Value {
         Self::Bool(it) => Self::Bool(!it)
     );
     impl_unary_op!(unary_plus;
-        Self::Int { re, im } => Self::Int { re, im },
+        Self::Int(n) => Self::Int(n),
         Self::Float { re, im } => Self::Float { re, im },
     );
     impl_unary_op!(unary_minus;
-        Self::Int { re, im } => Self::Int { re: -re, im: -im },
+        Self::Int(n) => Self::Int(-n),
         Self::Float { re, im } => Self::Float { re: -re, im: -im },
     );
     impl_unary_op!(hermitian_conjugate; TODO);
@@ -103,15 +103,43 @@ impl Value {
     }
 
     impl_binary_op!(plus;
-        (Self::Int { re: r0, im: i0 }, Self::Int { re: r1, im: i1 }) => Self::Int { re: r0+r1, im: i0+i1 },
-        (Self::Float { re: r0, im: i0 }, Self::Int { re: r1, im: i1 }) => Self::Float { re: r0+r1 as f64, im: i0+i1 as f64 },
-        (Self::Int { re: r0, im: i0 }, Self::Float { re: r1, im: i1 }) => Self::Float { re: r0 as f64+r1, im: i0 as f64+i1 },
-        (Self::Float { re: r0, im: i0 }, Self::Float { re: r1, im: i1 }) => Self::Float { re: r0+r1, im: i0+i1 },
+        (Self::Int(n0), Self::Int(n1)) => Self::Int(n0+n1),
+        (Self::Float { re, im }, Self::Int(n)) => Self::Float { re: re + n as f64, im },
+        (Self::Int(n), Self::Float { re, im }) => Self::Float { re: n as f64 + re, im },
+        (Self::Float { re: r0, im: i0 }, Self::Float { re: r1, im: i1 }) => Self::Float { re: r0 + r1, im: i0 + i1 },
+    );
+    impl_binary_op!(scalar_times;
+        (Self::Int(n0), Self::Int(n1)) => Self::Int(n0*n1),
+    );
+    impl_binary_op!(gt;
+        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 > n1),
+    );
+    impl_binary_op!(ge;
+        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 >= n1),
+    );
+    impl_binary_op!(lt;
+        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 < n1),
+    );
+    impl_binary_op!(le;
+        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 <= n1),
+    );
+    impl_binary_op!(eq;
+        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 == n1),
+    );
+    impl_binary_op!(ne;
+        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 != n1),
     );
 
     fn apply_op_binary(self, rhs: Self, op: SLOperator) -> Result<Value, IrrecoverableError> {
         match op {
             SLOperator::Plus => self.plus(rhs),
+            SLOperator::ScalarTimes => self.scalar_times(rhs),
+            SLOperator::GreaterThan => self.gt(rhs),
+            SLOperator::GreaterEqual => self.ge(rhs),
+            SLOperator::LessThan => self.lt(rhs),
+            SLOperator::LessEqual => self.le(rhs),
+            SLOperator::Equal => self.eq(rhs),
+            SLOperator::NotEqual => self.ne(rhs),
             _ => Err(IrrecoverableError::IllegalOperator),
         }
     }
@@ -228,6 +256,7 @@ impl Var {
 /// - BREAK: `usize::MAX - 2*n`
 /// - CONTINUE: `usize::MAX - 2*n - 1`
 type InstructionIndex = usize;
+type RelativeInstructionIndex = isize;
 
 /// Low-level Instructions the interpreter interprets.
 ///
@@ -270,13 +299,13 @@ pub enum Instruction {
     /// Push an empty frame to the scope stack (entering a new scope).
     ///
     /// Note: the instruction index is used as an ID, translation tracking used to keep it unique.
-    PushScope(InstructionIndex),
+    PushScope(u16),
     /// Pop from the scope stack until one with the matching ID is found (exiting a scope).
-    PopScope(InstructionIndex),
+    PopScope(u16),
     /// Jumps to given instruction index.
-    Jump(InstructionIndex),
+    Jump(RelativeInstructionIndex),
     /// Jumps to given instruction index if the working value is boolean false (fails if not boolean).
-    JumpFalse(InstructionIndex),
+    JumpFalse(RelativeInstructionIndex),
     /// Guaranteed fail here to allow late failue of invalid code such as top-level breaks.
     Fail(IrrecoverableError),
     /// Put the current value in as the current working value.
@@ -286,118 +315,90 @@ pub enum Instruction {
 }
 impl Instruction {
     fn new_jump_break(n_layers_out: usize) -> Self {
-        Self::Jump(InstructionIndex::MAX - n_layers_out * 2)
+        Self::Jump(RelativeInstructionIndex::MAX - n_layers_out as isize * 2)
     }
     fn new_jump_continue(n_layers_out: usize) -> Self {
-        Self::Jump(InstructionIndex::MAX - n_layers_out * 2 - 1)
+        Self::Jump(RelativeInstructionIndex::MAX - n_layers_out as isize * 2 - 1)
     }
-    fn translate(&mut self, delta: usize) {
-        fn t(index: InstructionIndex, delta: usize) -> usize {
-            if index < InstructionIndex::MAX / 2 {
-                index + delta
-            } else {
-                // break/continue
-                index
-            }
-        }
-        *self = match self {
-            Self::Jump(i) => Self::Jump(t(*i, delta)),
-            Self::JumpFalse(i) => Self::JumpFalse(t(*i, delta)),
-            Self::PushScope(i) => Self::PushScope(t(*i, delta)),
-            Self::PopScope(i) => Self::PopScope(t(*i, delta)),
-            _ => return,
-        }
-    }
-    fn finalize_loop_flow_controls(&mut self, continue_jump_i: usize, break_jump_i: usize) {
-        fn t(index: InstructionIndex, continue_jump_i: usize, break_jump_i: usize) -> usize {
-            if index < InstructionIndex::MAX / 2 {
-                index
-            } else if index <= InstructionIndex::MAX - 2 {
-                index + 2
-            } else if index == InstructionIndex::MAX {
+    fn finalize_loop_flow_controls(
+        &mut self,
+        i: usize,
+        continue_jump_i: usize,
+        break_jump_i: usize,
+    ) {
+        fn t(i: usize, jump_target: isize, continue_jump_i: usize, break_jump_i: usize) -> isize {
+            if jump_target < isize::MAX / 2 {
+                jump_target
+            } else if jump_target <= isize::MAX - 2 {
+                jump_target + 2
+            } else if jump_target == isize::MAX {
                 // break
-                break_jump_i
+                break_jump_i as isize - i as isize
             } else {
                 // continue
-                continue_jump_i
+                continue_jump_i as isize - i as isize
             }
         }
         *self = match self {
-            Self::Jump(i) => Self::Jump(t(*i, continue_jump_i, break_jump_i)),
-            Self::JumpFalse(i) => Self::JumpFalse(t(*i, continue_jump_i, break_jump_i)),
+            Self::Jump(jmp_i) => Self::Jump(t(i, *jmp_i, continue_jump_i, break_jump_i)),
+            Self::JumpFalse(jmp_i) => Self::JumpFalse(t(i, *jmp_i, continue_jump_i, break_jump_i)),
             _ => return,
         }
     }
     fn disallow_loop_flow_controls(&mut self, len: usize) {
-        fn t(index: InstructionIndex, this: Instruction) -> Instruction {
-            if index < InstructionIndex::MAX / 2 {
-                this
-            } else if index % 2 != 0 {
-                // break
+        fn t(index: isize) -> Instruction {
+            if index % 2 != 0 {
                 Instruction::Fail(IrrecoverableError::IllegalBreak)
             } else {
                 Instruction::Fail(IrrecoverableError::IllegalContinue)
             }
         }
         *self = match self {
-            Self::Jump(i) => t(*i, Self::Jump(*i)),
-            Self::JumpFalse(i) => t(*i, Self::JumpFalse(*i)),
+            Self::Jump(i) if *i > isize::MAX / 2 => t(*i),
+            Self::JumpFalse(i) if *i > isize::MAX / 2 => t(*i),
             _ => return,
         }
     }
 }
 
-fn concat_instructions<const T: usize>(parts: [Vec<Instruction>; T]) -> Vec<Instruction> {
-    let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
-    let mut offset = 0;
-    for mut part in parts {
-        let len = part.len();
-        for inst in &mut part {
-            inst.translate(offset);
-        }
-        out.append(&mut part);
-        offset += len;
-    }
-    out
+enum ScopeId {
+    Loop { depth: usize },
+    NoSkipPop,
 }
-fn concat_instructions_vec(parts: Vec<Vec<Instruction>>) -> Vec<Instruction> {
-    let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
-    let mut offset = 0;
-    for mut part in parts {
-        let len = part.len();
-        for inst in &mut part {
-            inst.translate(offset);
+impl ScopeId {
+    const fn u16(self) -> u16 {
+        match self {
+            ScopeId::NoSkipPop => 0,
+            ScopeId::Loop { depth } => 1 + depth as u16,
         }
-        out.append(&mut part);
-        offset += len;
     }
-    out
 }
-fn concat_instructions_no_translate<const T: usize>(
-    parts: [Vec<Instruction>; T],
-) -> Vec<Instruction> {
+
+fn concat_instructions<T: IntoIterator<Item = Vec<Instruction>>>(parts: T) -> Vec<Instruction> {
     parts.into_iter().flatten().collect()
 }
-fn build_loop(mut body: Vec<Instruction>) -> Vec<Instruction> {
-    const CONTINUE_JUMP_I: usize = 1;
-    let break_jump_i = 1 + body.len() + 2;
-    let body_offset = 1;
-    for inst in &mut body {
-        inst.translate(body_offset);
-        inst.finalize_loop_flow_controls(CONTINUE_JUMP_I, break_jump_i)
+fn build_loop(mut body: Vec<Instruction>, loop_depth: usize) -> Vec<Instruction> {
+    let continue_jump_i = 1 + body.len(); // jump to the first PopScope, before the reset jump
+    let break_jump_i = 1 + body.len() + 2; // jump to the second PopScope
+
+    let body_len = body.len();
+
+    for (i, inst) in body.iter_mut().enumerate() {
+        inst.finalize_loop_flow_controls(i + 1, continue_jump_i, break_jump_i)
     }
-    [
-        vec![Instruction::PushScope(0)],
+
+    let scope_id = ScopeId::Loop { depth: loop_depth }.u16();
+    concat_instructions([
+        vec![Instruction::PushScope(scope_id)],
         body,
         vec![
-            Instruction::PopScope(0),
-            Instruction::Jump(CONTINUE_JUMP_I),
-            Instruction::PopScope(0), // pop after break
+            // (continue) pop scope and jump back to the start
+            Instruction::PopScope(scope_id),
+            Instruction::Jump(-(2 + body_len as isize)),
+            // (break) pop scope and exit
+            Instruction::PopScope(scope_id), // pop after break
         ],
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+    ])
 }
 // fn build_for(mut control_init: Vec<Instruction>, mut control_update: Vec<Instruction>, mut body: Vec<Instruction>) -> Vec<Instruction> {
 //     const CONTINUE_JUMP_I: usize = 1;
@@ -514,7 +515,7 @@ fn serialize_expr_instructions(
         crate::language::slir::SLIRExpression::Array(array) => match array {
             SLIRArray::List(list) => {
                 let len = list.len();
-                concat_instructions_vec(
+                concat_instructions(
                     list.into_iter()
                         .flat_map(|it| {
                             [
@@ -522,8 +523,7 @@ fn serialize_expr_instructions(
                                 vec![Instruction::PushIntermediate],
                             ]
                         })
-                        .chain(std::iter::once(vec![Instruction::CreateList(len)]))
-                        .collect(),
+                        .chain(std::iter::once(vec![Instruction::CreateList(len)])),
                 )
             }
             _ => todo!(),
@@ -604,36 +604,41 @@ fn serialize_expr_instructions(
             let end_location = total_len - 1; // make sure to catch the one last PopScope at the end
 
             let mut instr = vec![];
+            let scope_id = ScopeId::NoSkipPop.u16();
 
             // positive condition
             instr.append(&mut condition);
             instr.push(Instruction::JumpFalse(
-                condition_jump_locations.next().unwrap(),
+                condition_jump_locations.next().unwrap() as isize - instr.len() as isize,
             ));
             // positive block
-            instr.push(Instruction::PushScope(0));
+            instr.push(Instruction::PushScope(scope_id));
             instr.append(&mut block);
 
             for (mut condition, mut block) in elifs {
-                instr.push(Instruction::Jump(end_location));
+                instr.push(Instruction::Jump(
+                    end_location as isize - instr.len() as isize,
+                ));
                 // elif condition
                 instr.append(&mut condition);
                 instr.push(Instruction::JumpFalse(
-                    condition_jump_locations.next().unwrap(),
+                    condition_jump_locations.next().unwrap() as isize - instr.len() as isize,
                 ));
                 // elif block
-                instr.push(Instruction::PushScope(0));
+                instr.push(Instruction::PushScope(scope_id));
                 instr.append(&mut block);
             }
 
             if let Some(mut block) = else_block {
-                instr.push(Instruction::Jump(end_location));
+                instr.push(Instruction::Jump(
+                    end_location as isize - instr.len() as isize,
+                ));
                 // else block
-                instr.push(Instruction::PushScope(0));
+                instr.push(Instruction::PushScope(scope_id));
                 instr.append(&mut block);
             }
 
-            instr.push(Instruction::PopScope(0));
+            instr.push(Instruction::PopScope(scope_id));
 
             instr
         }
@@ -644,7 +649,7 @@ fn serialize_expr_instructions(
                 allow_break_value: true,
             });
             let body = serialize_block_instructions(block, &context);
-            build_loop(body)
+            build_loop(body, context.loop_infos.len() - 1)
         }
         crate::language::slir::SLIRExpression::For {
             loop_var,
@@ -659,7 +664,7 @@ fn serialize_expr_instructions(
                     if target_loop.allow_break_value {
                         [
                             serialize_expr_instructions(*value, context),
-                            vec![Instruction::Jump(InstructionIndex::MAX)],
+                            vec![Instruction::new_jump_break(0)],
                         ]
                         .into_iter()
                         .flatten()
@@ -682,7 +687,7 @@ fn serialize_expr_instructions(
                 vec![Instruction::Fail(IrrecoverableError::IllegalContinue)]
             }
         }
-        SLIRExpression::Return(value) => concat_instructions_no_translate([
+        SLIRExpression::Return(value) => concat_instructions([
             serialize_expr_instructions(*value, context),
             vec![Instruction::Return],
         ]),
@@ -718,7 +723,7 @@ fn serialize_statement_instructions(
             ..
         } => {
             if let Some(initial_assignment) = initial_assignment {
-                concat_instructions_no_translate([
+                concat_instructions([
                     serialize_expr_instructions(*initial_assignment, context),
                     vec![
                         Instruction::CreateVar {
@@ -734,7 +739,7 @@ fn serialize_statement_instructions(
         }
         SLIRStatement::Assign(accessor, expr) => {
             if let SLIRVarAccessExpression::Read(ident) = accessor {
-                concat_instructions_no_translate([
+                concat_instructions([
                     serialize_expr_instructions(*expr, context),
                     vec![Instruction::RefVar(ident), Instruction::WriteRef],
                 ])
@@ -749,11 +754,10 @@ fn serialize_block_instructions(
     code: SLIRBlock,
     context: &InstructionBuildingContext,
 ) -> Vec<Instruction> {
-    concat_instructions_vec(
+    concat_instructions(
         code.0
             .into_iter()
-            .map(|it| serialize_statement_instructions(it, context))
-            .collect(),
+            .map(|it| serialize_statement_instructions(it, context)),
     )
 }
 
@@ -810,11 +814,11 @@ impl<'data> GarbageCollector {
 #[derive(Debug, Clone)]
 pub struct ScopeStackFrame {
     vars: HashMap<Identifier, Var>,
-    id: InstructionIndex,
+    id: u16,
     intermediate_value_stack: Vec<Value>,
 }
 impl ScopeStackFrame {
-    pub fn empty(id: InstructionIndex) -> Self {
+    pub fn empty(id: u16) -> Self {
         ScopeStackFrame {
             vars: HashMap::new(),
             id,
@@ -824,7 +828,7 @@ impl ScopeStackFrame {
     pub fn base() -> Self {
         ScopeStackFrame {
             vars: HashMap::new(),
-            id: InstructionIndex::MAX,
+            id: u16::MAX,
             intermediate_value_stack: vec![],
         }
     }
@@ -879,6 +883,12 @@ struct CallStackFrame {
     exec_index: InstructionIndex,
 }
 
+impl CallStackFrame {
+    fn jump_relative(exec_index: &mut InstructionIndex, delta: isize) {
+        *exec_index = exec_index.checked_add_signed(delta).unwrap();
+    }
+}
+
 pub fn execute_serialized(
     code: Vec<Instruction>,
     root_scope_stack_frame: ScopeStackFrame,
@@ -901,6 +911,7 @@ pub fn execute_serialized(
             call_stack.pop();
             continue;
         }
+        println!("> [{}] {:?}", call.exec_index, &call.code[call.exec_index]);
         match &call.code[call.exec_index] {
             Instruction::ReadVar(ident) => {
                 working_value = Voidable::Value(call.scope.read(ident)?);
@@ -934,10 +945,7 @@ pub fn execute_serialized(
             }
             Instruction::PushIntermediate => {
                 let intermediate_value_stack = &mut call.scope.stack_top().intermediate_value_stack;
-                intermediate_value_stack.push(match working_value {
-                    Voidable::Value(value) => value,
-                    Voidable::Void => return Err(IrrecoverableError::VoidAsValue),
-                });
+                intermediate_value_stack.push(working_value.as_value()?);
                 working_value = Voidable::Void;
             }
             Instruction::UnaryOp(op) => {
@@ -1027,15 +1035,15 @@ pub fn execute_serialized(
                     break;
                 }
             },
-            Instruction::Jump(i) => {
-                call.exec_index = *i;
+            Instruction::Jump(delta) => {
+                CallStackFrame::jump_relative(&mut call.exec_index, *delta);
                 continue;
             }
-            Instruction::JumpFalse(i) => {
+            Instruction::JumpFalse(delta) => {
                 match working_value {
                     Voidable::Value(Value::Bool(condition)) => {
                         if condition == false {
-                            call.exec_index = *i;
+                            CallStackFrame::jump_relative(&mut call.exec_index, *delta);
                             continue;
                         } else {
                             // do nothing
@@ -1047,7 +1055,8 @@ pub fn execute_serialized(
             Instruction::Fail(failure) => return Err(*failure),
             Instruction::Primitive(v) => {
                 working_value = Voidable::Value(match v {
-                    SLIRLiteral::Int { re, im } => Value::Int { re: *re, im: *im },
+                    // TODO values and also types in general
+                    SLIRLiteral::Int { re, im } => if *im == 0 { Value::Int(*re) } else { Value::Float { re: *re as f64, im: *im as f64 } },
                     SLIRLiteral::Float { re, im } => Value::Float { re: *re, im: *im },
                     SLIRLiteral::Bool(v) => Value::Bool(*v),
                     SLIRLiteral::String(v) => Value::Ref(gc.alloc(Object::String(v.clone()))),

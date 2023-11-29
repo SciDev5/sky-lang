@@ -158,9 +158,15 @@ macro_rules! parse_rule {
  * `tokens; parser_fn => |it| map(it), ...`
  */
 macro_rules! parse_match_first {
-    ($tokens: ident; $($parser: ident => |$param: ident| $success_transform: expr ),+ $(,)?) => {
+    (ENTRY $tokens: ident; $parser: ident) => {
+        $tokens.next_parse($parser)
+    };
+    (ENTRY $tokens: ident; $parser: ident; $($paramv: expr),*) => {
+        $tokens.next_parse(|tokens| $parser (tokens, $($paramv),*))
+    };
+    ($tokens: ident; $($parser: ident $(($($paramv: expr),* $(,)?))? => |$param: ident| $success_transform: expr ),+ $(,)?) => {
         $(
-            if let Some($param) = $tokens.next_parse($parser) {
+            if let Some($param) = parse_match_first!(ENTRY $tokens; $parser $( ; $($paramv),* )?) {
                 Some($success_transform)
             } else
         )+ {
@@ -260,8 +266,21 @@ mod expr {
         /// ```
         pub fn parse_expr(tokens) -> _matched: SLIRExpression, _failed: None {
             parse_match_first!(tokens;
-                parse_expr_rangeto => |it| it,
-                parse_expr_infixed => |it| it,
+                parse_expr_rangeto(/* allow_anon_func */ true) => |it| it,
+                parse_expr_infixed(/* allow_anon_func */ true) => |it| it,
+            )?
+        }
+    }
+    parse_rule! {
+        /// Parse all expressions.
+        ///
+        /// ```plaintext
+        /// <expr> = <expr_infix> | <range>
+        /// ```
+        pub fn parse_expr_no_anonfunc_postfix(tokens) -> _matched: SLIRExpression, _failed: None {
+            parse_match_first!(tokens;
+                parse_expr_rangeto(/* allow_anon_func_postfix */ false) => |it| it,
+                parse_expr_infixed(/* allow_anon_func_postfix */ false) => |it| it,
             )?
         }
     }
@@ -271,13 +290,13 @@ mod expr {
         /// ```plaintext
         /// <expr_infix> = <expr_no_infix> (<infix> <expr_no_infix>)*
         /// ```
-        pub fn parse_expr_infixed(tokens) -> _matched: SLIRExpression, failed: None {
-            let first_expr = tokens.next_parse(parse_expr_no_infix)?;
+        pub fn parse_expr_infixed(tokens, (allow_anon_func_postfix): bool) -> _matched: SLIRExpression, failed: None {
+            let first_expr = tokens.next_parse(|t| parse_expr_no_infix(t, allow_anon_func_postfix))?;
 
             let mut infix = vec![ShuntingYardObj::Expr(first_expr)];
 
             while let Some(op) = tokens.next_parse(parse_expr_infix_op) {
-                if let Some(expr) = tokens.next_parse(parse_expr_no_infix) {
+                if let Some(expr) = tokens.next_parse(|t| parse_expr_no_infix(t, allow_anon_func_postfix)) {
                     infix.push(ShuntingYardObj::Op(op));
                     infix.push(ShuntingYardObj::Expr(expr));
                 } else {
@@ -323,7 +342,7 @@ mod expr {
         ///     | <expr_extras>
         /// ) <postfix>*
         /// ```
-        fn parse_expr_no_infix(tokens) -> _matched: SLIRExpression, _failed: None {
+        fn parse_expr_no_infix(tokens, (allow_anon_func_postfix): bool) -> _matched: SLIRExpression, _failed: None {
             // prefixes
             let mut prefixes = vec![];
             while let Some(prefix) = tokens.next_parse(parse_expr_prefix) {
@@ -337,10 +356,11 @@ mod expr {
                 parse_expr_anonfunc => |it| it,
                 parse_expr_sub_blocking => |it| it,
                 parse_expr_grouping => |it| it,
+                parse_flow_controls => |it| it,
             )?;
             // postfixes
             let mut postfixes = vec![];
-            while let Some(postfix) = tokens.next_parse(parse_expr_postfix) {
+            while let Some(postfix) = tokens.next_parse(|t| parse_expr_postfix(t, allow_anon_func_postfix)) {
                 postfixes.push(postfix);
             }
             //
@@ -397,7 +417,7 @@ mod expr {
         ///     | <postfix_index>    //   indexing_data[i,j,k]
         /// )
         /// ```
-        fn parse_expr_postfix(tokens) -> matched: ExprAffix, failed: None {
+        fn parse_expr_postfix(tokens, (allow_anon_func_postfix): bool) -> matched: ExprAffix, failed: None {
             // only skipping soft breaks, postfixes dangling after newlines are hard
             // to spot or often not actually meant to be postfixes.
             match tokens.next_skip_soft_break()? {
@@ -430,6 +450,11 @@ mod expr {
                     let result = ExprAffix::FunctionCall(arguments);
                     matched!(result);
                 }
+                SLToken::BracketOpen(BracketType::Curly) if allow_anon_func_postfix => {  
+                    tokens.step_back();                  
+                    let result = ExprAffix::FunctionCall(vec![tokens.next_parse(parse_expr_anonfunc)?]);
+                    matched!(result);
+                }
                 _ => failed!(),
             }
         }
@@ -442,15 +467,15 @@ mod expr {
         ///     | (<expr>)? ":" (<expr>)? ( ":" (<expr>)? )?
         /// )
         /// ```
-        fn parse_expr_rangeto(tokens) -> _matched: SLIRExpression, _failed: None {
-            let expr_first = tokens.next_parse(parse_expr_infixed);
+        fn parse_expr_rangeto(tokens, (allow_anon_func): bool) -> _matched: SLIRExpression, _failed: None {
+            let expr_first = tokens.next_parse(|t| parse_expr_infixed(t, allow_anon_func));
             let has_first_colon = tokens.next_skip_soft_break_if(|it| matches!(it, Some(SLToken::Separator(SeparatorType::Colon))));
             if has_first_colon {
-                let expr_second = if tokens.peek_is_hard_break() { None } else { tokens.next_parse(parse_expr_infixed) };
+                let expr_second = if tokens.peek_is_hard_break() { None } else { tokens.next_parse(|t| parse_expr_infixed(t, allow_anon_func)) };
 
                 let has_second_colon = tokens.next_skip_soft_break_if(|it| matches!(it, Some(SLToken::Separator(SeparatorType::Colon))));
                 if has_second_colon {
-                    let expr_third = (if tokens.peek_is_hard_break() { None } else { tokens.next_parse(parse_expr_infixed) })?;
+                    let expr_third = (if tokens.peek_is_hard_break() { None } else { tokens.next_parse(|t| parse_expr_infixed(t, allow_anon_func)) })?;
 
                     // a:b:step
                     SLIRExpression::Range { start: expr_first.map(Box::new), end: Some(Box::new(expr_third)), step: expr_second.map(Box::new) }
@@ -696,14 +721,15 @@ mod expr {
         }
     }
     parse_rule! {
-        /// ... after the `if`
+        /// ... starts tokenizing after the `if` keyword
         fn parse_if(tokens) -> _matched: SLIRExpression, _failed: None {
-            let condition = Box::new(tokens.next_parse(parse_expr)?);
+            let condition = Box::new(tokens.next_parse(parse_expr_no_anonfunc_postfix)?);
             let block = tokens.next_parse(parse_curly_block)?;
+
             let mut elifs = vec![];
             while try_match!(tokens.peek_skip_break(), SLToken::Keyword(Keyword::ConditionalElseIf)).is_some() {
                 tokens.next_skip_break(); // actualize the peek.
-                let elif_condition = tokens.next_parse(parse_expr)?;
+                let elif_condition = tokens.next_parse(parse_expr_no_anonfunc_postfix)?;
                 let elif_block = tokens.next_parse(parse_curly_block)?;
                 elifs.push((elif_condition, elif_block));
             }
@@ -717,7 +743,7 @@ mod expr {
         }
     }
     parse_rule! {
-        /// ... after the `loop`
+        /// ... starts tokenizing after the `loop` keyword
         fn parse_loop(tokens) -> _matched: SLIRExpression, _failed: None {
             // `$block` code to loop
             let block = tokens.next_parse(parse_curly_block)?;
@@ -726,7 +752,7 @@ mod expr {
         }
     }
     parse_rule! {
-        /// ... after the `for`
+        /// ... starts tokenizing after the `for` keyword
         fn parse_for(tokens) -> _matched: SLIRExpression, _failed: None {
             // declaration for loop variable
             let (loop_var,) = tokens.next_parse(parse_type_labelled_ident)?;
@@ -741,6 +767,25 @@ mod expr {
             let block = tokens.next_parse(parse_curly_block)?;
 
             SLIRExpression::For { loop_var, iterable, block }
+        }
+    }
+    parse_rule! {
+        fn parse_flow_control_data(tokens) -> _matched: Option<SLIRExpression>, _failed: None {
+            if tokens.peek_is_hard_break() {
+                None
+            } else {
+                tokens.next_parse(parse_expr)
+            }
+        }
+    }
+    parse_rule! {
+        fn parse_flow_controls(tokens) -> _matched: SLIRExpression, _failed: None {
+            match tokens.next_skip_break()? {
+                SLToken::Keyword(Keyword::Return) => SLIRExpression::Return(tokens.next_parse(parse_flow_control_data)?.map(Box::new)?),
+                SLToken::Keyword(Keyword::LoopBreak) => SLIRExpression::Break(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
+                SLToken::Keyword(Keyword::LoopContinue) => SLIRExpression::Continue,
+                _ => _failed!(),
+            }
         }
     }
 }
@@ -1050,7 +1095,17 @@ parse_rule! {
 pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<SLIRBlock, ()> {
     let mut tokens = Tokens::new(&tokens);
 
-    tokens.next_parse(parse_block).ok_or(())
+    let res = tokens.next_parse(parse_block).ok_or(());
+    
+    if tokens.peek_skip_break().is_some() {
+        println!("!!!!!!!!!!!!!!!!!!!!!!!!!!!! UNUSED TOKENS !!!!!!");
+        while let Some(v) = tokens.next_skip_break() {
+            println!(" - {:?}", v);
+        }
+        Err(())
+    } else {
+        res
+    }
 }
 
 #[cfg(test)]

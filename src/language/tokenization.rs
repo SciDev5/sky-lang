@@ -84,6 +84,8 @@ pub enum Keyword {
     VarConstDeclare,
     /** `del` Delete/destroy variable */
     VarDestroy,
+    /** `return` Function return value */
+    Return,
     /** `for` For loop keyword */
     LoopFor,
     /** `in` In keyword */
@@ -213,6 +215,27 @@ macro_rules! subtokenize_sub_enum {
         gen_tokenizer_struct! {
             $name, $outer_enum_type;
             [$(regex::escape($literal)),+].join("|");
+            matched_str => match matched_str {
+                $(
+                    $literal => {
+                        let it = $inner_val;
+                        $outer_enum_entry(it)
+                    },
+                )+
+                _ => panic!("should not be possible"),
+            }
+        }
+    };
+}
+macro_rules! subtokenize_sub_enum_words {
+    {
+        $name: ident;
+        $outer_enum_type: ident : $outer_enum_entry: expr;
+        $($literal: expr => $inner_val: expr),+ $(,)?
+    } => {
+        gen_tokenizer_struct! {
+            $name, $outer_enum_type;
+            [$( [r"\b",&regex::escape($literal),r"\b"].join("")  ),+].join("|");
             matched_str => match matched_str {
                 $(
                     $literal => {
@@ -385,7 +408,7 @@ subtokenize_sub_enum! {
     // ">" => SLOperator::GreaterThan, //  see `tokenize_ambiguity_angle_bracket`
 
 }
-subtokenize_sub_enum! {
+subtokenize_sub_enum_words! {
     tokenize_keyword;
     SLToken : |op| SLToken::Keyword(op);
     "let" => Keyword::VarDeclare,
@@ -423,11 +446,11 @@ impl_tokenizer! {
         tokenize_comment,
 
         // key symbols
-        tokenize_ambiguity_angle_bracket,
         tokenize_brackets,
         tokenize_separators,
         tokenize_ops,
         tokenize_syntactic_sugar,
+        tokenize_ambiguity_angle_bracket,
         tokenize_keyword,
 
         // many-valued symbols

@@ -1,4 +1,4 @@
-use skylab::interpreter::interpreter::{ScopeStackFrame, GarbageCollector};
+use skylab::interpreter::{interpreter::ScopeStackFrame, gc::GarbageCollector};
 
 fn main() {
     let t = skylab::language::tokenization::SLTokenizer::new();
@@ -71,7 +71,8 @@ fn main() {
 
     //     z
     // "));
-    let tokens = dbg!(t.tokenize(r"
+    let tokens = dbg!(t.tokenize(
+        r"
         // fn whatever(inner_fun) {
         //     inner_fun(4)
         // }
@@ -92,16 +93,21 @@ fn main() {
         //     }
         // }
 
-        let i = 0
-        let k = 1
-        loop {
-            i = i + 1
-            k = k * i
-            if i >= 5 {
-                break k
-            }
-        }
-    "));
+        // let i = 0
+        // let k = 1
+        // loop {
+        //     i = i + 1
+        //     k = k * i
+        //     if i >= 5 {
+        //         break k
+        //     }
+        // }
+
+        let a = 1 + 3i
+
+        a * a'
+    "
+    ));
 
     let parsed = dbg!(skylab::language::parser::parse(tokens));
 
@@ -112,6 +118,11 @@ fn main() {
     }
 
     let mut gc = GarbageCollector::new();
-    dbg!(skylab::interpreter::interpreter::execute_serialized(serialized_code, ScopeStackFrame::base(), &mut gc)).unwrap();
+    dbg!(skylab::interpreter::interpreter::execute_serialized(
+        serialized_code,
+        ScopeStackFrame::base(),
+        &mut gc
+    ))
+    .unwrap();
     // dbg!(&gc);
 }

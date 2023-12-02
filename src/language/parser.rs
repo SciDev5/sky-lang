@@ -1,7 +1,7 @@
 use crate::language::tokenization::BracketType;
 
 use super::{
-    slir::{SLIRBlock, SLIRIdent},
+    ast::{ASTBlock, ASTIdent},
     tokenization::SLToken,
 };
 
@@ -176,12 +176,14 @@ macro_rules! parse_match_first {
 }
 
 mod expr {
+    use num::complex::Complex64;
+
     use super::{parse_list, Tokens};
     use crate::{
         language::{
             ops::SLOperator,
             parser::{parse_block, parse_curly_block, parse_type_labelled_ident},
-            slir::{SLIRArray, SLIRExpression, SLIRIdent, SLIRLiteral},
+            ast::{SLIRArray, ASTExpression, ASTIdent, ASTLiteral},
             tokenization::{
                 AngleBracketShape, BracketType, Keyword, SLToken, SeparatorType, SyntacticSugarType,
             },
@@ -264,7 +266,7 @@ mod expr {
         /// ```plaintext
         /// <expr> = <expr_infix> | <range>
         /// ```
-        pub fn parse_expr(tokens) -> _matched: SLIRExpression, _failed: None {
+        pub fn parse_expr(tokens) -> _matched: ASTExpression, _failed: None {
             parse_match_first!(tokens;
                 parse_expr_rangeto(/* allow_anon_func */ true) => |it| it,
                 parse_expr_infixed(/* allow_anon_func */ true) => |it| it,
@@ -277,7 +279,7 @@ mod expr {
         /// ```plaintext
         /// <expr> = <expr_infix> | <range>
         /// ```
-        pub fn parse_expr_no_anonfunc_postfix(tokens) -> _matched: SLIRExpression, _failed: None {
+        pub fn parse_expr_no_anonfunc_postfix(tokens) -> _matched: ASTExpression, _failed: None {
             parse_match_first!(tokens;
                 parse_expr_rangeto(/* allow_anon_func_postfix */ false) => |it| it,
                 parse_expr_infixed(/* allow_anon_func_postfix */ false) => |it| it,
@@ -290,7 +292,7 @@ mod expr {
         /// ```plaintext
         /// <expr_infix> = <expr_no_infix> (<infix> <expr_no_infix>)*
         /// ```
-        pub fn parse_expr_infixed(tokens, (allow_anon_func_postfix): bool) -> _matched: SLIRExpression, failed: None {
+        pub fn parse_expr_infixed(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpression, failed: None {
             let first_expr = tokens.next_parse(|t| parse_expr_no_infix(t, allow_anon_func_postfix))?;
 
             let mut infix = vec![ShuntingYardObj::Expr(first_expr)];
@@ -306,7 +308,7 @@ mod expr {
             }
 
             treeify_infix(&mut infix.into_iter(), &|op, a, b| {
-                SLIRExpression::BinaryOp(op, Box::new(a), Box::new(b))
+                ASTExpression::BinaryOp(op, Box::new(a), Box::new(b))
             })
         }
     }
@@ -342,7 +344,7 @@ mod expr {
         ///     | <expr_extras>
         /// ) <postfix>*
         /// ```
-        fn parse_expr_no_infix(tokens, (allow_anon_func_postfix): bool) -> _matched: SLIRExpression, _failed: None {
+        fn parse_expr_no_infix(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpression, _failed: None {
             // prefixes
             let mut prefixes = vec![];
             while let Some(prefix) = tokens.next_parse(parse_expr_prefix) {
@@ -351,8 +353,8 @@ mod expr {
             // main data
             let expr_main = parse_match_first!(
                 tokens;
-                parse_expr_literal => |literal| SLIRExpression::Literal(literal),
-                parse_expr_identifier => |ident| SLIRExpression::Read(ident),
+                parse_expr_literal => |literal| ASTExpression::Literal(literal),
+                parse_expr_identifier => |ident| ASTExpression::Read(ident),
                 parse_expr_anonfunc => |it| it,
                 parse_expr_sub_blocking => |it| it,
                 parse_expr_grouping => |it| it,
@@ -373,19 +375,19 @@ mod expr {
     }
     enum ExprAffix {
         Op(SLOperator),
-        Indexing(Vec<SLIRExpression>),
-        FunctionCall(Vec<SLIRExpression>), // TODO template types, callback block
+        Indexing(Vec<ASTExpression>),
+        FunctionCall(Vec<ASTExpression>), // TODO template types, callback block
     }
     impl ExprAffix {
-        fn apply_to_expr(self, expr: SLIRExpression) -> SLIRExpression {
+        fn apply_to_expr(self, expr: ASTExpression) -> ASTExpression {
             let expr = Box::new(expr);
             match self {
-                ExprAffix::Op(op) => SLIRExpression::UnaryOp(op, expr),
-                ExprAffix::FunctionCall(arguments) => SLIRExpression::Call {
+                ExprAffix::Op(op) => ASTExpression::UnaryOp(op, expr),
+                ExprAffix::FunctionCall(arguments) => ASTExpression::Call {
                     callable: expr,
                     arguments,
                 },
-                ExprAffix::Indexing(indices) => SLIRExpression::Index { expr, indices },
+                ExprAffix::Indexing(indices) => ASTExpression::Index { expr, indices },
             }
         }
     }
@@ -467,7 +469,7 @@ mod expr {
         ///     | (<expr>)? ":" (<expr>)? ( ":" (<expr>)? )?
         /// )
         /// ```
-        fn parse_expr_rangeto(tokens, (allow_anon_func): bool) -> _matched: SLIRExpression, _failed: None {
+        fn parse_expr_rangeto(tokens, (allow_anon_func): bool) -> _matched: ASTExpression, _failed: None {
             let expr_first = tokens.next_parse(|t| parse_expr_infixed(t, allow_anon_func));
             let has_first_colon = tokens.next_skip_soft_break_if(|it| matches!(it, Some(SLToken::Separator(SeparatorType::Colon))));
             if has_first_colon {
@@ -478,10 +480,10 @@ mod expr {
                     let expr_third = (if tokens.peek_is_hard_break() { None } else { tokens.next_parse(|t| parse_expr_infixed(t, allow_anon_func)) })?;
 
                     // a:b:step
-                    SLIRExpression::Range { start: expr_first.map(Box::new), end: Some(Box::new(expr_third)), step: expr_second.map(Box::new) }
+                    ASTExpression::Range { start: expr_first.map(Box::new), end: Some(Box::new(expr_third)), step: expr_second.map(Box::new) }
                 } else {
                     // a:b
-                    SLIRExpression::Range { start: expr_first.map(Box::new), end: expr_second.map(Box::new), step: None }
+                    ASTExpression::Range { start: expr_first.map(Box::new), end: expr_second.map(Box::new), step: None }
                 }
             } else {
                 // no range
@@ -490,7 +492,7 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_expr_grouping(tokens) -> _matched: SLIRExpression, failed: None {
+        fn parse_expr_grouping(tokens) -> _matched: ASTExpression, failed: None {
             let had_array_symbol = tokens.next_skip_break_if(|token| matches!(token, Some(SLToken::SyntacticSugar(SyntacticSugarType::Hash))));
             match (
                 had_array_symbol,
@@ -534,7 +536,7 @@ mod expr {
                             Tensor::new_matrix_iter(&mut data.into_iter().flat_map(|row|row.into_iter()), width, height)
                         }
                     };
-                    SLIRExpression::Array(SLIRArray::Matrix(mat))
+                    ASTExpression::Array(SLIRArray::Matrix(mat))
                 }
                 // tensor `#< $rank >[ $... ]` something-something it's recursive.
                 (
@@ -558,7 +560,7 @@ mod expr {
                     }
                     let (contents, dim) = tokens.next_parse(|tokens| parse_expr_tensor_entries(tokens, rank))?;
 
-                    SLIRExpression::Array(SLIRArray::Tensor(Tensor::new_raw(contents, dim)))
+                    ASTExpression::Array(SLIRArray::Tensor(Tensor::new_raw(contents, dim)))
                 }
 
                 // TODO array comprehension
@@ -566,7 +568,7 @@ mod expr {
 
                 // list/array `[ $( $data_expr ),* $(,)? ]`
                 (false, SLToken::BracketOpen(BracketType::Square)) => {
-                    SLIRExpression::Array(SLIRArray::List(tokens.next_parse(|tokens| {
+                    ASTExpression::Array(SLIRArray::List(tokens.next_parse(|tokens| {
                         parse_list(
                             tokens,
                             &parse_expr,
@@ -593,7 +595,7 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_expr_tensor_entries(tokens, (rank): usize) -> _matched: (Vec<SLIRExpression>, Vec<usize>), failed: None {
+        fn parse_expr_tensor_entries(tokens, (rank): usize) -> _matched: (Vec<ASTExpression>, Vec<usize>), failed: None {
             if rank == 0 {
                 (vec![tokens.next_parse(parse_expr)?], vec![])
             } else {
@@ -633,7 +635,7 @@ mod expr {
         /// ```plaintext
         /// <expr_anonfunc> = "{" ( (<identifier> (":" <type>)? )","+ (",")? "->")? <expr> "}"
         /// ```
-        fn parse_expr_anonfunc(tokens) -> _matched: SLIRExpression, _failed: None {
+        fn parse_expr_anonfunc(tokens) -> _matched: ASTExpression, _failed: None {
             // "{"
             try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
 
@@ -643,11 +645,11 @@ mod expr {
             // "}"
             try_match!(tokens.next_skip_break(), SLToken::BracketClose(BracketType::Curly))?;
 
-            SLIRExpression::AnonymousFunction { params, block }
+            ASTExpression::AnonymousFunction { params, block }
         }
     }
     parse_rule! {
-        fn parse_expr_anonfunc_parameters(tokens) -> _matched: Vec<SLIRIdent>, _failed: None {
+        fn parse_expr_anonfunc_parameters(tokens) -> _matched: Vec<ASTIdent>, _failed: None {
             tokens.next_parse(|tokens| {
                 parse_list(
                     tokens,
@@ -664,13 +666,13 @@ mod expr {
     }
     parse_rule! {
         /// Parse literal values in expressions, such as `133.45` and `"hello world"`
-        fn parse_expr_literal(tokens) -> _matched: SLIRLiteral, failed: None {
+        fn parse_expr_literal(tokens) -> _matched: ASTLiteral, failed: None {
             match tokens.next_skip_break()? {
-                SLToken::Float { value, imaginary: false } => SLIRLiteral::Float { re: *value, im: 0.0 },
-                SLToken::Float { value, imaginary: true } => SLIRLiteral::Float { re: 0.0, im: *value },
-                SLToken::Int { value, imaginary: false } => SLIRLiteral::Int { re: *value, im: 0 },
-                SLToken::Int { value, imaginary: true } => SLIRLiteral::Int { re: 0, im: *value },
-                SLToken::Bool(value) => SLIRLiteral::Bool(*value),
+                SLToken::Float { value, imaginary: false } => ASTLiteral::Float(*value),
+                SLToken::Float { value, imaginary: true } => ASTLiteral::Complex(Complex64::new(0.0, *value)),
+                SLToken::Int { value, imaginary: false } => ASTLiteral::Int(*value),
+                SLToken::Int { value, imaginary: true } => ASTLiteral::Complex(Complex64::new(0.0, *value as f64)),
+                SLToken::Bool(value) => ASTLiteral::Bool(*value),
                 // TODO strings
                 _ => failed!(),
             }
@@ -680,7 +682,7 @@ mod expr {
         /// Parse identifiers in expressions.
         ///
         /// Identifiers are named variables and funcitons.
-        fn parse_expr_identifier(tokens) -> _matched: SLIRIdent, failed: None {
+        fn parse_expr_identifier(tokens) -> _matched: ASTIdent, failed: None {
             match tokens.next_skip_break()? {
                 SLToken::Identifier(str) => {
                     str.to_string().into_boxed_str()
@@ -706,7 +708,7 @@ mod expr {
     */
 
     parse_rule! {
-        fn parse_expr_sub_blocking(tokens) -> _matched: SLIRExpression, failed: None {
+        fn parse_expr_sub_blocking(tokens) -> _matched: ASTExpression, failed: None {
             let keyword = match tokens.next_skip_break()? {
                 SLToken::Keyword(k) => Some(*k),
                 _ => None,
@@ -722,7 +724,7 @@ mod expr {
     }
     parse_rule! {
         /// ... starts tokenizing after the `if` keyword
-        fn parse_if(tokens) -> _matched: SLIRExpression, _failed: None {
+        fn parse_if(tokens) -> _matched: ASTExpression, _failed: None {
             let condition = Box::new(tokens.next_parse(parse_expr_no_anonfunc_postfix)?);
             let block = tokens.next_parse(parse_curly_block)?;
 
@@ -739,21 +741,21 @@ mod expr {
             } else {
                 None
             };
-            SLIRExpression::Conditional { condition, block, elifs, else_block }
+            ASTExpression::Conditional { condition, block, elifs, else_block }
         }
     }
     parse_rule! {
         /// ... starts tokenizing after the `loop` keyword
-        fn parse_loop(tokens) -> _matched: SLIRExpression, _failed: None {
+        fn parse_loop(tokens) -> _matched: ASTExpression, _failed: None {
             // `$block` code to loop
             let block = tokens.next_parse(parse_curly_block)?;
 
-            SLIRExpression::Loop(block)
+            ASTExpression::Loop(block)
         }
     }
     parse_rule! {
         /// ... starts tokenizing after the `for` keyword
-        fn parse_for(tokens) -> _matched: SLIRExpression, _failed: None {
+        fn parse_for(tokens) -> _matched: ASTExpression, _failed: None {
             // declaration for loop variable
             let (loop_var,) = tokens.next_parse(parse_type_labelled_ident)?;
 
@@ -766,11 +768,11 @@ mod expr {
             // `$block` code to loop
             let block = tokens.next_parse(parse_curly_block)?;
 
-            SLIRExpression::For { loop_var, iterable, block }
+            ASTExpression::For { loop_var, iterable, block }
         }
     }
     parse_rule! {
-        fn parse_flow_control_data(tokens) -> _matched: Option<SLIRExpression>, _failed: None {
+        fn parse_flow_control_data(tokens) -> _matched: Option<ASTExpression>, _failed: None {
             if tokens.peek_is_hard_break() {
                 None
             } else {
@@ -779,11 +781,11 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_flow_controls(tokens) -> _matched: SLIRExpression, _failed: None {
+        fn parse_flow_controls(tokens) -> _matched: ASTExpression, _failed: None {
             match tokens.next_skip_break()? {
-                SLToken::Keyword(Keyword::Return) => SLIRExpression::Return(tokens.next_parse(parse_flow_control_data)?.map(Box::new)?),
-                SLToken::Keyword(Keyword::LoopBreak) => SLIRExpression::Break(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
-                SLToken::Keyword(Keyword::LoopContinue) => SLIRExpression::Continue,
+                SLToken::Keyword(Keyword::Return) => ASTExpression::Return(tokens.next_parse(parse_flow_control_data)?.map(Box::new)?),
+                SLToken::Keyword(Keyword::LoopBreak) => ASTExpression::Break(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
+                SLToken::Keyword(Keyword::LoopContinue) => ASTExpression::Continue,
                 _ => _failed!(),
             }
         }
@@ -793,15 +795,15 @@ mod expr {
 mod varaccessexpr {
     use crate::language::{
         parser::{expr::parse_expr, parse_list, Tokens},
-        slir::{SLIRExpression, SLIRIdent, SLIRVarAccessExpression},
+        ast::{ASTExpression, ASTIdent, ASTVarAccessExpression},
         tokenization::{BracketType, SLToken, SeparatorType},
     };
 
     parse_rule! {
-        pub fn parse_varaccessexpr(tokens) -> _matched: SLIRVarAccessExpression, _failed: None {
-            let ident: SLIRIdent = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
+        pub fn parse_varaccessexpr(tokens) -> _matched: ASTVarAccessExpression, _failed: None {
+            let ident: ASTIdent = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
 
-            let mut access_expr = SLIRVarAccessExpression::Read(ident);
+            let mut access_expr = ASTVarAccessExpression::Read(ident);
             while let Some(postfix) = tokens.next_parse(parse_varaccessexpr_postfix) {
                 access_expr = postfix.apply(access_expr);
             }
@@ -811,12 +813,12 @@ mod varaccessexpr {
     }
 
     enum VarAccessExprPostfix {
-        Indexing(Vec<SLIRExpression>),
+        Indexing(Vec<ASTExpression>),
     }
     impl VarAccessExprPostfix {
-        fn apply(self, child: SLIRVarAccessExpression) -> SLIRVarAccessExpression {
+        fn apply(self, child: ASTVarAccessExpression) -> ASTVarAccessExpression {
             match self {
-                Self::Indexing(indices) => SLIRVarAccessExpression::Index {
+                Self::Indexing(indices) => ASTVarAccessExpression::Index {
                     expr: Box::new(child),
                     indices,
                 },
@@ -852,23 +854,23 @@ mod statement {
             expr::parse_expr, parse_curly_block, parse_type_labelled_ident,
             varaccessexpr::parse_varaccessexpr, Tokens,
         },
-        slir::{SLIRExpression, SLIRIdent, SLIRStatement},
+        ast::{ASTExpression, ASTIdent, ASTStatement},
         tokenization::{BracketType, Keyword, SLToken, SeparatorType},
     };
 
     parse_rule! {
-        pub fn parse_statement(tokens) -> _matched: SLIRStatement, _failed: None {
+        pub fn parse_statement(tokens) -> _matched: ASTStatement, _failed: None {
             parse_match_first!(tokens;
                 parse_func_def => |it| it,
                 parse_var_def => |it| it,
                 parse_var_assign => |it| it,
-                parse_expr => |it| SLIRStatement::Expr(Box::new(it)),
+                parse_expr => |it| ASTStatement::Expr(Box::new(it)),
             )?
         }
     }
 
     parse_rule! {
-        fn parse_ident(tokens) -> _matched: SLIRIdent, _failed: None {
+        fn parse_ident(tokens) -> _matched: ASTIdent, _failed: None {
             try_match!(tokens.next_skip_break(),
                 SLToken::Identifier(key) => *key
             )?.to_string().into_boxed_str()
@@ -876,14 +878,14 @@ mod statement {
     }
 
     parse_rule! {
-        fn parse_func_def(tokens) -> _matched: SLIRStatement, _failed: None {
+        fn parse_func_def(tokens) -> _matched: ASTStatement, _failed: None {
             let doc_comment = tokens.next_parse(parse_doc_comment);
 
             // function keyword `fn`
             try_match!(tokens.next_skip_break(), SLToken::Keyword(Keyword::FunctionDefinition))?;
 
             // name `$ident`
-            let ident: SLIRIdent = tokens.next_parse(parse_ident)?;
+            let ident: ASTIdent = tokens.next_parse(parse_ident)?;
 
             // parameters `( $( $expr ),* )`
             try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Paren))?;
@@ -903,7 +905,7 @@ mod statement {
             // content block `{ $block }`
             let block = tokens.next_parse(parse_curly_block)?;
 
-            SLIRStatement::FunctionDefinition { doc_comment, ident, params, block }
+            ASTStatement::FunctionDefinition { doc_comment, ident, params, block }
         }
     }
 
@@ -911,7 +913,7 @@ mod statement {
         /// Match for the right hand side of an assignment
         ///
         /// `= $expr`
-        fn parse_var_assignment_rhs(tokens) -> _matched: SLIRExpression, _failed: None {
+        fn parse_var_assignment_rhs(tokens) -> _matched: ASTExpression, _failed: None {
             // `=`
             try_match!(tokens.next_skip_break(), SLToken::Operator(SLOperator::Assign))?;
 
@@ -921,7 +923,7 @@ mod statement {
     }
 
     parse_rule! {
-        fn parse_var_def(tokens) -> _matched: SLIRStatement, failed: None {
+        fn parse_var_def(tokens) -> _matched: ASTStatement, failed: None {
             let doc_comment = tokens.next_parse(parse_doc_comment);
 
             // `let` / `const` keyword
@@ -937,7 +939,7 @@ mod statement {
             // optional initial assignment
             let initial_assignment = tokens.next_parse(parse_var_assignment_rhs).map(Box::new);
 
-            SLIRStatement::VarDeclare {
+            ASTStatement::VarDeclare {
                 doc_comment,
                 ident,
                 writable,
@@ -947,13 +949,13 @@ mod statement {
     }
 
     parse_rule! {
-        fn parse_var_assign(tokens) -> _matched: SLIRStatement, _failed: None {
+        fn parse_var_assign(tokens) -> _matched: ASTStatement, _failed: None {
             // variable access expr (ex. `var.abc[34]`)
             let access_expr = tokens.next_parse(parse_varaccessexpr)?;
             // optional initial assignment
             let assignment = Box::new(tokens.next_parse(parse_var_assignment_rhs)?);
 
-            SLIRStatement::Assign(access_expr, assignment)
+            ASTStatement::Assign(access_expr, assignment)
         }
     }
 
@@ -1002,7 +1004,7 @@ mod statement {
 }
 
 parse_rule! {
-    fn parse_type_labelled_ident(tokens) -> _matched: (SLIRIdent,), _failed: None {
+    fn parse_type_labelled_ident(tokens) -> _matched: (ASTIdent,), _failed: None {
         // TODO generalized declaration identifier parser (with destructuring, etc.)
 
         // variable identifier
@@ -1016,7 +1018,7 @@ parse_rule! {
 
 parse_rule! {
     /// Parse a block bounded by curly braces
-    fn parse_curly_block(tokens) -> _matched: SLIRBlock, _failed: None {
+    fn parse_curly_block(tokens) -> _matched: ASTBlock, _failed: None {
         try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
         let block = tokens.next_parse(parse_block)?;
         try_match!(tokens.next_skip_break(), SLToken::BracketClose(BracketType::Curly))?;
@@ -1081,18 +1083,18 @@ fn parse_list<
 }
 
 parse_rule! {
-    fn parse_block(tokens) -> _matched: SLIRBlock, _failed: None {
+    fn parse_block(tokens) -> _matched: ASTBlock, _failed: None {
         let mut exprs = vec![];
 
         while let Some(statement) = tokens.next_parse(statement::parse_statement)  {
             exprs.push(statement)
         }
 
-        SLIRBlock(exprs)
+        ASTBlock(exprs)
     }
 }
 
-pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<SLIRBlock, ()> {
+pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<ASTBlock, ()> {
     let mut tokens = Tokens::new(&tokens);
 
     let res = tokens.next_parse(parse_block).ok_or(());

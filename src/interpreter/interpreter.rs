@@ -1,252 +1,23 @@
-/*
-
-
-
-
-{
-    let a = 0 // primitive
-    let b = a // primitive, copied
-
-    let c = [1,2,3] // object -> ref 123
-    {
-        let d = c // ref 123, copied
-    }
-    let e = c // ref 123, copied
-
-}
-
-
-
-
-
-
-
-
-
-*/
-
 use std::collections::HashMap;
 
-use crate::language::{
-    ops::SLOperator,
-    slir::{
-        SLIRArray, SLIRBlock, SLIRExpression, SLIRLiteral, SLIRStatement, SLIRVarAccessExpression,
+use crate::{
+    interpreter::data::{Function, Object},
+    language::{
+        ops::SLOperator,
+        ast::{
+            SLIRArray, ASTBlock, ASTExpression, ASTLiteral, ASTStatement,
+            ASTVarAccessExpression,
+        },
     },
 };
 
-type Identifier = Box<str>;
+use super::{
+    data::{DataRef, Value, Var},
+    gc::GarbageCollector,
+    irrecoverable_error::IrrecoverableError,
+};
 
-#[derive(Debug, Clone, Copy)]
-pub enum Value {
-    Int(i128),
-    Float { re: f64, im: f64 },
-    Bool(bool),
-    Ref(GCObjectId),
-}
-
-macro_rules! impl_unary_op {
-    ($name: ident; $($pat: pat => $expr: expr),* $(,)?) => {
-        fn $name (self) -> Result<Value, IrrecoverableError> {
-            match self {
-                $($pat => Ok($expr),)*
-                _ => Err(IrrecoverableError::IllegalOperator),
-            }
-        }
-    };
-    ($name: ident; TODO) => {
-        fn $name (self) -> Result<Value, IrrecoverableError> {
-            todo!()
-        }
-    };
-}
-macro_rules! impl_binary_op {
-    ($name: ident; $($pat: pat => $expr: expr),* $(,)?) => {
-        fn $name (self, rhs: Self) -> Result<Value, IrrecoverableError> {
-            match (self, rhs) {
-                $($pat => Ok($expr),)*
-                _ => Err(IrrecoverableError::IllegalOperator),
-            }
-        }
-    };
-    ($name: ident; TODO) => {
-        fn $name (self, rhs: Self) -> Result<Value, IrrecoverableError> {
-            todo!()
-        }
-    };
-}
-impl Value {
-    impl_unary_op!(not;
-        Self::Bool(it) => Self::Bool(!it)
-    );
-    impl_unary_op!(unary_plus;
-        Self::Int(n) => Self::Int(n),
-        Self::Float { re, im } => Self::Float { re, im },
-    );
-    impl_unary_op!(unary_minus;
-        Self::Int(n) => Self::Int(-n),
-        Self::Float { re, im } => Self::Float { re: -re, im: -im },
-    );
-    impl_unary_op!(hermitian_conjugate; TODO);
-    impl_unary_op!(transpose; TODO);
-    impl_unary_op!(inverse; TODO);
-
-    fn apply_op_unary(self, op: SLOperator) -> Result<Value, IrrecoverableError> {
-        match op {
-            SLOperator::Not => self.not(),
-            SLOperator::Plus => self.unary_plus(),
-            SLOperator::Minus => self.unary_minus(),
-            SLOperator::HermitianConjugate => self.hermitian_conjugate(),
-            SLOperator::Transpose => self.transpose(),
-            SLOperator::Inverse => self.inverse(),
-            _ => Err(IrrecoverableError::IllegalOperator),
-        }
-    }
-
-    impl_binary_op!(plus;
-        (Self::Int(n0), Self::Int(n1)) => Self::Int(n0+n1),
-        (Self::Float { re, im }, Self::Int(n)) => Self::Float { re: re + n as f64, im },
-        (Self::Int(n), Self::Float { re, im }) => Self::Float { re: n as f64 + re, im },
-        (Self::Float { re: r0, im: i0 }, Self::Float { re: r1, im: i1 }) => Self::Float { re: r0 + r1, im: i0 + i1 },
-    );
-    impl_binary_op!(scalar_times;
-        (Self::Int(n0), Self::Int(n1)) => Self::Int(n0*n1),
-    );
-    impl_binary_op!(gt;
-        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 > n1),
-    );
-    impl_binary_op!(ge;
-        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 >= n1),
-    );
-    impl_binary_op!(lt;
-        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 < n1),
-    );
-    impl_binary_op!(le;
-        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 <= n1),
-    );
-    impl_binary_op!(eq;
-        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 == n1),
-    );
-    impl_binary_op!(ne;
-        (Self::Int(n0), Self::Int(n1)) => Self::Bool(n0 != n1),
-    );
-
-    fn apply_op_binary(self, rhs: Self, op: SLOperator) -> Result<Value, IrrecoverableError> {
-        match op {
-            SLOperator::Plus => self.plus(rhs),
-            SLOperator::ScalarTimes => self.scalar_times(rhs),
-            SLOperator::GreaterThan => self.gt(rhs),
-            SLOperator::GreaterEqual => self.ge(rhs),
-            SLOperator::LessThan => self.lt(rhs),
-            SLOperator::LessEqual => self.le(rhs),
-            SLOperator::Equal => self.eq(rhs),
-            SLOperator::NotEqual => self.ne(rhs),
-            _ => Err(IrrecoverableError::IllegalOperator),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Function {
-    params: Vec<Identifier>,
-    closure: Scope,
-    code: Vec<Instruction>,
-}
-
-#[derive(Debug)]
-enum Object {
-    Function(Box<Function>),
-    List(Vec<Value>),
-    String(String),
-}
-impl Object {
-    fn index(&self, indices: &Vec<Value>) -> Option<Value> {
-        match self {
-            Object::Function(_) => None,
-            Object::List(values) => {
-                if indices.len() == 1 {
-                    todo!()
-                } else {
-                    None
-                }
-            }
-            Object::String(_) => todo!(),
-        }
-    }
-    fn index_mut(&mut self, indices: &Vec<Value>) -> Option<&mut Value> {
-        match self {
-            Object::Function(_) => None,
-            Object::List(values) => {
-                if indices.len() == 1 {
-                    todo!()
-                } else {
-                    None
-                }
-            }
-            Object::String(_) => todo!(),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum DataRef {
-    Index(GCObjectId, Vec<Value>),
-    Identifier(Identifier),
-    None,
-}
-impl DataRef {
-    fn read(self, scope: &Scope, gc: &GarbageCollector) -> Option<Value> {
-        match self {
-            Self::None => None,
-            Self::Index(obj_id, indices) => gc.borrow(obj_id).index(&indices),
-            Self::Identifier(ident) => scope.read(&ident).ok(),
-        }
-    }
-    fn write<'a>(
-        self,
-        scope: &'a mut Scope,
-        gc: &'a mut GarbageCollector,
-        value: Value,
-    ) -> Option<()> {
-        match self {
-            Self::None => None,
-            Self::Identifier(ident) => {
-                scope.get_var_mut(&ident).ok()?.write(value).ok()?;
-                Some(())
-            }
-            Self::Index(obj_id, indices) => {
-                let value_ref = gc.borrow_mut(obj_id).index_mut(&indices)?;
-                *value_ref = value;
-                Some(())
-            }
-        }
-    }
-    fn index(self, scope: &Scope, gc: &GarbageCollector, index: Vec<Value>) -> Option<DataRef> {
-        match self.read(scope, gc) {
-            Some(Value::Ref(obj_id)) => Some(DataRef::Index(obj_id, index)),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Var {
-    writable: bool,
-    value: Option<Value>,
-}
-impl Var {
-    fn read(&self) -> Result<Value, IrrecoverableError> {
-        self.value
-            .ok_or(IrrecoverableError::VarReadBeforeInitialized)
-    }
-    fn write(&mut self, value: Value) -> Result<(), IrrecoverableError> {
-        if !self.writable && self.value.is_some() {
-            Err(IrrecoverableError::VarNotWritable)
-        } else {
-            self.value = Some(value);
-            Ok(())
-        }
-    }
-}
+pub type Identifier = Box<str>;
 
 /// The instruction index
 ///
@@ -309,7 +80,7 @@ pub enum Instruction {
     /// Guaranteed fail here to allow late failue of invalid code such as top-level breaks.
     Fail(IrrecoverableError),
     /// Put the current value in as the current working value.
-    Primitive(SLIRLiteral),
+    Primitive(ASTLiteral),
     /// Return the working value
     Return,
 }
@@ -451,23 +222,6 @@ struct LoopInfo {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum IrrecoverableError {
-    IllegalBreak,
-    IllegalBreakValue,
-    IllegalContinue,
-    IllegalReturn,
-    IllegalOperator,
-    NonBooleanCondition,
-    VoidAsValue,
-    VarNotFound,
-    VarReadBeforeInitialized,
-    VarNotWritable,
-    VarRedeclaration,
-    NotCallable,
-    NotIndexable,
-    InternalError(&'static str),
-}
-#[derive(Debug, Clone, Copy)]
 pub enum Voidable {
     Void,
     Value(Value),
@@ -482,12 +236,12 @@ impl Voidable {
 }
 
 fn serialize_expr_instructions(
-    code: SLIRExpression,
+    code: ASTExpression,
     context: &InstructionBuildingContext,
 ) -> Vec<Instruction> {
     match code {
-        crate::language::slir::SLIRExpression::Read(ident) => vec![Instruction::ReadVar(ident)],
-        crate::language::slir::SLIRExpression::Call {
+        crate::language::ast::ASTExpression::Read(ident) => vec![Instruction::ReadVar(ident)],
+        crate::language::ast::ASTExpression::Call {
             callable,
             arguments,
         } => {
@@ -503,16 +257,16 @@ fn serialize_expr_instructions(
                 .chain(std::iter::once(Instruction::Call(arguments_len)))
                 .collect()
         }
-        crate::language::slir::SLIRExpression::Index { expr, indices } => todo!(),
-        crate::language::slir::SLIRExpression::PropertyAccess {
+        crate::language::ast::ASTExpression::Index { expr, indices } => todo!(),
+        crate::language::ast::ASTExpression::PropertyAccess {
             expr,
             property_ident,
         } => todo!(),
-        crate::language::slir::SLIRExpression::Literal(literal) => {
+        crate::language::ast::ASTExpression::Literal(literal) => {
             vec![Instruction::Primitive(literal)]
         }
-        crate::language::slir::SLIRExpression::Range { start, step, end } => todo!(),
-        crate::language::slir::SLIRExpression::Array(array) => match array {
+        crate::language::ast::ASTExpression::Range { start, step, end } => todo!(),
+        crate::language::ast::ASTExpression::Array(array) => match array {
             SLIRArray::List(list) => {
                 let len = list.len();
                 concat_instructions(
@@ -528,23 +282,23 @@ fn serialize_expr_instructions(
             }
             _ => todo!(),
         },
-        crate::language::slir::SLIRExpression::AnonymousFunction { params, block } => {
+        crate::language::ast::ASTExpression::AnonymousFunction { params, block } => {
             vec![Instruction::CreateFunction {
                 params,
                 code: serialize_block_instructions(block, context),
             }]
         }
-        crate::language::slir::SLIRExpression::BinaryOp(op, a, b) => concat_instructions([
+        crate::language::ast::ASTExpression::BinaryOp(op, a, b) => concat_instructions([
             serialize_expr_instructions(*a, context),
             vec![Instruction::PushIntermediate],
             serialize_expr_instructions(*b, context),
             vec![Instruction::BinaryOp(op)],
         ]),
-        crate::language::slir::SLIRExpression::UnaryOp(op, expr) => concat_instructions([
+        crate::language::ast::ASTExpression::UnaryOp(op, expr) => concat_instructions([
             serialize_expr_instructions(*expr, context),
             vec![Instruction::UnaryOp(op)],
         ]),
-        crate::language::slir::SLIRExpression::Conditional {
+        crate::language::ast::ASTExpression::Conditional {
             condition,
             block,
             elifs,
@@ -642,7 +396,7 @@ fn serialize_expr_instructions(
 
             instr
         }
-        crate::language::slir::SLIRExpression::Loop(block) => {
+        crate::language::ast::ASTExpression::Loop(block) => {
             let mut context = context.clone();
             context.push_loop_info(LoopInfo {
                 label: None, // TODO loop labels
@@ -651,12 +405,12 @@ fn serialize_expr_instructions(
             let body = serialize_block_instructions(block, &context);
             build_loop(body, context.loop_infos.len() - 1)
         }
-        crate::language::slir::SLIRExpression::For {
+        crate::language::ast::ASTExpression::For {
             loop_var,
             iterable,
             block,
         } => todo!("// TODO for loops"),
-        SLIRExpression::Break(value) => {
+        ASTExpression::Break(value) => {
             if let Some(target_loop) = context.loop_infos.last() {
                 // TODO loop labels
 
@@ -679,7 +433,7 @@ fn serialize_expr_instructions(
                 vec![Instruction::Fail(IrrecoverableError::IllegalBreak)]
             }
         }
-        SLIRExpression::Continue => {
+        ASTExpression::Continue => {
             if let Some(_) = context.loop_infos.last() {
                 // TODO loop labels
                 vec![Instruction::new_jump_continue(0)]
@@ -687,18 +441,18 @@ fn serialize_expr_instructions(
                 vec![Instruction::Fail(IrrecoverableError::IllegalContinue)]
             }
         }
-        SLIRExpression::Return(value) => concat_instructions([
+        ASTExpression::Return(value) => concat_instructions([
             serialize_expr_instructions(*value, context),
             vec![Instruction::Return],
         ]),
     }
 }
 fn serialize_statement_instructions(
-    code: SLIRStatement,
+    code: ASTStatement,
     context: &InstructionBuildingContext,
 ) -> Vec<Instruction> {
     match code {
-        SLIRStatement::FunctionDefinition {
+        ASTStatement::FunctionDefinition {
             ident,
             params,
             block,
@@ -716,7 +470,7 @@ fn serialize_statement_instructions(
                 Instruction::WriteVar(ident),
             ]
         }
-        SLIRStatement::VarDeclare {
+        ASTStatement::VarDeclare {
             ident,
             writable,
             initial_assignment,
@@ -737,8 +491,8 @@ fn serialize_statement_instructions(
                 vec![Instruction::CreateVar { ident, writable }]
             }
         }
-        SLIRStatement::Assign(accessor, expr) => {
-            if let SLIRVarAccessExpression::Read(ident) = accessor {
+        ASTStatement::Assign(accessor, expr) => {
+            if let ASTVarAccessExpression::Read(ident) = accessor {
                 concat_instructions([
                     serialize_expr_instructions(*expr, context),
                     vec![Instruction::RefVar(ident), Instruction::WriteRef],
@@ -747,11 +501,11 @@ fn serialize_statement_instructions(
                 todo!("// TODO variable data access")
             }
         }
-        SLIRStatement::Expr(expr) => serialize_expr_instructions(*expr, context),
+        ASTStatement::Expr(expr) => serialize_expr_instructions(*expr, context),
     }
 }
 fn serialize_block_instructions(
-    code: SLIRBlock,
+    code: ASTBlock,
     context: &InstructionBuildingContext,
 ) -> Vec<Instruction> {
     concat_instructions(
@@ -761,59 +515,13 @@ fn serialize_block_instructions(
     )
 }
 
-pub fn serialize_program(code: SLIRBlock) -> Vec<Instruction> {
+pub fn serialize_program(code: ASTBlock) -> Vec<Instruction> {
     serialize_block_instructions(code, &InstructionBuildingContext { loop_infos: vec![] })
-}
-
-type GCObjectId = u64;
-#[derive(Debug)]
-pub struct GarbageCollector {
-    objects: HashMap<GCObjectId, Object>,
-    current_id: GCObjectId,
-
-    root_scopes: Vec<ScopeStackFrame>,
-}
-impl<'data> GarbageCollector {
-    pub fn new() -> Self {
-        Self {
-            objects: HashMap::new(),
-            current_id: 0,
-            root_scopes: vec![],
-        }
-    }
-    fn next_free_id(&mut self) -> GCObjectId {
-        while self.objects.contains_key(&self.current_id) {
-            self.current_id += 1;
-        }
-        let selected_id = self.current_id;
-        self.current_id += 1;
-        selected_id
-    }
-    fn alloc(&mut self, object: Object) -> GCObjectId {
-        let id = self.next_free_id();
-        self.objects.insert(id, object);
-        id
-    }
-    fn borrow(&self, id: GCObjectId) -> &Object {
-        self.objects
-            .get(&id)
-            .expect("reference to object managed to outlive object")
-    }
-    fn borrow_mut(&mut self, id: GCObjectId) -> &mut Object {
-        self.objects
-            .get_mut(&id)
-            .expect("reference to object managed to outlive object")
-    }
-    // fn mark_and_sweep(&mut self) {
-    //     let encounter: HashMap<u64, bool, RandomState> = HashMap::from_iter(self.objects.keys().map(|it| (*it, false)));
-    //     self.root_scopes.
-
-    // }
 }
 
 #[derive(Debug, Clone)]
 pub struct ScopeStackFrame {
-    vars: HashMap<Identifier, Var>,
+    pub vars: HashMap<Identifier, Var>,
     id: u16,
     intermediate_value_stack: Vec<Value>,
 }
@@ -835,8 +543,8 @@ impl ScopeStackFrame {
 }
 
 #[derive(Debug, Clone)]
-struct Scope {
-    stack: Vec<ScopeStackFrame>,
+pub struct Scope {
+    pub stack: Vec<ScopeStackFrame>,
 }
 impl Scope {
     fn stack_top(&mut self) -> &mut ScopeStackFrame {
@@ -844,7 +552,7 @@ impl Scope {
             .last_mut()
             .expect("scope stack should never empty")
     }
-    fn read(&self, ident: &Identifier) -> Result<Value, IrrecoverableError> {
+    pub fn read(&self, ident: &Identifier) -> Result<Value, IrrecoverableError> {
         for frame in &self.stack {
             if let Some(value) = frame.vars.get(ident) {
                 return Ok(value.read()?);
@@ -852,7 +560,7 @@ impl Scope {
         }
         Err(IrrecoverableError::VarNotFound)
     }
-    fn get_var_mut(&mut self, ident: &Identifier) -> Result<&mut Var, IrrecoverableError> {
+    pub fn get_var_mut(&mut self, ident: &Identifier) -> Result<&mut Var, IrrecoverableError> {
         for frame in &mut self.stack {
             if let Some(value) = frame.vars.get_mut(ident) {
                 return Ok(value);
@@ -877,10 +585,10 @@ impl Scope {
     }
 }
 
-struct CallStackFrame {
-    scope: Scope,
-    code: Vec<Instruction>,
-    exec_index: InstructionIndex,
+pub struct CallStackFrame {
+    pub scope: Scope,
+    pub code: Vec<Instruction>,
+    pub exec_index: InstructionIndex,
 }
 
 impl CallStackFrame {
@@ -976,31 +684,8 @@ pub fn execute_serialized(
                     _ => return Err(IrrecoverableError::NotCallable),
                 };
 
-                let mut new_stack_frame = ScopeStackFrame::base();
-                for (i, value) in arg_values.into_iter().enumerate() {
-                    new_stack_frame.vars.insert(
-                        func.params[i].clone(),
-                        Var {
-                            writable: false,
-                            value: Some(value),
-                        },
-                    );
-                }
-
                 call.exec_index += 1;
-                call_stack.push(CallStackFrame {
-                    scope: Scope {
-                        stack: func
-                            .closure
-                            .stack
-                            .iter()
-                            .map(|it| it.clone())
-                            .chain(std::iter::once(new_stack_frame))
-                            .collect(),
-                    },
-                    code: func.code.clone(),
-                    exec_index: 0,
-                });
+                call_stack.push(func.produce_call_stack_frame(arg_values));
                 continue;
             }
             Instruction::Index(_) => todo!(),
@@ -1056,10 +741,11 @@ pub fn execute_serialized(
             Instruction::Primitive(v) => {
                 working_value = Voidable::Value(match v {
                     // TODO values and also types in general
-                    SLIRLiteral::Int { re, im } => if *im == 0 { Value::Int(*re) } else { Value::Float { re: *re as f64, im: *im as f64 } },
-                    SLIRLiteral::Float { re, im } => Value::Float { re: *re, im: *im },
-                    SLIRLiteral::Bool(v) => Value::Bool(*v),
-                    SLIRLiteral::String(v) => Value::Ref(gc.alloc(Object::String(v.clone()))),
+                    ASTLiteral::Int(n) => Value::Int(*n),
+                    ASTLiteral::Float(v) => Value::Float(*v),
+                    ASTLiteral::Complex(v) => Value::Complex(*v),
+                    ASTLiteral::Bool(v) => Value::Bool(*v),
+                    ASTLiteral::String(v) => Value::Ref(gc.alloc(Object::String(v.clone()))),
                 });
             }
             Instruction::Return => {

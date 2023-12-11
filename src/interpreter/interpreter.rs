@@ -4,7 +4,7 @@ use crate::{
     interpreter::data::{Function, Object},
     language::{
         ast::{
-            ASTBlock, ASTExpression, ASTLiteral, ASTStatement, ASTVarAccessExpression, SLIRArray,
+            ASTBlock, ASTExpression, ASTLiteral, ASTTypesFull, ASTVarAccessExpression, SLIRArray,
         },
         ops::SLOperator,
     },
@@ -239,14 +239,46 @@ impl Voidable {
 }
 
 fn serialize_expr_instructions(
-    code: ASTExpression,
+    code: ASTExpression<ASTTypesFull>,
     context: &InstructionBuildingContext,
 ) -> Vec<Instruction> {
     match code {
-        crate::language::ast::ASTExpression::Read(ident) => vec![Instruction::ReadVar(ident)],
+        ASTExpression::VarDeclare {
+            ident,
+            writable,
+            initial_assignment,
+            ..
+        } => {
+            if let Some(initial_assignment) = initial_assignment {
+                concat_instructions([
+                    serialize_expr_instructions(*initial_assignment, context),
+                    vec![
+                        Instruction::CreateVar {
+                            ident: ident.clone(),
+                            writable,
+                        },
+                        Instruction::WriteVar(ident),
+                    ],
+                ])
+            } else {
+                vec![Instruction::CreateVar { ident, writable }]
+            }
+        }
+        ASTExpression::Assign(accessor, expr) => {
+            if let ASTVarAccessExpression::Var(ident, ty) = accessor {
+                concat_instructions([
+                    serialize_expr_instructions(*expr, context),
+                    vec![Instruction::RefVar(ident), Instruction::WriteRef],
+                ])
+            } else {
+                todo!("// TODO variable data access")
+            }
+        }
+        crate::language::ast::ASTExpression::Read(ident, ty) => vec![Instruction::ReadVar(ident)],
         crate::language::ast::ASTExpression::Call {
             callable,
             arguments,
+            output_ty,
         } => {
             let arguments_len = arguments.len();
             arguments
@@ -260,17 +292,44 @@ fn serialize_expr_instructions(
                 .chain(std::iter::once(Instruction::Call(arguments_len)))
                 .collect()
         }
-        crate::language::ast::ASTExpression::Index { expr, indices } => todo!(),
+        ASTExpression::CallAssociated {
+            expr,
+            property_ident,
+            property_id,
+            arguments,
+            output_ty,
+        } => {
+            let arguments_len = arguments.len();
+            concat_instructions([
+                arguments
+                    .into_iter()
+                    .flat_map(|it| {
+                        serialize_expr_instructions(it, context)
+                            .into_iter()
+                            .chain(std::iter::once(Instruction::PushIntermediate))
+                    })
+                    .collect(),
+                serialize_expr_instructions(*expr, context),
+                vec![Instruction::AssociatedFunctionCall(
+                    property_id,
+                    arguments_len,
+                )],
+            ])
+        }
+        crate::language::ast::ASTExpression::Index {
+            expr,
+            indices,
+            output_ty,
+        } => todo!(),
         crate::language::ast::ASTExpression::PropertyAccess {
             expr,
             property_ident,
-        } => {
-            // FIXME lookup property identifier using static type
-            concat_instructions([
-                serialize_expr_instructions(*expr, context),
-                vec![Instruction::PropertyAccess(0)],
-            ])
-        },
+            property_id,
+            output_ty,
+        } => concat_instructions([
+            serialize_expr_instructions(*expr, context),
+            vec![Instruction::PropertyAccess(property_id)],
+        ]),
         crate::language::ast::ASTExpression::Literal(literal) => {
             vec![Instruction::Primitive(literal)]
         }
@@ -293,17 +352,17 @@ fn serialize_expr_instructions(
         },
         crate::language::ast::ASTExpression::AnonymousFunction { params, block } => {
             vec![Instruction::CreateFunction {
-                params,
+                params: params.into_iter().map(|(it, _)| it).collect(),
                 code: serialize_block_instructions(block, context),
             }]
         }
-        crate::language::ast::ASTExpression::BinaryOp(op, a, b) => concat_instructions([
+        crate::language::ast::ASTExpression::BinaryOp(op, a, b, ty) => concat_instructions([
             serialize_expr_instructions(*a, context),
             vec![Instruction::PushIntermediate],
             serialize_expr_instructions(*b, context),
             vec![Instruction::BinaryOp(op)],
         ]),
-        crate::language::ast::ASTExpression::UnaryOp(op, expr) => concat_instructions([
+        crate::language::ast::ASTExpression::UnaryOp(op, expr, ty) => concat_instructions([
             serialize_expr_instructions(*expr, context),
             vec![Instruction::UnaryOp(op)],
         ]),
@@ -312,6 +371,7 @@ fn serialize_expr_instructions(
             block,
             elifs,
             else_block,
+            output_ty,
         } => {
             let mut condition = serialize_expr_instructions(*condition, context);
             let mut block = serialize_block_instructions(block, context);
@@ -405,7 +465,7 @@ fn serialize_expr_instructions(
 
             instr
         }
-        crate::language::ast::ASTExpression::Loop(block) => {
+        crate::language::ast::ASTExpression::Loop(block, ty) => {
             let mut context = context.clone();
             context.push_loop_info(LoopInfo {
                 label: None, // TODO loop labels
@@ -454,14 +514,7 @@ fn serialize_expr_instructions(
             serialize_expr_instructions(*value, context),
             vec![Instruction::Return],
         ]),
-    }
-}
-fn serialize_statement_instructions(
-    code: ASTStatement,
-    context: &InstructionBuildingContext,
-) -> Vec<Instruction> {
-    match code {
-        ASTStatement::FunctionDefinition {
+        ASTExpression::FunctionDefinition {
             ident,
             params,
             block,
@@ -469,7 +522,7 @@ fn serialize_statement_instructions(
         } => {
             vec![
                 Instruction::CreateFunction {
-                    params,
+                    params: params.into_iter().map(|(ident, _)| ident).collect(),
                     code: serialize_block_instructions(block, context),
                 },
                 Instruction::CreateVar {
@@ -479,52 +532,20 @@ fn serialize_statement_instructions(
                 Instruction::WriteVar(ident),
             ]
         }
-        ASTStatement::VarDeclare {
-            ident,
-            writable,
-            initial_assignment,
-            ..
-        } => {
-            if let Some(initial_assignment) = initial_assignment {
-                concat_instructions([
-                    serialize_expr_instructions(*initial_assignment, context),
-                    vec![
-                        Instruction::CreateVar {
-                            ident: ident.clone(),
-                            writable,
-                        },
-                        Instruction::WriteVar(ident),
-                    ],
-                ])
-            } else {
-                vec![Instruction::CreateVar { ident, writable }]
-            }
-        }
-        ASTStatement::Assign(accessor, expr) => {
-            if let ASTVarAccessExpression::Read(ident) = accessor {
-                concat_instructions([
-                    serialize_expr_instructions(*expr, context),
-                    vec![Instruction::RefVar(ident), Instruction::WriteRef],
-                ])
-            } else {
-                todo!("// TODO variable data access")
-            }
-        }
-        ASTStatement::Expr(expr) => serialize_expr_instructions(*expr, context),
     }
 }
 fn serialize_block_instructions(
-    code: ASTBlock,
+    code: ASTBlock<ASTTypesFull>,
     context: &InstructionBuildingContext,
 ) -> Vec<Instruction> {
     concat_instructions(
         code.0
             .into_iter()
-            .map(|it| serialize_statement_instructions(it, context)),
+            .map(|it| serialize_expr_instructions(it, context)),
     )
 }
 
-pub fn serialize_program(code: ASTBlock) -> Vec<Instruction> {
+pub fn serialize_program(code: ASTBlock<ASTTypesFull>) -> Vec<Instruction> {
     serialize_block_instructions(code, &InstructionBuildingContext { loop_infos: vec![] })
 }
 

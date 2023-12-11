@@ -1,4 +1,7 @@
-use std::{collections::{HashMap, HashSet, hash_map::DefaultHasher}, hash::Hasher};
+use std::{
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    hash::Hasher,
+};
 
 use num::{complex::Complex64, Rational32, Zero};
 
@@ -156,7 +159,10 @@ impl Value {
         }
     }
 
-    pub fn as_object<'gc>(&self, gc: &'gc GarbageCollector) -> Result<&'gc Object, IrrecoverableError> {
+    pub fn as_object<'gc>(
+        &self,
+        gc: &'gc GarbageCollector,
+    ) -> Result<&'gc Object, IrrecoverableError> {
         match self {
             Self::Ref(id) => Ok(gc.borrow(*id)),
             _ => Err(IrrecoverableError::NotAnObject),
@@ -244,20 +250,35 @@ impl Units {
         let mut si_scale = Rational32::new(1, 1);
         let mut si_order = [Rational32::zero(); 7];
         for UnitsSI { order, scale, .. } in &self.si {
-            for i in 0 .. si_order.len() {
+            for i in 0..si_order.len() {
                 si_order[i] += order[i];
             }
             si_scale *= scale;
         }
         let mut labeled_unit_orders = HashMap::new();
         for UnitsCountable { label, order } in &self.countable {
-            labeled_unit_orders.entry(label)
+            labeled_unit_orders
+                .entry(label)
                 .and_modify(|ord| *ord *= *order)
                 .or_insert(*order);
         }
         labeled_unit_orders.retain(|_, order| !order.is_zero());
 
-        (UnitsSI {label: None, order: si_order, scale: si_scale}, labeled_unit_orders)
+        (
+            UnitsSI {
+                label: None,
+                order: si_order,
+                scale: si_scale,
+            },
+            labeled_unit_orders,
+        )
+    }
+    fn or(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else {
+            todo!("// TODO type merge failure")
+        }
     }
 }
 impl PartialEq for Units {
@@ -269,7 +290,7 @@ impl PartialEq for Units {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Type {
     Int(Option<Units>),
     Float(Option<Units>),
@@ -277,8 +298,50 @@ pub enum Type {
     Bool,
     String,
     Function(Vec<Type>, Option<Box<Type>>),
-    ClassInstance(Class),
-    EnumInstance(Enum),
+    ClassInstance(GCObjectId),
+    EnumInstance(GCObjectId),
+    Never,
+}
+impl Type {
+    pub fn or(self, other: Self) -> Type {
+        match (self, other) {
+            (Self::Int(Some(self_units)), Self::Int(Some(other_units))) => {
+                Self::Int(Some(self_units.or(other_units)))
+            }
+            (Self::Int(None), Self::Int(None)) => Self::Int(None),
+            (Self::Float(Some(self_units)), Self::Float(Some(other_units))) => {
+                Self::Float(Some(self_units.or(other_units)))
+            }
+            (Self::Float(None), Self::Float(None)) => Self::Float(None),
+            (Self::Complex(Some(self_units)), Self::Complex(Some(other_units))) => {
+                Self::Complex(Some(self_units.or(other_units)))
+            }
+            (Self::Complex(None), Self::Complex(None)) => Self::Complex(None),
+            (Self::Bool, Self::Bool) => Self::Bool,
+            (Self::String, Self::String) => Self::String,
+            (Self::Function(self_args, self_ret), Self::Function(other_args, other_ret)) => {
+                todo!("// TODO function type merge")
+            }
+            (Self::ClassInstance(_), Self::ClassInstance(_)) => todo!("// TODO polymorphism"),
+            (Self::EnumInstance(_), Self::EnumInstance(_)) => todo!("// TODO polymorphism"),
+            (Self::Never, Self::Never) => Self::Never,
+            (Self::Never, t) => t,
+            (t, Self::Never) => t,
+            _ => todo!("// TODO handle type merge failure"),
+        }
+    }
+    pub fn voidable_or(
+        self_: Option<Self>,
+        other: Option<Self>,
+        default_to_void: bool,
+    ) -> Option<Type> {
+        match (self_, other) {
+            (Some(self_), Some(other)) => Some(self_.or(other)),
+            (None, None) => None,
+            _ if default_to_void => None,
+            _ => todo!("// TODO handle type merge failure"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -411,7 +474,10 @@ pub enum Object {
     Enum(Enum),
 }
 impl Object {
-    pub fn associated_functions<'a: 'gc, 'gc>(&'a self, gc: &'gc GarbageCollector) -> &'gc AssociatedFunctions {
+    pub fn associated_functions<'a: 'gc, 'gc>(
+        &'a self,
+        gc: &'gc GarbageCollector,
+    ) -> &'gc AssociatedFunctions {
         match self {
             Self::Class(v) => v.associated_functions(),
             Self::ClassInstance(v) => v.get_class(gc).associated_functions(),

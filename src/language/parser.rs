@@ -1,7 +1,7 @@
-use crate::language::tokenization::BracketType;
+use crate::{language::tokenization::{BracketType, SeparatorType}, interpreter::data::Type};
 
 use super::{
-    ast::{ASTBlock, ASTIdent},
+    ast::{ASTBlock, ASTIdent, ASTTypesIncomplete},
     tokenization::SLToken,
 };
 
@@ -181,9 +181,12 @@ mod expr {
     use super::{parse_list, Tokens};
     use crate::{
         language::{
+            ast::{ASTExpression, ASTIdent, ASTLiteral, ASTTypesIncomplete, SLIRArray},
             ops::SLOperator,
-            parser::{parse_block, parse_curly_block, parse_type_labelled_ident},
-            ast::{SLIRArray, ASTExpression, ASTIdent, ASTLiteral},
+            parser::{
+                parse_block, parse_curly_block, parse_ident_typed,
+                varaccessexpr::parse_varaccessexpr, parse_ident_optionally_typed,
+            },
             tokenization::{
                 AngleBracketShape, BracketType, Keyword, SLToken, SeparatorType, SyntacticSugarType,
             },
@@ -191,8 +194,10 @@ mod expr {
         math::{
             shunting_yard::{treeify_infix, ShuntingYardObj},
             tensor::Tensor,
-        },
+        }, interpreter::data::Type,
     };
+
+    type ASTExpr = ASTExpression<ASTTypesIncomplete>;
 
     /*
     A finite state machine should be able to handle expression parsing.
@@ -266,7 +271,7 @@ mod expr {
         /// ```plaintext
         /// <expr> = <expr_infix> | <range>
         /// ```
-        pub fn parse_expr(tokens) -> _matched: ASTExpression, _failed: None {
+        pub fn parse_expr(tokens) -> _matched: ASTExpr, _failed: None {
             parse_match_first!(tokens;
                 parse_expr_rangeto(/* allow_anon_func */ true) => |it| it,
                 parse_expr_infixed(/* allow_anon_func */ true) => |it| it,
@@ -279,7 +284,7 @@ mod expr {
         /// ```plaintext
         /// <expr> = <expr_infix> | <range>
         /// ```
-        pub fn parse_expr_no_anonfunc_postfix(tokens) -> _matched: ASTExpression, _failed: None {
+        pub fn parse_expr_no_anonfunc_postfix(tokens) -> _matched: ASTExpr, _failed: None {
             parse_match_first!(tokens;
                 parse_expr_rangeto(/* allow_anon_func_postfix */ false) => |it| it,
                 parse_expr_infixed(/* allow_anon_func_postfix */ false) => |it| it,
@@ -292,7 +297,7 @@ mod expr {
         /// ```plaintext
         /// <expr_infix> = <expr_no_infix> (<infix> <expr_no_infix>)*
         /// ```
-        pub fn parse_expr_infixed(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpression, failed: None {
+        pub fn parse_expr_infixed(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpr, failed: None {
             let first_expr = tokens.next_parse(|t| parse_expr_no_infix(t, allow_anon_func_postfix))?;
 
             let mut infix = vec![ShuntingYardObj::Expr(first_expr)];
@@ -308,7 +313,7 @@ mod expr {
             }
 
             treeify_infix(&mut infix.into_iter(), &|op, a, b| {
-                ASTExpression::BinaryOp(op, Box::new(a), Box::new(b))
+                ASTExpression::BinaryOp(op, Box::new(a), Box::new(b), None)
             })
         }
     }
@@ -344,7 +349,7 @@ mod expr {
         ///     | <expr_extras>
         /// ) <postfix>*
         /// ```
-        fn parse_expr_no_infix(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpression, _failed: None {
+        fn parse_expr_no_infix(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpr, _failed: None {
             // prefixes
             let mut prefixes = vec![];
             while let Some(prefix) = tokens.next_parse(parse_expr_prefix) {
@@ -353,8 +358,11 @@ mod expr {
             // main data
             let expr_main = parse_match_first!(
                 tokens;
+                parse_func_def => |it| it,
+                parse_var_def => |it| it,
+                parse_var_assign => |it| it,
                 parse_expr_literal => |literal| ASTExpression::Literal(literal),
-                parse_expr_identifier => |ident| ASTExpression::Read(ident),
+                parse_expr_identifier => |ident| ASTExpression::Read(ident, None),
                 parse_expr_anonfunc => |it| it,
                 parse_expr_sub_blocking => |it| it,
                 parse_expr_grouping => |it| it,
@@ -375,19 +383,24 @@ mod expr {
     }
     enum ExprAffix {
         Op(SLOperator),
-        Indexing(Vec<ASTExpression>),
-        FunctionCall(Vec<ASTExpression>), // TODO template types, callback block
+        Indexing(Vec<ASTExpr>),
+        FunctionCall(Vec<ASTExpr>), // TODO template types, callback block
     }
     impl ExprAffix {
-        fn apply_to_expr(self, expr: ASTExpression) -> ASTExpression {
+        fn apply_to_expr(self, expr: ASTExpr) -> ASTExpr {
             let expr = Box::new(expr);
             match self {
-                ExprAffix::Op(op) => ASTExpression::UnaryOp(op, expr),
+                ExprAffix::Op(op) => ASTExpression::UnaryOp(op, expr, None),
                 ExprAffix::FunctionCall(arguments) => ASTExpression::Call {
                     callable: expr,
                     arguments,
+                    output_ty: None,
                 },
-                ExprAffix::Indexing(indices) => ASTExpression::Index { expr, indices },
+                ExprAffix::Indexing(indices) => ASTExpression::Index {
+                    expr,
+                    indices,
+                    output_ty: None,
+                },
             }
         }
     }
@@ -452,8 +465,8 @@ mod expr {
                     let result = ExprAffix::FunctionCall(arguments);
                     matched!(result);
                 }
-                SLToken::BracketOpen(BracketType::Curly) if allow_anon_func_postfix => {  
-                    tokens.step_back();                  
+                SLToken::BracketOpen(BracketType::Curly) if allow_anon_func_postfix => {
+                    tokens.step_back();
                     let result = ExprAffix::FunctionCall(vec![tokens.next_parse(parse_expr_anonfunc)?]);
                     matched!(result);
                 }
@@ -469,7 +482,7 @@ mod expr {
         ///     | (<expr>)? ":" (<expr>)? ( ":" (<expr>)? )?
         /// )
         /// ```
-        fn parse_expr_rangeto(tokens, (allow_anon_func): bool) -> _matched: ASTExpression, _failed: None {
+        fn parse_expr_rangeto(tokens, (allow_anon_func): bool) -> _matched: ASTExpr, _failed: None {
             let expr_first = tokens.next_parse(|t| parse_expr_infixed(t, allow_anon_func));
             let has_first_colon = tokens.next_skip_soft_break_if(|it| matches!(it, Some(SLToken::Separator(SeparatorType::Colon))));
             if has_first_colon {
@@ -492,7 +505,7 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_expr_grouping(tokens) -> _matched: ASTExpression, failed: None {
+        fn parse_expr_grouping(tokens) -> _matched: ASTExpr, failed: None {
             let had_array_symbol = tokens.next_skip_break_if(|token| matches!(token, Some(SLToken::SyntacticSugar(SyntacticSugarType::Hash))));
             match (
                 had_array_symbol,
@@ -595,7 +608,7 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_expr_tensor_entries(tokens, (rank): usize) -> _matched: (Vec<ASTExpression>, Vec<usize>), failed: None {
+        fn parse_expr_tensor_entries(tokens, (rank): usize) -> _matched: (Vec<ASTExpr>, Vec<usize>), failed: None {
             if rank == 0 {
                 (vec![tokens.next_parse(parse_expr)?], vec![])
             } else {
@@ -635,7 +648,7 @@ mod expr {
         /// ```plaintext
         /// <expr_anonfunc> = "{" ( (<identifier> (":" <type>)? )","+ (",")? "->")? <expr> "}"
         /// ```
-        fn parse_expr_anonfunc(tokens) -> _matched: ASTExpression, _failed: None {
+        fn parse_expr_anonfunc(tokens) -> _matched: ASTExpr, _failed: None {
             // "{"
             try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
 
@@ -649,14 +662,14 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_expr_anonfunc_parameters(tokens) -> _matched: Vec<ASTIdent>, _failed: None {
+        fn parse_expr_anonfunc_parameters(tokens) -> _matched: Vec<(ASTIdent, Option<Type>)>, _failed: None {
             tokens.next_parse(|tokens| {
                 parse_list(
                     tokens,
                     &|mut tokens| {
                         // TODO merge function parameter matchers
-                        let (param_ident,) = tokens.next_parse(parse_type_labelled_ident)?;
-                        Some((tokens, param_ident))
+                        let param = tokens.next_parse(parse_ident_optionally_typed)?;
+                        Some((tokens, param))
                     },
                     |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
                     |token| matches!(token, SLToken::Separator(SeparatorType::ThinArrowRight)),
@@ -708,7 +721,7 @@ mod expr {
     */
 
     parse_rule! {
-        fn parse_expr_sub_blocking(tokens) -> _matched: ASTExpression, failed: None {
+        fn parse_expr_sub_blocking(tokens) -> _matched: ASTExpr, failed: None {
             let keyword = match tokens.next_skip_break()? {
                 SLToken::Keyword(k) => Some(*k),
                 _ => None,
@@ -724,7 +737,7 @@ mod expr {
     }
     parse_rule! {
         /// ... starts tokenizing after the `if` keyword
-        fn parse_if(tokens) -> _matched: ASTExpression, _failed: None {
+        fn parse_if(tokens) -> _matched: ASTExpr, _failed: None {
             let condition = Box::new(tokens.next_parse(parse_expr_no_anonfunc_postfix)?);
             let block = tokens.next_parse(parse_curly_block)?;
 
@@ -741,23 +754,23 @@ mod expr {
             } else {
                 None
             };
-            ASTExpression::Conditional { condition, block, elifs, else_block }
+            ASTExpression::Conditional { condition, block, elifs, else_block, output_ty: None }
         }
     }
     parse_rule! {
         /// ... starts tokenizing after the `loop` keyword
-        fn parse_loop(tokens) -> _matched: ASTExpression, _failed: None {
+        fn parse_loop(tokens) -> _matched: ASTExpr, _failed: None {
             // `$block` code to loop
             let block = tokens.next_parse(parse_curly_block)?;
 
-            ASTExpression::Loop(block)
+            ASTExpression::Loop(block, None)
         }
     }
     parse_rule! {
         /// ... starts tokenizing after the `for` keyword
-        fn parse_for(tokens) -> _matched: ASTExpression, _failed: None {
+        fn parse_for(tokens) -> _matched: ASTExpr, _failed: None {
             // declaration for loop variable
-            let (loop_var,) = tokens.next_parse(parse_type_labelled_ident)?;
+            let loop_var = tokens.next_parse(parse_ident_optionally_typed)?;
 
             // `in` keyword
             try_match!(tokens.next_skip_break(), SLToken::Keyword(Keyword::In))?;
@@ -772,7 +785,7 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_flow_control_data(tokens) -> _matched: Option<ASTExpression>, _failed: None {
+        fn parse_flow_control_data(tokens) -> _matched: Option<ASTExpr>, _failed: None {
             if tokens.peek_is_hard_break() {
                 None
             } else {
@@ -781,91 +794,13 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_flow_controls(tokens) -> _matched: ASTExpression, _failed: None {
+        fn parse_flow_controls(tokens) -> _matched: ASTExpr, _failed: None {
             match tokens.next_skip_break()? {
                 SLToken::Keyword(Keyword::Return) => ASTExpression::Return(tokens.next_parse(parse_flow_control_data)?.map(Box::new)?),
                 SLToken::Keyword(Keyword::LoopBreak) => ASTExpression::Break(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
                 SLToken::Keyword(Keyword::LoopContinue) => ASTExpression::Continue,
                 _ => _failed!(),
             }
-        }
-    }
-}
-
-mod varaccessexpr {
-    use crate::language::{
-        parser::{expr::parse_expr, parse_list, Tokens},
-        ast::{ASTExpression, ASTIdent, ASTVarAccessExpression},
-        tokenization::{BracketType, SLToken, SeparatorType},
-    };
-
-    parse_rule! {
-        pub fn parse_varaccessexpr(tokens) -> _matched: ASTVarAccessExpression, _failed: None {
-            let ident: ASTIdent = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
-
-            let mut access_expr = ASTVarAccessExpression::Read(ident);
-            while let Some(postfix) = tokens.next_parse(parse_varaccessexpr_postfix) {
-                access_expr = postfix.apply(access_expr);
-            }
-
-            access_expr
-        }
-    }
-
-    enum VarAccessExprPostfix {
-        Indexing(Vec<ASTExpression>),
-    }
-    impl VarAccessExprPostfix {
-        fn apply(self, child: ASTVarAccessExpression) -> ASTVarAccessExpression {
-            match self {
-                Self::Indexing(indices) => ASTVarAccessExpression::Index {
-                    expr: Box::new(child),
-                    indices,
-                },
-            }
-        }
-    }
-
-    parse_rule! {
-        fn parse_varaccessexpr_postfix(tokens) -> matched: VarAccessExprPostfix, failed: None {
-            // only skipping soft breaks, postfixes dangling after newlines are hard
-            // to spot or often not actually meant to be postfixes.
-            match tokens.next_skip_soft_break()? {
-                SLToken::BracketOpen(BracketType::Square) => {
-                    let indices = tokens.next_parse(|tokens| parse_list(tokens,
-                        &parse_expr,
-                        |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
-                        |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
-                    ))?;
-                    let result = VarAccessExprPostfix::Indexing(indices);
-                    matched!(result);
-                }
-                _ => failed!(),
-            }
-        }
-    }
-}
-
-mod statement {
-    use super::parse_list;
-    use crate::language::{
-        ops::SLOperator,
-        parser::{
-            expr::parse_expr, parse_curly_block, parse_type_labelled_ident,
-            varaccessexpr::parse_varaccessexpr, Tokens,
-        },
-        ast::{ASTExpression, ASTIdent, ASTStatement},
-        tokenization::{BracketType, Keyword, SLToken, SeparatorType},
-    };
-
-    parse_rule! {
-        pub fn parse_statement(tokens) -> _matched: ASTStatement, _failed: None {
-            parse_match_first!(tokens;
-                parse_func_def => |it| it,
-                parse_var_def => |it| it,
-                parse_var_assign => |it| it,
-                parse_expr => |it| ASTStatement::Expr(Box::new(it)),
-            )?
         }
     }
 
@@ -878,7 +813,7 @@ mod statement {
     }
 
     parse_rule! {
-        fn parse_func_def(tokens) -> _matched: ASTStatement, _failed: None {
+        fn parse_func_def(tokens) -> _matched: ASTExpr, _failed: None {
             let doc_comment = tokens.next_parse(parse_doc_comment);
 
             // function keyword `fn`
@@ -893,19 +828,20 @@ mod statement {
                 parse_list(
                     tokens,
                     &|mut tokens| {
-                        let (param_ident,) = tokens.next_parse(parse_type_labelled_ident)?;
-                        Some((tokens, param_ident))
+                        let param = tokens.next_parse(parse_ident_typed)?;
+                        Some((tokens, param))
                     },
                     |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
                     |token| matches!(token, SLToken::BracketClose(BracketType::Paren)),
                 )
             })?;
             // TODO function return type
+            let return_ty = None;
 
             // content block `{ $block }`
             let block = tokens.next_parse(parse_curly_block)?;
 
-            ASTStatement::FunctionDefinition { doc_comment, ident, params, block }
+            ASTExpression::FunctionDefinition { doc_comment, ident, params, block, return_ty }
         }
     }
 
@@ -913,7 +849,7 @@ mod statement {
         /// Match for the right hand side of an assignment
         ///
         /// `= $expr`
-        fn parse_var_assignment_rhs(tokens) -> _matched: ASTExpression, _failed: None {
+        fn parse_var_assignment_rhs(tokens) -> _matched: ASTExpr, _failed: None {
             // `=`
             try_match!(tokens.next_skip_break(), SLToken::Operator(SLOperator::Assign))?;
 
@@ -923,7 +859,7 @@ mod statement {
     }
 
     parse_rule! {
-        fn parse_var_def(tokens) -> _matched: ASTStatement, failed: None {
+        fn parse_var_def(tokens) -> _matched: ASTExpr, failed: None {
             let doc_comment = tokens.next_parse(parse_doc_comment);
 
             // `let` / `const` keyword
@@ -934,28 +870,29 @@ mod statement {
             };
 
             // name `$ident` and type
-            let (ident,) = tokens.next_parse(parse_type_labelled_ident)?;
+            let (ident, ty) = tokens.next_parse(parse_ident_optionally_typed)?;
 
             // optional initial assignment
             let initial_assignment = tokens.next_parse(parse_var_assignment_rhs).map(Box::new);
 
-            ASTStatement::VarDeclare {
+            ASTExpression::VarDeclare {
                 doc_comment,
                 ident,
                 writable,
                 initial_assignment,
+                ty,
             }
         }
     }
 
     parse_rule! {
-        fn parse_var_assign(tokens) -> _matched: ASTStatement, _failed: None {
+        fn parse_var_assign(tokens) -> _matched: ASTExpr, _failed: None {
             // variable access expr (ex. `var.abc[34]`)
             let access_expr = tokens.next_parse(parse_varaccessexpr)?;
             // optional initial assignment
             let assignment = Box::new(tokens.next_parse(parse_var_assignment_rhs)?);
 
-            ASTStatement::Assign(access_expr, assignment)
+            ASTExpression::Assign(access_expr, assignment)
         }
     }
 
@@ -1003,22 +940,104 @@ mod statement {
     }
 }
 
+mod varaccessexpr {
+    use crate::language::{
+        ast::{ASTExpression, ASTIdent, ASTTypesIncomplete, ASTVarAccessExpression},
+        parser::{expr::parse_expr, parse_list, Tokens},
+        tokenization::{BracketType, SLToken, SeparatorType},
+    };
+
+    parse_rule! {
+        pub fn parse_varaccessexpr(tokens) -> _matched: ASTVarAccessExpression<ASTTypesIncomplete>, _failed: None {
+            let ident: ASTIdent = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
+
+            let mut access_expr = ASTVarAccessExpression::Var(ident, None);
+            // TODO matching more complex access expressions
+
+            access_expr
+        }
+    }
+
+    enum VarAccessExprPostfix {
+        Indexing(Vec<ASTExpression<ASTTypesIncomplete>>),
+    }
+    impl VarAccessExprPostfix {
+        fn apply(
+            self,
+            child: ASTExpression<ASTTypesIncomplete>,
+        ) -> ASTVarAccessExpression<ASTTypesIncomplete> {
+            match self {
+                Self::Indexing(indices) => ASTVarAccessExpression::<ASTTypesIncomplete>::Index {
+                    expr: Box::new(child),
+                    indices,
+                    associated_func_id: None,
+                    ty: None,
+                },
+            }
+        }
+    }
+
+    parse_rule! {
+        fn parse_varaccessexpr_postfix(tokens) -> matched: VarAccessExprPostfix, failed: None {
+            // only skipping soft breaks, postfixes dangling after newlines are hard
+            // to spot or often not actually meant to be postfixes.
+            match tokens.next_skip_soft_break()? {
+                SLToken::BracketOpen(BracketType::Square) => {
+                    let indices = tokens.next_parse(|tokens| parse_list(tokens,
+                        &parse_expr,
+                        |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
+                        |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
+                    ))?;
+                    let result = VarAccessExprPostfix::Indexing(indices);
+                    matched!(result);
+                }
+                _ => failed!(),
+            }
+        }
+    }
+}
+
 parse_rule! {
-    fn parse_type_labelled_ident(tokens) -> _matched: (ASTIdent,), _failed: None {
+    fn parse_type_annotation(tokens) -> _matched: Type, _failed: None {
+        todo!("parse type annotations");
+    }
+}
+
+parse_rule! {
+    fn parse_ident_typed(tokens) -> _matched: (ASTIdent,Type), _failed: None {
         // TODO generalized declaration identifier parser (with destructuring, etc.)
 
         // variable identifier
         let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
 
-        // TODO type annotations
+        try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon))?;
+        let ty = tokens.next_parse(parse_type_annotation)?;
 
-        (ident,)
+        (ident,ty)
+    }
+}
+parse_rule! {
+    fn parse_ident_optionally_typed(tokens) -> _matched: (ASTIdent,Option<Type>), _failed: None {
+        // TODO generalized declaration identifier parser (with destructuring, etc.)
+
+        // variable identifier
+        let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
+
+        let ty = if try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon)).is_some() {
+            // type annotation (must not fail here or it's invalid)
+            Some(tokens.next_parse(parse_type_annotation)?)
+        } else {
+            // or no type annotation
+            None
+        };
+
+        (ident,ty)
     }
 }
 
 parse_rule! {
     /// Parse a block bounded by curly braces
-    fn parse_curly_block(tokens) -> _matched: ASTBlock, _failed: None {
+    fn parse_curly_block(tokens) -> _matched: ASTBlock<ASTTypesIncomplete>, _failed: None {
         try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
         let block = tokens.next_parse(parse_block)?;
         try_match!(tokens.next_skip_break(), SLToken::BracketClose(BracketType::Curly))?;
@@ -1083,22 +1102,22 @@ fn parse_list<
 }
 
 parse_rule! {
-    fn parse_block(tokens) -> _matched: ASTBlock, _failed: None {
+    fn parse_block(tokens) -> _matched: ASTBlock<ASTTypesIncomplete>, _failed: None {
         let mut exprs = vec![];
 
-        while let Some(statement) = tokens.next_parse(statement::parse_statement)  {
+        while let Some(statement) = tokens.next_parse(expr::parse_expr)  {
             exprs.push(statement)
         }
 
-        ASTBlock(exprs)
+        ASTBlock(exprs, None)
     }
 }
 
-pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<ASTBlock, ()> {
+pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<ASTBlock<ASTTypesIncomplete>, ()> {
     let mut tokens = Tokens::new(&tokens);
 
     let res = tokens.next_parse(parse_block).ok_or(());
-    
+
     if tokens.peek_skip_break().is_some() {
         println!("!!!!!!!!!!!!!!!!!!!!!!!!!!!! UNUSED TOKENS !!!!!!");
         while let Some(v) = tokens.next_skip_break() {

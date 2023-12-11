@@ -71,47 +71,50 @@ fn main() {
 
     //     z
     // "));
-    let tokens = dbg!(t.tokenize(
-        r"
-        // fn whatever(inner_fun) {
-        //     inner_fun(4)
-        // }
+    // let tokens = dbg!(t.tokenize(
+    //     r"
+    //     // fn whatever(inner_fun) {
+    //     //     inner_fun(4)
+    //     // }
 
-        // let k = whatever { x -> x + 2 }
+    //     // let k = whatever { x -> x + 2 }
 
-        // if true {
-        //     if (whatever { _ -> true }) {
-        //         if true {
-        //             if false {
-        //                 1
-        //             } else {
-        //                 k
-        //             }
-        //         } else {
-        //             3
-        //         }
-        //     }
-        // }
+    //     // if true {
+    //     //     if (whatever { _ -> true }) {
+    //     //         if true {
+    //     //             if false {
+    //     //                 1
+    //     //             } else {
+    //     //                 k
+    //     //             }
+    //     //         } else {
+    //     //             3
+    //     //         }
+    //     //     }
+    //     // }
 
-        // let i = 0
-        // let k = 1
-        // loop {
-        //     i = i + 1
-        //     k = k * i
-        //     if i >= 5 {
-        //         break k
-        //     }
-        // }
+    //     // let i = 0
+    //     // let k = 1
+    //     // loop {
+    //     //     i = i + 1
+    //     //     k = k * i
+    //     //     if i >= 5 {
+    //     //         break k
+    //     //     }
+    //     // }
 
-        let a = 1 + 3i
+    //     let a = 1 + 3i
 
-        a * a'
-    "
-    ));
+    //     a * a'
+    // "
+    // ));
+    let tokens = dbg!(t.tokenize("if 1+2 == 3 { 9 } else { 4 }"));
 
     let parsed = dbg!(skylab::language::parser::parse(tokens));
 
-    let serialized_code = skylab::interpreter::interpreter::serialize_program(parsed.unwrap());
+    let typed = dbg!(parsed.map(skylab::interpreter::type_eliator::solve_types_block));
+
+    let serialized_code = skylab::interpreter::interpreter::serialize_program(typed.unwrap());
 
     for (i, cmd) in serialized_code.iter().enumerate() {
         println!("{} :: {:?}", i, cmd);

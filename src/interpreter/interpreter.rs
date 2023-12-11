@@ -3,11 +3,10 @@ use std::collections::HashMap;
 use crate::{
     interpreter::data::{Function, Object},
     language::{
-        ops::SLOperator,
         ast::{
-            SLIRArray, ASTBlock, ASTExpression, ASTLiteral, ASTStatement,
-            ASTVarAccessExpression,
+            ASTBlock, ASTExpression, ASTLiteral, ASTStatement, ASTVarAccessExpression, SLIRArray,
         },
+        ops::SLOperator,
     },
 };
 
@@ -60,6 +59,10 @@ pub enum Instruction {
     Call(usize),
     /// Indexes into the working value, indices given by popping the given number of values from the intermediate value stack.
     Index(usize),
+    /// Accesses a property value by id
+    PropertyAccess(u16),
+    /// Accesses an associated function by id, and usize given parameter count
+    AssociatedFunctionCall(u16, usize),
     /// Create a list of the given length by popping [length] values from the intermediate value stack.
     CreateList(usize),
     /// Create a function value, capturing the current scope.
@@ -261,7 +264,13 @@ fn serialize_expr_instructions(
         crate::language::ast::ASTExpression::PropertyAccess {
             expr,
             property_ident,
-        } => todo!(),
+        } => {
+            // FIXME lookup property identifier using static type
+            concat_instructions([
+                serialize_expr_instructions(*expr, context),
+                vec![Instruction::PropertyAccess(0)],
+            ])
+        },
         crate::language::ast::ASTExpression::Literal(literal) => {
             vec![Instruction::Primitive(literal)]
         }
@@ -637,6 +646,28 @@ pub fn execute_serialized(
                     .index(&call.scope, gc, arg_values)
                     .ok_or(IrrecoverableError::NotIndexable)?;
             }
+            Instruction::AssociatedFunctionCall(id, n_args) => {
+                let intermediate_value_stack = &mut call.scope.stack_top().intermediate_value_stack;
+                let arg_values = intermediate_value_stack
+                    .drain(intermediate_value_stack.len() - n_args..)
+                    .collect::<Vec<_>>();
+
+                working_value
+                    .as_value()?
+                    .as_object(&gc)?
+                    .associated_functions(&gc)
+                    .access_fn(*id)
+                    .call(arg_values, &mut call_stack, &mut working_value);
+                continue;
+            }
+            Instruction::PropertyAccess(id) => {
+                working_value = Voidable::Value(
+                    working_value
+                        .as_value()?
+                        .as_object(&gc)?
+                        .access_property(*id)?,
+                );
+            }
             Instruction::WriteRef => {
                 working_mut_ref
                     .write(&mut call.scope, gc, working_value.as_value()?)
@@ -685,7 +716,7 @@ pub fn execute_serialized(
                 };
 
                 call.exec_index += 1;
-                call_stack.push(func.produce_call_stack_frame(arg_values));
+                func.call(arg_values, &mut call_stack, &mut working_value);
                 continue;
             }
             Instruction::Index(_) => todo!(),
@@ -700,7 +731,7 @@ pub fn execute_serialized(
                 working_value = Voidable::Value(Value::Ref(gc.alloc(list_obj)));
             }
             Instruction::CreateFunction { params, code } => {
-                let func_object = Object::Function(Box::new(Function {
+                let func_object = Object::Function(Box::new(Function::Bytecode {
                     closure: call.scope.clone(),
                     params: params.clone(),
                     code: code.clone(),

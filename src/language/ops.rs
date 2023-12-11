@@ -1,7 +1,7 @@
 use crate::math::shunting_yard::ShuntingYardOperator;
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub enum SLOperator {
     /** `! x` not (bitwise, boolean) */
     Not,

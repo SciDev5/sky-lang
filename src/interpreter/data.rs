@@ -10,7 +10,7 @@ use crate::language::ops::SLOperator;
 use super::{
     gc::{GCObjectId, GarbageCollector},
     interpreter::{CallStackFrame, Identifier, Instruction, Scope, ScopeStackFrame, Voidable},
-    irrecoverable_error::IrrecoverableError,
+    irrecoverable_error::IrrecoverableError, module::ModuleComponentId,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -168,6 +168,13 @@ impl Value {
             _ => Err(IrrecoverableError::NotAnObject),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionOverload {
+    args_ty: Vec<Type>,
+    return_ty: Type,
+    id: ModuleComponentId,
 }
 
 #[derive(Debug)]
@@ -371,27 +378,27 @@ pub enum FnLookupType {
 pub struct AssociatedFunctions {
     /// Lookup table that maps functions by identifier and type to a
     /// list of functions overloads with that name.
-    lut: HashMap<(Identifier, FnLookupType), Vec<AssociatedFunctionLUTEntry>>,
+    lut: HashMap<(Identifier, FnLookupType), Vec<FunctionOverload>>,
     /// Lookup table that maps operator overloads by operation and type
     /// to a list of functions overloads with that name.
-    op_lut: HashMap<(SLOperator, FnLookupType), Vec<AssociatedFunctionLUTEntry>>,
+    op_lut: HashMap<(SLOperator, FnLookupType), Vec<FunctionOverload>>,
     /// Lookup table that maps indexing overloads to functions.
-    idx_lut: Vec<AssociatedFunctionLUTEntry>,
+    idx_lut: Vec<FunctionOverload>,
     /// List of function implementations by numeric id.
     function_array: Vec<Function>,
 }
 impl AssociatedFunctions {
-    pub fn lookup_fn(&self, ident: Identifier, ty: FnLookupType) -> &[AssociatedFunctionLUTEntry] {
+    pub fn lookup_fn(&self, ident: Identifier, ty: FnLookupType) -> &[FunctionOverload] {
         self.lut.get(&(ident, ty)).map_or(&[], |it| &it[..])
     }
-    pub fn lookup_op_fn(&self, op: SLOperator, ty: FnLookupType) -> &[AssociatedFunctionLUTEntry] {
+    pub fn lookup_op_fn(&self, op: SLOperator, ty: FnLookupType) -> &[FunctionOverload] {
         self.op_lut.get(&(op, ty)).map_or(&[], |it| &it[..])
     }
-    pub fn lookup_idx_fn(&self) -> &[AssociatedFunctionLUTEntry] {
+    pub fn lookup_idx_fn(&self) -> &[FunctionOverload] {
         &self.idx_lut
     }
-    pub fn access_fn(&self, id: u16) -> &Function {
-        &self.function_array[id as usize]
+    pub fn access_fn(&self, id: ModuleComponentId) -> &Function {
+        &self.function_array[id]
     }
 }
 
@@ -407,7 +414,7 @@ impl Class {
     fn associated_functions(&self) -> &AssociatedFunctions {
         &self.functions
     }
-    fn access_fn(&self, id: u16) -> &Function {
+    fn access_fn(&self, id: ModuleComponentId) -> &Function {
         self.functions.access_fn(id)
     }
 }
@@ -422,7 +429,7 @@ impl ClassInstance {
     fn get_class<'gc>(&self, gc: &'gc GarbageCollector) -> &'gc Class {
         gc.borrow_class(self.class_id)
     }
-    fn access_property(&self, id: u16) -> &Value {
+    fn access_property(&self, id: ModuleComponentId) -> &Value {
         &self.property_array[id as usize]
     }
 }
@@ -435,13 +442,13 @@ pub struct Enum {
     // variant id LUT
     variant_id_lut: HashMap<Identifier, u16>,
     // property LUT array
-    property_lut_array: Vec<HashMap<Identifier, (u16, Type)>>,
+    property_lut_array: Vec<HashMap<Identifier, (ModuleComponentId, Type)>>,
 }
 impl Enum {
     fn associated_functions(&self) -> &AssociatedFunctions {
         &self.functions
     }
-    fn access_fn(&self, id: u16) -> &Function {
+    fn access_fn(&self, id: ModuleComponentId) -> &Function {
         self.functions.access_fn(id)
     }
 }
@@ -458,8 +465,8 @@ impl EnumInstance {
     fn get_class<'gc>(&self, gc: &'gc GarbageCollector) -> &'gc Enum {
         gc.borrow_enum(self.class_id)
     }
-    fn access_property(&self, id: u16) -> &Value {
-        &self.property_array[id as usize]
+    fn access_property(&self, id: ModuleComponentId) -> &Value {
+        &self.property_array[id]
     }
 }
 
@@ -486,7 +493,7 @@ impl Object {
             _ => todo!(),
         }
     }
-    pub fn access_property<'a: 'gc, 'gc>(&'a self, id: u16) -> Result<Value, IrrecoverableError> {
+    pub fn access_property<'a: 'gc, 'gc>(&'a self, id: ModuleComponentId) -> Result<Value, IrrecoverableError> {
         match self {
             Self::Class(v) => Err(IrrecoverableError::PropertyNotFound),
             Self::Enum(v) => Err(IrrecoverableError::PropertyNotFound),

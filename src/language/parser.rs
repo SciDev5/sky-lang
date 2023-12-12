@@ -841,7 +841,7 @@ mod expr {
             // content block `{ $block }`
             let block = tokens.next_parse(parse_curly_block)?;
 
-            ASTExpression::FunctionDefinition { doc_comment, ident, params, block, return_ty }
+            ASTExpression::FunctionDefinition { doc_comment, ident, discriminant: 0, params, block, return_ty }
         }
     }
 

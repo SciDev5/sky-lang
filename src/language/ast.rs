@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use num::complex::Complex64;
 
-use crate::{interpreter::data::Type, math::tensor::Tensor};
+use crate::{interpreter::{data::Type, module::ModuleComponentId}, math::tensor::Tensor};
 
 use super::ops::SLOperator;
 
@@ -44,7 +44,7 @@ pub struct ASTTypesIncomplete;
 impl ASTTypes for ASTTypesFull {
     type ValueType = Type;
     type VoidableType = Option<Type>;
-    type PropertyId = u16;
+    type PropertyId = ModuleComponentId;
     fn ty_void() -> Self::VoidableType {
         None
     }
@@ -58,7 +58,7 @@ impl ASTTypes for ASTTypesFull {
 impl ASTTypes for ASTTypesIncomplete {
     type ValueType = Option<Type>;
     type VoidableType = Option<Option<Type>>;
-    type PropertyId = Option<u16>;
+    type PropertyId = Option<ModuleComponentId>;
     fn ty_void() -> Self::VoidableType {
         Some(None)
     }
@@ -81,6 +81,7 @@ pub enum ASTExpression<Ty: ASTTypes> {
     },
     Assign(ASTVarAccessExpression<Ty>, Box<ASTExpression<Ty>>),
     Read(ASTIdent, Ty::ValueType),
+    ReadFunc(ASTIdent, u16, Ty::ValueType),
     Call {
         callable: Box<ASTExpression<Ty>>,
         arguments: Vec<ASTExpression<Ty>>,
@@ -145,6 +146,7 @@ pub enum ASTExpression<Ty: ASTTypes> {
     FunctionDefinition {
         doc_comment: Option<String>,
         ident: ASTIdent,
+        discriminant: u16,
         params: Vec<(ASTIdent, Type)>,
         return_ty: Ty::VoidableType,
         block: ASTBlock<Ty>,
@@ -159,6 +161,7 @@ impl ASTExpression<ASTTypesFull> {
             ASTExpression::VarDeclare { ty, .. } => Some(ty.clone()),
             ASTExpression::Assign(_, v) => v.eval_ty(),
             ASTExpression::Read(_, ty) => Some(ty.clone()),
+            ASTExpression::ReadFunc(_, _, ty) => Some(ty.clone()),
             ASTExpression::Call { output_ty, .. } => output_ty.clone(),
             ASTExpression::Index { output_ty, .. } => Some(output_ty.clone()),
             ASTExpression::PropertyAccess { output_ty, .. } => {

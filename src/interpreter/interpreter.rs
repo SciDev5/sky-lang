@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, mem::Discriminant};
 
 use crate::{
     interpreter::data::{Function, Object},
@@ -13,7 +13,7 @@ use crate::{
 use super::{
     data::{DataRef, Value, Var},
     gc::GarbageCollector,
-    irrecoverable_error::IrrecoverableError,
+    irrecoverable_error::IrrecoverableError, module::ModuleComponentId,
 };
 
 pub type Identifier = Box<str>;
@@ -60,9 +60,9 @@ pub enum Instruction {
     /// Indexes into the working value, indices given by popping the given number of values from the intermediate value stack.
     Index(usize),
     /// Accesses a property value by id
-    PropertyAccess(u16),
+    PropertyAccess(ModuleComponentId),
     /// Accesses an associated function by id, and usize given parameter count
-    AssociatedFunctionCall(u16, usize),
+    AssociatedFunctionCall(ModuleComponentId, usize),
     /// Create a list of the given length by popping [length] values from the intermediate value stack.
     CreateList(usize),
     /// Create a function value, capturing the current scope.
@@ -275,6 +275,7 @@ fn serialize_expr_instructions(
             }
         }
         crate::language::ast::ASTExpression::Read(ident, ty) => vec![Instruction::ReadVar(ident)],
+        ASTExpression::ReadFunc(ident, discriminant, _) => todo!(),
         crate::language::ast::ASTExpression::Call {
             callable,
             arguments,

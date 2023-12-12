@@ -1,10 +1,12 @@
+use std::collections::HashMap;
+
 use crate::language::{ast::{ASTBlock, ASTExpression, ASTTypesFull, ASTTypesIncomplete}, ops::SLOperator};
 
-use super::data::Type;
+use super::{data::Type, interpreter::Identifier};
 
 #[derive(Debug, Clone)]
 struct ScopeContext {
-    // var_lookup:
+    // var_lookup: 
 }
 
 pub fn solve_types_block(ast: ASTBlock<ASTTypesIncomplete>) -> ASTBlock<ASTTypesFull> {
@@ -27,6 +29,7 @@ pub fn solve_types_expr(ast: ASTExpression<ASTTypesIncomplete>) -> ASTExpression
         } => todo!(),
         ASTExpression::Assign(_, _) => todo!(),
         ASTExpression::Read(_, _) => todo!(),
+        ASTExpression::ReadFunc(_, _, _) => todo!(),
         ASTExpression::Call {
             callable,
             arguments,
@@ -122,6 +125,7 @@ pub fn solve_types_expr(ast: ASTExpression<ASTTypesIncomplete>) -> ASTExpression
         ASTExpression::Return(_) => todo!(),
         ASTExpression::FunctionDefinition {
             doc_comment,
+            discriminant,
             ident,
             params,
             block,

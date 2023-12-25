@@ -10,7 +10,8 @@ use crate::language::ops::SLOperator;
 use super::{
     gc::{GCObjectId, GarbageCollector},
     interpreter::{CallStackFrame, Identifier, Instruction, Scope, ScopeStackFrame, Voidable},
-    irrecoverable_error::IrrecoverableError, module::ModuleComponentId,
+    irrecoverable_error::IrrecoverableError,
+    module::ModuleComponentId,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -298,6 +299,20 @@ impl PartialEq for Units {
 }
 
 #[derive(Debug, Clone)]
+pub enum VoidableType {
+    Value(Type),
+    Void,
+}
+impl VoidableType {
+    pub fn to_value(self) -> Option<Type> {
+        match self {
+            Self::Value(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Int(Option<Units>),
     Float(Option<Units>),
@@ -348,6 +363,15 @@ impl Type {
             _ if default_to_void => None,
             _ => todo!("// TODO handle type merge failure"),
         }
+    }
+    pub fn is_primitive(&self) -> bool {
+        matches!(
+            self,
+            Self::Bool | Self::Int(_) | Self::Float(_) | Self::Complex(_) | Self::String
+        )
+    }
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, Self::Int(_) | Self::Float(_) | Self::Complex(_))
     }
 }
 
@@ -493,7 +517,10 @@ impl Object {
             _ => todo!(),
         }
     }
-    pub fn access_property<'a: 'gc, 'gc>(&'a self, id: ModuleComponentId) -> Result<Value, IrrecoverableError> {
+    pub fn access_property<'a: 'gc, 'gc>(
+        &'a self,
+        id: ModuleComponentId,
+    ) -> Result<Value, IrrecoverableError> {
         match self {
             Self::Class(v) => Err(IrrecoverableError::PropertyNotFound),
             Self::Enum(v) => Err(IrrecoverableError::PropertyNotFound),

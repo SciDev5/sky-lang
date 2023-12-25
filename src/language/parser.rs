@@ -197,8 +197,6 @@ mod expr {
         }, interpreter::data::Type,
     };
 
-    type ASTExpr = ASTExpression<ASTTypesIncomplete>;
-
     /*
     A finite state machine should be able to handle expression parsing.
 
@@ -271,7 +269,7 @@ mod expr {
         /// ```plaintext
         /// <expr> = <expr_infix> | <range>
         /// ```
-        pub fn parse_expr(tokens) -> _matched: ASTExpr, _failed: None {
+        pub fn parse_expr(tokens) -> _matched: ASTExpression, _failed: None {
             parse_match_first!(tokens;
                 parse_expr_rangeto(/* allow_anon_func */ true) => |it| it,
                 parse_expr_infixed(/* allow_anon_func */ true) => |it| it,
@@ -284,7 +282,7 @@ mod expr {
         /// ```plaintext
         /// <expr> = <expr_infix> | <range>
         /// ```
-        pub fn parse_expr_no_anonfunc_postfix(tokens) -> _matched: ASTExpr, _failed: None {
+        pub fn parse_expr_no_anonfunc_postfix(tokens) -> _matched: ASTExpression, _failed: None {
             parse_match_first!(tokens;
                 parse_expr_rangeto(/* allow_anon_func_postfix */ false) => |it| it,
                 parse_expr_infixed(/* allow_anon_func_postfix */ false) => |it| it,
@@ -297,7 +295,7 @@ mod expr {
         /// ```plaintext
         /// <expr_infix> = <expr_no_infix> (<infix> <expr_no_infix>)*
         /// ```
-        pub fn parse_expr_infixed(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpr, failed: None {
+        pub fn parse_expr_infixed(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpression, failed: None {
             let first_expr = tokens.next_parse(|t| parse_expr_no_infix(t, allow_anon_func_postfix))?;
 
             let mut infix = vec![ShuntingYardObj::Expr(first_expr)];
@@ -313,7 +311,7 @@ mod expr {
             }
 
             treeify_infix(&mut infix.into_iter(), &|op, a, b| {
-                ASTExpression::BinaryOp(op, Box::new(a), Box::new(b), None)
+                ASTExpression::BinaryOp(op, Box::new(a), Box::new(b))
             })
         }
     }
@@ -349,7 +347,7 @@ mod expr {
         ///     | <expr_extras>
         /// ) <postfix>*
         /// ```
-        fn parse_expr_no_infix(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpr, _failed: None {
+        fn parse_expr_no_infix(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpression, _failed: None {
             // prefixes
             let mut prefixes = vec![];
             while let Some(prefix) = tokens.next_parse(parse_expr_prefix) {
@@ -362,7 +360,7 @@ mod expr {
                 parse_var_def => |it| it,
                 parse_var_assign => |it| it,
                 parse_expr_literal => |literal| ASTExpression::Literal(literal),
-                parse_expr_identifier => |ident| ASTExpression::Read(ident, None),
+                parse_expr_identifier => |ident| ASTExpression::Read(ident),
                 parse_expr_anonfunc => |it| it,
                 parse_expr_sub_blocking => |it| it,
                 parse_expr_grouping => |it| it,
@@ -383,23 +381,21 @@ mod expr {
     }
     enum ExprAffix {
         Op(SLOperator),
-        Indexing(Vec<ASTExpr>),
-        FunctionCall(Vec<ASTExpr>), // TODO template types, callback block
+        Indexing(Vec<ASTExpression>),
+        FunctionCall(Vec<ASTExpression>), // TODO template types, callback block
     }
     impl ExprAffix {
-        fn apply_to_expr(self, expr: ASTExpr) -> ASTExpr {
+        fn apply_to_expr(self, expr: ASTExpression) -> ASTExpression {
             let expr = Box::new(expr);
             match self {
-                ExprAffix::Op(op) => ASTExpression::UnaryOp(op, expr, None),
+                ExprAffix::Op(op) => ASTExpression::UnaryOp(op, expr),
                 ExprAffix::FunctionCall(arguments) => ASTExpression::Call {
                     callable: expr,
                     arguments,
-                    output_ty: None,
                 },
                 ExprAffix::Indexing(indices) => ASTExpression::Index {
                     expr,
                     indices,
-                    output_ty: None,
                 },
             }
         }
@@ -482,7 +478,7 @@ mod expr {
         ///     | (<expr>)? ":" (<expr>)? ( ":" (<expr>)? )?
         /// )
         /// ```
-        fn parse_expr_rangeto(tokens, (allow_anon_func): bool) -> _matched: ASTExpr, _failed: None {
+        fn parse_expr_rangeto(tokens, (allow_anon_func): bool) -> _matched: ASTExpression, _failed: None {
             let expr_first = tokens.next_parse(|t| parse_expr_infixed(t, allow_anon_func));
             let has_first_colon = tokens.next_skip_soft_break_if(|it| matches!(it, Some(SLToken::Separator(SeparatorType::Colon))));
             if has_first_colon {
@@ -505,7 +501,7 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_expr_grouping(tokens) -> _matched: ASTExpr, failed: None {
+        fn parse_expr_grouping(tokens) -> _matched: ASTExpression, failed: None {
             let had_array_symbol = tokens.next_skip_break_if(|token| matches!(token, Some(SLToken::SyntacticSugar(SyntacticSugarType::Hash))));
             match (
                 had_array_symbol,
@@ -608,7 +604,7 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_expr_tensor_entries(tokens, (rank): usize) -> _matched: (Vec<ASTExpr>, Vec<usize>), failed: None {
+        fn parse_expr_tensor_entries(tokens, (rank): usize) -> _matched: (Vec<ASTExpression>, Vec<usize>), failed: None {
             if rank == 0 {
                 (vec![tokens.next_parse(parse_expr)?], vec![])
             } else {
@@ -648,7 +644,7 @@ mod expr {
         /// ```plaintext
         /// <expr_anonfunc> = "{" ( (<identifier> (":" <type>)? )","+ (",")? "->")? <expr> "}"
         /// ```
-        fn parse_expr_anonfunc(tokens) -> _matched: ASTExpr, _failed: None {
+        fn parse_expr_anonfunc(tokens) -> _matched: ASTExpression, _failed: None {
             // "{"
             try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
 
@@ -721,7 +717,7 @@ mod expr {
     */
 
     parse_rule! {
-        fn parse_expr_sub_blocking(tokens) -> _matched: ASTExpr, failed: None {
+        fn parse_expr_sub_blocking(tokens) -> _matched: ASTExpression, failed: None {
             let keyword = match tokens.next_skip_break()? {
                 SLToken::Keyword(k) => Some(*k),
                 _ => None,
@@ -737,7 +733,7 @@ mod expr {
     }
     parse_rule! {
         /// ... starts tokenizing after the `if` keyword
-        fn parse_if(tokens) -> _matched: ASTExpr, _failed: None {
+        fn parse_if(tokens) -> _matched: ASTExpression, _failed: None {
             let condition = Box::new(tokens.next_parse(parse_expr_no_anonfunc_postfix)?);
             let block = tokens.next_parse(parse_curly_block)?;
 
@@ -754,21 +750,21 @@ mod expr {
             } else {
                 None
             };
-            ASTExpression::Conditional { condition, block, elifs, else_block, output_ty: None }
+            ASTExpression::Conditional { condition, block, elifs, else_block }
         }
     }
     parse_rule! {
         /// ... starts tokenizing after the `loop` keyword
-        fn parse_loop(tokens) -> _matched: ASTExpr, _failed: None {
+        fn parse_loop(tokens) -> _matched: ASTExpression, _failed: None {
             // `$block` code to loop
             let block = tokens.next_parse(parse_curly_block)?;
 
-            ASTExpression::Loop(block, None)
+            ASTExpression::Loop(block)
         }
     }
     parse_rule! {
         /// ... starts tokenizing after the `for` keyword
-        fn parse_for(tokens) -> _matched: ASTExpr, _failed: None {
+        fn parse_for(tokens) -> _matched: ASTExpression, _failed: None {
             // declaration for loop variable
             let loop_var = tokens.next_parse(parse_ident_optionally_typed)?;
 
@@ -785,7 +781,7 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_flow_control_data(tokens) -> _matched: Option<ASTExpr>, _failed: None {
+        fn parse_flow_control_data(tokens) -> _matched: Option<ASTExpression>, _failed: None {
             if tokens.peek_is_hard_break() {
                 None
             } else {
@@ -794,9 +790,9 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_flow_controls(tokens) -> _matched: ASTExpr, _failed: None {
+        fn parse_flow_controls(tokens) -> _matched: ASTExpression, _failed: None {
             match tokens.next_skip_break()? {
-                SLToken::Keyword(Keyword::Return) => ASTExpression::Return(tokens.next_parse(parse_flow_control_data)?.map(Box::new)?),
+                SLToken::Keyword(Keyword::Return) => ASTExpression::Return(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
                 SLToken::Keyword(Keyword::LoopBreak) => ASTExpression::Break(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
                 SLToken::Keyword(Keyword::LoopContinue) => ASTExpression::Continue,
                 _ => _failed!(),
@@ -813,7 +809,7 @@ mod expr {
     }
 
     parse_rule! {
-        fn parse_func_def(tokens) -> _matched: ASTExpr, _failed: None {
+        fn parse_func_def(tokens) -> _matched: ASTExpression, _failed: None {
             let doc_comment = tokens.next_parse(parse_doc_comment);
 
             // function keyword `fn`
@@ -841,7 +837,7 @@ mod expr {
             // content block `{ $block }`
             let block = tokens.next_parse(parse_curly_block)?;
 
-            ASTExpression::FunctionDefinition { doc_comment, ident, discriminant: 0, params, block, return_ty }
+            ASTExpression::FunctionDefinition { doc_comment, ident, params, block, return_ty }
         }
     }
 
@@ -849,7 +845,7 @@ mod expr {
         /// Match for the right hand side of an assignment
         ///
         /// `= $expr`
-        fn parse_var_assignment_rhs(tokens) -> _matched: ASTExpr, _failed: None {
+        fn parse_var_assignment_rhs(tokens) -> _matched: ASTExpression, _failed: None {
             // `=`
             try_match!(tokens.next_skip_break(), SLToken::Operator(SLOperator::Assign))?;
 
@@ -859,7 +855,7 @@ mod expr {
     }
 
     parse_rule! {
-        fn parse_var_def(tokens) -> _matched: ASTExpr, failed: None {
+        fn parse_var_def(tokens) -> _matched: ASTExpression, failed: None {
             let doc_comment = tokens.next_parse(parse_doc_comment);
 
             // `let` / `const` keyword
@@ -886,7 +882,7 @@ mod expr {
     }
 
     parse_rule! {
-        fn parse_var_assign(tokens) -> _matched: ASTExpr, _failed: None {
+        fn parse_var_assign(tokens) -> _matched: ASTExpression, _failed: None {
             // variable access expr (ex. `var.abc[34]`)
             let access_expr = tokens.next_parse(parse_varaccessexpr)?;
             // optional initial assignment
@@ -948,10 +944,10 @@ mod varaccessexpr {
     };
 
     parse_rule! {
-        pub fn parse_varaccessexpr(tokens) -> _matched: ASTVarAccessExpression<ASTTypesIncomplete>, _failed: None {
+        pub fn parse_varaccessexpr(tokens) -> _matched: ASTVarAccessExpression, _failed: None {
             let ident: ASTIdent = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
 
-            let mut access_expr = ASTVarAccessExpression::Var(ident, None);
+            let mut access_expr = ASTVarAccessExpression::Var(ident);
             // TODO matching more complex access expressions
 
             access_expr
@@ -959,19 +955,17 @@ mod varaccessexpr {
     }
 
     enum VarAccessExprPostfix {
-        Indexing(Vec<ASTExpression<ASTTypesIncomplete>>),
+        Indexing(Vec<ASTExpression>),
     }
     impl VarAccessExprPostfix {
         fn apply(
             self,
-            child: ASTExpression<ASTTypesIncomplete>,
-        ) -> ASTVarAccessExpression<ASTTypesIncomplete> {
+            child: ASTExpression,
+        ) -> ASTVarAccessExpression {
             match self {
-                Self::Indexing(indices) => ASTVarAccessExpression::<ASTTypesIncomplete>::Index {
+                Self::Indexing(indices) => ASTVarAccessExpression::Index {
                     expr: Box::new(child),
                     indices,
-                    associated_func_id: None,
-                    ty: None,
                 },
             }
         }
@@ -1037,7 +1031,7 @@ parse_rule! {
 
 parse_rule! {
     /// Parse a block bounded by curly braces
-    fn parse_curly_block(tokens) -> _matched: ASTBlock<ASTTypesIncomplete>, _failed: None {
+    fn parse_curly_block(tokens) -> _matched: ASTBlock, _failed: None {
         try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
         let block = tokens.next_parse(parse_block)?;
         try_match!(tokens.next_skip_break(), SLToken::BracketClose(BracketType::Curly))?;
@@ -1102,18 +1096,18 @@ fn parse_list<
 }
 
 parse_rule! {
-    fn parse_block(tokens) -> _matched: ASTBlock<ASTTypesIncomplete>, _failed: None {
+    fn parse_block(tokens) -> _matched: ASTBlock, _failed: None {
         let mut exprs = vec![];
 
         while let Some(statement) = tokens.next_parse(expr::parse_expr)  {
             exprs.push(statement)
         }
 
-        ASTBlock(exprs, None)
+        exprs
     }
 }
 
-pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<ASTBlock<ASTTypesIncomplete>, ()> {
+pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<ASTBlock, ()> {
     let mut tokens = Tokens::new(&tokens);
 
     let res = tokens.next_parse(parse_block).ok_or(());

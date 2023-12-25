@@ -239,9 +239,11 @@ impl Voidable {
 }
 
 fn serialize_expr_instructions(
-    code: ASTExpression<ASTTypesFull>,
+    code: ASTExpression,
     context: &InstructionBuildingContext,
 ) -> Vec<Instruction> {
+    todo!()
+    /*
     match code {
         ASTExpression::VarDeclare {
             ident,
@@ -279,7 +281,6 @@ fn serialize_expr_instructions(
         crate::language::ast::ASTExpression::Call {
             callable,
             arguments,
-            output_ty,
         } => {
             let arguments_len = arguments.len();
             arguments
@@ -534,19 +535,20 @@ fn serialize_expr_instructions(
             ]
         }
     }
+    */
 }
 fn serialize_block_instructions(
-    code: ASTBlock<ASTTypesFull>,
+    code: ASTBlock,
     context: &InstructionBuildingContext,
 ) -> Vec<Instruction> {
     concat_instructions(
-        code.0
+        code
             .into_iter()
             .map(|it| serialize_expr_instructions(it, context)),
     )
 }
 
-pub fn serialize_program(code: ASTBlock<ASTTypesFull>) -> Vec<Instruction> {
+pub fn serialize_program(code: ASTBlock) -> Vec<Instruction> {
     serialize_block_instructions(code, &InstructionBuildingContext { loop_infos: vec![] })
 }
 

@@ -108,13 +108,23 @@ fn main() {
     //     a * a'
     // "
     // ));
-    let tokens = dbg!(t.tokenize("if 1+2 == 3 { 9 } else { 4 }"));
+    // let tokens = dbg!(t.tokenize("if 1+2 == 3 { 9 } else { 4 }"));
+    let tokens = dbg!(t.tokenize(r"
+    
+    let a = 3
+    
+    let b = a + 4
 
-    let parsed = dbg!(skylab::language::parser::parse(tokens));
+    if b > a {
+        b = 2
+    }
+    
+    "));
 
-    let typed = dbg!(parsed.map(skylab::interpreter::type_eliator::solve_types_block));
+    let parsed = dbg!(skylab::language::parser::parse(tokens)).unwrap();
 
-    let serialized_code = skylab::interpreter::interpreter::serialize_program(typed.unwrap());
+
+    let serialized_code = skylab::interpreter::interpreter::serialize_program(parsed);
 
     for (i, cmd) in serialized_code.iter().enumerate() {
         println!("{} :: {:?}", i, cmd);

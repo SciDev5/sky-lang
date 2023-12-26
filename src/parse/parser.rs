@@ -1,9 +1,9 @@
-use crate::{language::tokenization::{BracketType, SeparatorType}, interpreter::data::Type};
-
-use super::{
-    ast::{ASTBlock, ASTIdent, ASTTypesIncomplete},
-    tokenization::SLToken,
+use crate::{
+    common::IdentStr,
+    parse::tokenization::{BracketType, SeparatorType},
 };
+
+use super::{ast::ASTBlock, raw_module::RMValueType, tokenization::SLToken};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Tokens<'vec, 'token_content> {
@@ -180,21 +180,22 @@ mod expr {
 
     use super::{parse_list, Tokens};
     use crate::{
-        language::{
-            ast::{ASTExpression, ASTIdent, ASTLiteral, ASTTypesIncomplete, SLIRArray},
-            ops::SLOperator,
-            parser::{
-                parse_block, parse_curly_block, parse_ident_typed,
-                varaccessexpr::parse_varaccessexpr, parse_ident_optionally_typed,
-            },
-            tokenization::{
-                AngleBracketShape, BracketType, Keyword, SLToken, SeparatorType, SyntacticSugarType,
-            },
-        },
+        common::IdentStr,
         math::{
             shunting_yard::{treeify_infix, ShuntingYardObj},
             tensor::Tensor,
-        }, interpreter::data::Type,
+        },
+        parse::{
+            ast::{ASTArray, ASTExpression, ASTLiteral},
+            parser::{
+                parse_block, parse_curly_block, parse_ident_optionally_typed, parse_ident_typed,
+                varaccessexpr::parse_varaccessexpr,
+            },
+            raw_module::RMValueType,
+            tokenization::{
+                AngleBracketShape, BracketType, Keyword, SLToken, SeparatorType, SyntacticSugarType,
+            }, ops::SLOperator,
+        },
     };
 
     /*
@@ -311,7 +312,7 @@ mod expr {
             }
 
             treeify_infix(&mut infix.into_iter(), &|op, a, b| {
-                ASTExpression::BinaryOp(op, Box::new(a), Box::new(b))
+                ASTExpression::BinaryOp { op, lhs: Box::new(a), rhs: Box::new(b) }
             })
         }
     }
@@ -388,15 +389,12 @@ mod expr {
         fn apply_to_expr(self, expr: ASTExpression) -> ASTExpression {
             let expr = Box::new(expr);
             match self {
-                ExprAffix::Op(op) => ASTExpression::UnaryOp(op, expr),
+                ExprAffix::Op(op) => ASTExpression::UnaryOp { op, value: expr },
                 ExprAffix::FunctionCall(arguments) => ASTExpression::Call {
                     callable: expr,
                     arguments,
                 },
-                ExprAffix::Indexing(indices) => ASTExpression::Index {
-                    expr,
-                    indices,
-                },
+                ExprAffix::Indexing(indices) => ASTExpression::Index { expr, indices },
             }
         }
     }
@@ -545,7 +543,7 @@ mod expr {
                             Tensor::new_matrix_iter(&mut data.into_iter().flat_map(|row|row.into_iter()), width, height)
                         }
                     };
-                    ASTExpression::Array(SLIRArray::Matrix(mat))
+                    ASTExpression::Array(ASTArray::Matrix(mat))
                 }
                 // tensor `#< $rank >[ $... ]` something-something it's recursive.
                 (
@@ -569,7 +567,7 @@ mod expr {
                     }
                     let (contents, dim) = tokens.next_parse(|tokens| parse_expr_tensor_entries(tokens, rank))?;
 
-                    ASTExpression::Array(SLIRArray::Tensor(Tensor::new_raw(contents, dim)))
+                    ASTExpression::Array(ASTArray::Tensor(Tensor::new_raw(contents, dim)))
                 }
 
                 // TODO array comprehension
@@ -577,7 +575,7 @@ mod expr {
 
                 // list/array `[ $( $data_expr ),* $(,)? ]`
                 (false, SLToken::BracketOpen(BracketType::Square)) => {
-                    ASTExpression::Array(SLIRArray::List(tokens.next_parse(|tokens| {
+                    ASTExpression::Array(ASTArray::List(tokens.next_parse(|tokens| {
                         parse_list(
                             tokens,
                             &parse_expr,
@@ -658,7 +656,7 @@ mod expr {
         }
     }
     parse_rule! {
-        fn parse_expr_anonfunc_parameters(tokens) -> _matched: Vec<(ASTIdent, Option<Type>)>, _failed: None {
+        fn parse_expr_anonfunc_parameters(tokens) -> _matched: Vec<(IdentStr,Option<RMValueType>)>, _failed: None {
             tokens.next_parse(|tokens| {
                 parse_list(
                     tokens,
@@ -691,10 +689,10 @@ mod expr {
         /// Parse identifiers in expressions.
         ///
         /// Identifiers are named variables and funcitons.
-        fn parse_expr_identifier(tokens) -> _matched: ASTIdent, failed: None {
+        fn parse_expr_identifier(tokens) -> _matched: IdentStr, failed: None {
             match tokens.next_skip_break()? {
                 SLToken::Identifier(str) => {
-                    str.to_string().into_boxed_str()
+                    str.to_string()
                 }
                 _ => failed!(),
             }
@@ -759,7 +757,7 @@ mod expr {
             // `$block` code to loop
             let block = tokens.next_parse(parse_curly_block)?;
 
-            ASTExpression::Loop(block)
+            ASTExpression::Loop { block }
         }
     }
     parse_rule! {
@@ -792,8 +790,8 @@ mod expr {
     parse_rule! {
         fn parse_flow_controls(tokens) -> _matched: ASTExpression, _failed: None {
             match tokens.next_skip_break()? {
-                SLToken::Keyword(Keyword::Return) => ASTExpression::Return(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
-                SLToken::Keyword(Keyword::LoopBreak) => ASTExpression::Break(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
+                SLToken::Keyword(Keyword::Return) => ASTExpression::Return { value: tokens.next_parse(parse_flow_control_data)?.map(Box::new) },
+                SLToken::Keyword(Keyword::LoopBreak) => ASTExpression::Break { value: tokens.next_parse(parse_flow_control_data)?.map(Box::new) },
                 SLToken::Keyword(Keyword::LoopContinue) => ASTExpression::Continue,
                 _ => _failed!(),
             }
@@ -801,10 +799,10 @@ mod expr {
     }
 
     parse_rule! {
-        fn parse_ident(tokens) -> _matched: ASTIdent, _failed: None {
+        fn parse_ident(tokens) -> _matched: IdentStr, _failed: None {
             try_match!(tokens.next_skip_break(),
                 SLToken::Identifier(key) => *key
-            )?.to_string().into_boxed_str()
+            )?.to_string()
         }
     }
 
@@ -816,7 +814,7 @@ mod expr {
             try_match!(tokens.next_skip_break(), SLToken::Keyword(Keyword::FunctionDefinition))?;
 
             // name `$ident`
-            let ident: ASTIdent = tokens.next_parse(parse_ident)?;
+            let ident: IdentStr = tokens.next_parse(parse_ident)?;
 
             // parameters `( $( $expr ),* )`
             try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Paren))?;
@@ -868,14 +866,14 @@ mod expr {
             // name `$ident` and type
             let (ident, ty) = tokens.next_parse(parse_ident_optionally_typed)?;
 
-            // optional initial assignment
-            let initial_assignment = tokens.next_parse(parse_var_assignment_rhs).map(Box::new);
+            // optional initial value
+            let initial_value = tokens.next_parse(parse_var_assignment_rhs).map(Box::new);
 
             ASTExpression::VarDeclare {
                 doc_comment,
                 ident,
                 writable,
-                initial_assignment,
+                initial_value,
                 ty,
             }
         }
@@ -937,17 +935,20 @@ mod expr {
 }
 
 mod varaccessexpr {
-    use crate::language::{
-        ast::{ASTExpression, ASTIdent, ASTTypesIncomplete, ASTVarAccessExpression},
-        parser::{expr::parse_expr, parse_list, Tokens},
-        tokenization::{BracketType, SLToken, SeparatorType},
+    use crate::{
+        common::IdentStr,
+        parse::{
+            ast::{ASTExpression, ASTVarAccessExpression},
+            parser::{expr::parse_expr, parse_list, Tokens},
+            tokenization::{BracketType, SLToken, SeparatorType},
+        },
     };
 
     parse_rule! {
         pub fn parse_varaccessexpr(tokens) -> _matched: ASTVarAccessExpression, _failed: None {
-            let ident: ASTIdent = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
+            let ident: IdentStr = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string();
 
-            let mut access_expr = ASTVarAccessExpression::Var(ident);
+            let  access_expr = ASTVarAccessExpression::Var { ident };
             // TODO matching more complex access expressions
 
             access_expr
@@ -958,13 +959,10 @@ mod varaccessexpr {
         Indexing(Vec<ASTExpression>),
     }
     impl VarAccessExprPostfix {
-        fn apply(
-            self,
-            child: ASTExpression,
-        ) -> ASTVarAccessExpression {
+        fn apply(self, child: ASTExpression) -> ASTVarAccessExpression {
             match self {
                 Self::Indexing(indices) => ASTVarAccessExpression::Index {
-                    expr: Box::new(child),
+                    object: Box::new(child),
                     indices,
                 },
             }
@@ -992,17 +990,17 @@ mod varaccessexpr {
 }
 
 parse_rule! {
-    fn parse_type_annotation(tokens) -> _matched: Type, _failed: None {
-        todo!("parse type annotations");
+    fn parse_type_annotation(tokens) -> _matched: RMValueType, _failed: None {
+        todo!("// TODO parse type annotations");
     }
 }
 
 parse_rule! {
-    fn parse_ident_typed(tokens) -> _matched: (ASTIdent,Type), _failed: None {
+    fn parse_ident_typed(tokens) -> _matched: (IdentStr, RMValueType), _failed: None {
         // TODO generalized declaration identifier parser (with destructuring, etc.)
 
         // variable identifier
-        let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
+        let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string();
 
         try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon))?;
         let ty = tokens.next_parse(parse_type_annotation)?;
@@ -1011,11 +1009,11 @@ parse_rule! {
     }
 }
 parse_rule! {
-    fn parse_ident_optionally_typed(tokens) -> _matched: (ASTIdent,Option<Type>), _failed: None {
+    fn parse_ident_optionally_typed(tokens) -> _matched: (IdentStr,Option<RMValueType>), _failed: None {
         // TODO generalized declaration identifier parser (with destructuring, etc.)
 
         // variable identifier
-        let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string().into_boxed_str();
+        let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string();
 
         let ty = if try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon)).is_some() {
             // type annotation (must not fail here or it's invalid)
@@ -1125,7 +1123,7 @@ pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<ASTBlock, ()> {
 
 #[cfg(test)]
 mod d {
-    use crate::language::{parser::Tokens, tokenization::SLToken};
+    use crate::parse::{parser::Tokens, tokenization::SLToken};
 
     #[test]
     fn parser_tokens_advancing_and_peeking() {

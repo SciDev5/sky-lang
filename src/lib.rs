@@ -1,6 +1,6 @@
 // TODO, remove this `allow(unused)` when the project is more complete.
-#![allow(unused)]
+// #![allow(unused)]
 
-pub mod interpreter;
-pub mod language;
+pub mod parse;
 pub mod math;
+pub mod common;

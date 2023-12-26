@@ -465,7 +465,7 @@ impl_tokenizer! {
 
 #[cfg(test)]
 mod test {
-    use crate::language::{ops::SLOperator, tokenization::Keyword};
+    use crate::parse::{ops::SLOperator, tokenization::Keyword};
 
     use super::{SLToken, SLTokenizer};
 

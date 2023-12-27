@@ -10,22 +10,32 @@ use crate::{
 use super::ops::SLOperator;
 
 pub struct RMFunction {
-    doc_comment: Option<String>,
-    params: Vec<(IdentStr, RMValueType)>,
-    return_ty: Option<RMType>,
-    block: Vec<RMExpression>,
+    pub doc_comment: Option<String>,
+    pub params: Vec<(IdentStr, RMValueType)>,
+    pub return_ty: Option<RMType>,
+    pub block: Vec<RMExpression>,
 }
 pub struct RMClass {
-    doc_comment: Option<String>,
-    fields: HashMap<IdentStr, RMValueType>,
-    functions: HashMap<IdentStr, Vec<IdentInt>>,
+    pub doc_comment: Option<String>,
+    pub fields: HashMap<IdentStr, RMValueType>,
+    pub functions: HashMap<IdentStr, Vec<IdentInt>>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum RMValueType {
-    // TODO RawModule | Type
+    Int,
+    Float,
+    Complex,
+    Bool,
+    String,
+    FunctionRef { params: Vec<RMValueType>, return_ty: Box<RMType>, },
+    Identified(IdentStr),
+    Tuple(Vec<RMValueType>),
+    // List(Box<RMValueType>),
+    // TODO Template types
+    // TODO Units / dimensional analysis
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum RMType {
     Void,
     Never,
@@ -65,7 +75,7 @@ pub enum RMExpression {
 
     AssignIndex {
         object: Box<RMExpression>,
-        index: Vec<RMExpression>,
+        indices: Vec<RMExpression>,
         value: Box<RMExpression>,
     },
     AssignProperty {
@@ -79,7 +89,7 @@ pub enum RMExpression {
     },
     ReadIndex {
         expr: Box<RMExpression>,
-        index: Vec<RMExpression>,
+        indices: Vec<RMExpression>,
     },
     ReadProperty {
         expr: Box<RMExpression>,
@@ -140,8 +150,8 @@ pub enum RMExpression {
 }
 
 pub struct RawModule {
-    functions: Vec<RMFunction>,
-    classes: Vec<RMClass>,
+    pub functions: Vec<RMFunction>,
+    pub classes: Vec<RMClass>,
 
-    top_level: Vec<RMExpression>,
+    pub top_level: Vec<RMExpression>,
 }

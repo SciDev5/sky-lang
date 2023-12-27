@@ -790,8 +790,8 @@ mod expr {
     parse_rule! {
         fn parse_flow_controls(tokens) -> _matched: ASTExpression, _failed: None {
             match tokens.next_skip_break()? {
-                SLToken::Keyword(Keyword::Return) => ASTExpression::Return { value: tokens.next_parse(parse_flow_control_data)?.map(Box::new) },
-                SLToken::Keyword(Keyword::LoopBreak) => ASTExpression::Break { value: tokens.next_parse(parse_flow_control_data)?.map(Box::new) },
+                SLToken::Keyword(Keyword::Return) => ASTExpression::Return(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
+                SLToken::Keyword(Keyword::LoopBreak) => ASTExpression::Break(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
                 SLToken::Keyword(Keyword::LoopContinue) => ASTExpression::Continue,
                 _ => _failed!(),
             }
@@ -883,10 +883,10 @@ mod expr {
         fn parse_var_assign(tokens) -> _matched: ASTExpression, _failed: None {
             // variable access expr (ex. `var.abc[34]`)
             let access_expr = tokens.next_parse(parse_varaccessexpr)?;
-            // optional initial assignment
-            let assignment = Box::new(tokens.next_parse(parse_var_assignment_rhs)?);
+            // assigned value
+            let value = Box::new(tokens.next_parse(parse_var_assignment_rhs)?);
 
-            ASTExpression::Assign(access_expr, assignment)
+            ASTExpression::Assign { target: access_expr, value }
         }
     }
 
@@ -990,8 +990,24 @@ mod varaccessexpr {
 }
 
 parse_rule! {
-    fn parse_type_annotation(tokens) -> _matched: RMValueType, _failed: None {
-        todo!("// TODO parse type annotations");
+    fn parse_value_type_ident(tokens) -> _matched: RMValueType, _failed: None {
+        let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(ident) => *ident)?;
+
+        match ident {
+            "bool" => RMValueType::Bool,
+            "int" => RMValueType::Int,
+            "float" => RMValueType::Float,
+            "complex" => RMValueType::Complex,
+            "string" => RMValueType::String,
+            ident => RMValueType::Identified(ident.to_string()),
+        }
+    }
+}
+parse_rule! {
+    fn parse_value_type(tokens) -> _matched: RMValueType, _failed: None {
+        parse_match_first!(tokens;
+            parse_value_type_ident => |it| it,
+        ).expect("// TODO parse more complex types")
     }
 }
 
@@ -1003,7 +1019,7 @@ parse_rule! {
         let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string();
 
         try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon))?;
-        let ty = tokens.next_parse(parse_type_annotation)?;
+        let ty = tokens.next_parse(parse_value_type)?;
 
         (ident,ty)
     }
@@ -1017,7 +1033,7 @@ parse_rule! {
 
         let ty = if try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon)).is_some() {
             // type annotation (must not fail here or it's invalid)
-            Some(tokens.next_parse(parse_type_annotation)?)
+            Some(tokens.next_parse(parse_value_type)?)
         } else {
             // or no type annotation
             None

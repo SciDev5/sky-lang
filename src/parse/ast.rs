@@ -33,7 +33,10 @@ pub enum ASTExpression {
         initial_value: Option<Box<ASTExpression>>,
         ty: Option<RMValueType>,
     },
-    Assign(ASTVarAccessExpression, Box<ASTExpression>),
+    Assign { 
+        target: ASTVarAccessExpression,
+        value: Box<ASTExpression>,
+    },
     Read(IdentStr),
     Call {
         callable: Box<ASTExpression>,
@@ -84,14 +87,10 @@ pub enum ASTExpression {
         iterable: Box<ASTExpression>,
         block: ASTBlock,
     },
-    Break {
-        value: Option<Box<ASTExpression>>,
-    },
+    Break(Option<Box<ASTExpression>>),
     Continue,
 
-    Return {
-        value: Option<Box<ASTExpression>>,
-    },
+    Return(Option<Box<ASTExpression>>),
     FunctionDefinition {
         doc_comment: Option<String>,
         ident: IdentStr,

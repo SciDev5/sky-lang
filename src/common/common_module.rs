@@ -7,17 +7,24 @@ use crate::{
     math::tensor::Tensor,
 };
 
+#[derive(Debug, Clone)]
+pub struct CMLocalVarInfo {
+    pub doc_comment: Option<String>,
+    pub ty: CMType,
+    pub writable: bool,
+}
+
 pub struct CMFunction {
-    doc_comment: Option<String>,
-    params: Vec<CMValueType>,
-    locals: Vec<CMValueType>,
-    return_ty: CMType,
-    block: Vec<CMExpression>,
+    pub doc_comment: Option<String>,
+    pub params: Vec<CMValueType>,
+    pub locals: Vec<CMLocalVarInfo>,
+    pub ty_return: CMType,
+    pub block: Vec<CMExpression>,
 }
 pub struct CMClosureFunction {
     params: Vec<CMValueType>,
     captures: Vec<IdentInt>,
-    locals: Vec<CMValueType>,
+    locals: Vec<CMLocalVarInfo>,
     return_ty: CMType,
     block: Vec<CMExpression>,
 }
@@ -25,24 +32,43 @@ pub struct CMClosureFunction {
 pub struct CMInlineLambda {
     params: Vec<CMValueType>,
     captures: Vec<IdentInt>,
-    locals: Vec<CMValueType>,
+    locals: Vec<CMLocalVarInfo>,
     block: Vec<CMExpression>,
 }
 pub struct CMClass {
-    doc_comment: Option<String>,
-    fields: HashMap<IdentStr, CMValueType>,
-    functions: HashMap<IdentStr, Vec<IdentInt>>,
+    pub doc_comment: Option<String>,
+    pub fields: HashMap<IdentStr, CMValueType>,
+    pub functions: HashMap<IdentStr, Vec<IdentInt>>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CMValueType {
-    // TODO RawModule | Type
+    Int,
+    Float,
+    Complex,
+    Bool,
+    String,
+    FunctionRef {
+        params: Vec<CMValueType>,
+        return_ty: Box<CMType>,
+    },
+    ClassRef(IdentInt),
+    ClassInstance(IdentInt),
+    Tuple(Vec<CMValueType>),
+    // List(Box<RMValueType>),
+    // TODO Template types
+    // TODO Units / dimensional analysis
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CMType {
     Void,
     Never,
     Value(CMValueType),
+}
+impl CMType {
+    pub fn is_never(&self) -> bool {
+        matches!(self, Self::Never)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +86,9 @@ pub enum CMLiteralArray {
 
 #[derive(Debug, Clone)]
 pub enum CMExpression {
+    Void,
+    Fail, // TODO put references to the causing errors in CMExpression::Fail
+
     AssignProperty {
         object: Box<CMExpression>,
         property: IdentInt,
@@ -117,9 +146,9 @@ pub enum CMExpression {
 }
 
 pub struct CommonModule {
-    functions: Vec<CMFunction>,
-    closure_functions: Vec<CMClosureFunction>,
-    classes: Vec<CMClass>,
+    pub functions: Vec<CMFunction>,
+    pub closure_functions: Vec<CMClosureFunction>,
+    pub classes: Vec<CMClass>,
 
-    top_level: Vec<CMExpression>,
+    pub top_level: Vec<CMExpression>,
 }

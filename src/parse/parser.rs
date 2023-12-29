@@ -187,6 +187,7 @@ mod expr {
         },
         parse::{
             ast::{ASTArray, ASTExpression, ASTLiteral},
+            ops::SLOperator,
             parser::{
                 parse_block, parse_curly_block, parse_ident_optionally_typed, parse_ident_typed,
                 varaccessexpr::parse_varaccessexpr,
@@ -194,7 +195,7 @@ mod expr {
             raw_module::RMValueType,
             tokenization::{
                 AngleBracketShape, BracketType, Keyword, SLToken, SeparatorType, SyntacticSugarType,
-            }, ops::SLOperator,
+            },
         },
     };
 

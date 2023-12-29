@@ -9,11 +9,27 @@ use crate::{
 
 use super::ops::SLOperator;
 
+#[derive(Debug, Clone)]
+pub struct ScopedStatics {
+    pub functions: HashMap<IdentStr, Vec<IdentInt>>,
+    pub classes: HashMap<IdentStr, IdentInt>,
+}
+impl ScopedStatics {
+    pub fn empty() -> Self {
+        Self {
+            functions: HashMap::new(),
+            classes: HashMap::new(),
+        }
+    }
+}
+
 pub struct RMFunction {
     pub doc_comment: Option<String>,
     pub params: Vec<(IdentStr, RMValueType)>,
     pub return_ty: Option<RMType>,
-    pub block: Vec<RMExpression>,
+    pub block: RMBlock,
+    /// Contains references to all static references this function can see, including itself.
+    pub all_scoped: ScopedStatics,
 }
 pub struct RMClass {
     pub doc_comment: Option<String>,
@@ -28,7 +44,10 @@ pub enum RMValueType {
     Complex,
     Bool,
     String,
-    FunctionRef { params: Vec<RMValueType>, return_ty: Box<RMType>, },
+    FunctionRef {
+        params: Vec<RMValueType>,
+        return_ty: Box<RMType>,
+    },
     Identified(IdentStr),
     Tuple(Vec<RMValueType>),
     // List(Box<RMValueType>),
@@ -57,20 +76,14 @@ pub enum RMLiteralArray {
 
 #[derive(Debug, Clone)]
 pub enum RMExpression {
+    Void,
+
     DeclareVar {
         doc_comment: Option<String>,
         ident: IdentStr,
         writable: bool,
         initial_value: Option<Box<RMExpression>>,
         ty: Option<RMValueType>,
-    },
-    DeclareFunction {
-        id: IdentInt,
-        ident: IdentStr,
-    },
-    DeclareClass {
-        id: IdentInt,
-        ident: IdentStr,
     },
 
     AssignIndex {
@@ -116,7 +129,7 @@ pub enum RMExpression {
 
     AnonymousFunction {
         params: Vec<(IdentStr, Option<RMValueType>)>,
-        block: Vec<RMExpression>,
+        block: RMBlock,
     },
 
     OpBinary {
@@ -131,17 +144,17 @@ pub enum RMExpression {
 
     Conditional {
         condition: Box<RMExpression>,
-        block: Vec<RMExpression>,
-        elifs: Vec<(RMExpression, Vec<RMExpression>)>,
-        else_block: Option<Vec<RMExpression>>,
+        block: RMBlock,
+        elifs: Vec<(RMExpression, RMBlock)>,
+        else_block: Option<RMBlock>,
     },
     Loop {
-        block: Vec<RMExpression>,
+        block: RMBlock,
     },
     LoopFor {
         loop_var: (IdentStr, Option<RMValueType>),
         iterable: Box<RMExpression>,
-        block: Vec<RMExpression>,
+        block: RMBlock,
     },
     LoopBreak(Option<Box<RMExpression>>),
     LoopContinue,
@@ -149,9 +162,17 @@ pub enum RMExpression {
     Return(Option<Box<RMExpression>>),
 }
 
+#[derive(Debug, Clone)]
+pub struct RMBlock {
+    pub block: Vec<RMExpression>,
+    /// Contains a list of references to the functions contianed in this scope,
+    /// excluding outer scopes.
+    pub inner_scoped: ScopedStatics,
+}
+
 pub struct RawModule {
     pub functions: Vec<RMFunction>,
     pub classes: Vec<RMClass>,
 
-    pub top_level: Vec<RMExpression>,
+    pub top_level: RMBlock,
 }

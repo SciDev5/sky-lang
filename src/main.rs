@@ -1,11 +1,15 @@
-use skylab::{parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common}, interpreter::{compile::compile_interpreter_bytecode_module, interpreter::execute, gc::GarbageCollector}};
+use skylab::{parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common}, interpreter::{compile::compile_interpreter_bytecode_module, interpreter::execute, gc::GarbageCollector, intrinsics::interpreter_gen_intrinsics}};
 
 
 fn main() {
     let t = skylab::parse::tokenization::SLTokenizer::new();
-    let tokens = t.tokenize("69.420");
+    let tokens = t.tokenize(r"
+        let a = 69.420
+        a
+    ");
     let parsed = skylab::parse::parser::parse(tokens).unwrap();
-    let common = raw_2_common(ast_2_raw(parsed));
+    let interpreter_intrinsics = interpreter_gen_intrinsics();
+    let common = raw_2_common(ast_2_raw(parsed), &interpreter_intrinsics);
     let bytecode = compile_interpreter_bytecode_module(common);
 
     let mut gc = GarbageCollector::new();

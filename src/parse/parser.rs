@@ -1032,7 +1032,10 @@ parse_rule! {
         // variable identifier
         let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string();
 
-        let ty = if try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon)).is_some() {
+        let ty = if tokens.next_parse(|mut tokens| {
+            try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon))?;
+            Some((tokens, ()))
+        }).is_some() {
             // type annotation (must not fail here or it's invalid)
             Some(tokens.next_parse(parse_value_type)?)
         } else {

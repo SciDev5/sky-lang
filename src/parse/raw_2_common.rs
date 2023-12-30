@@ -2,24 +2,28 @@ use std::{collections::HashMap, fmt::Debug};
 
 use crate::common::{
     common_module::{
-        CMClass, CMExpression, CMFunction, CMLiteralValue, CMLocalVarInfo, CMType, CMValueType,
-        CommonModule,
+        CMCfg, CMClass, CMExpression, CMFunction, CMLiteralValue, CMLocalVarInfo, CMType,
+        CMValueType, CommonModule,
     },
     IdentInt, IdentStr,
 };
 
-use super::raw_module::{
-    RMBlock, RMClass, RMExpression, RMLiteralValue, RMType, RMValueType, RawModule, ScopedStatics,
+use super::{
+    fn_lookup::IntrinsicAssociatedFnLuts,
+    raw_module::{
+        RMBlock, RMClass, RMExpression, RMLiteralValue, RMType, RMValueType, RawModule,
+        ScopedStatics,
+    },
 };
 
 #[derive(Debug, Clone)]
-struct FunctionThing {
+struct FunctionThing<Cfg: CMCfg> {
     doc_comment: Option<String>,
     params: Vec<CMValueType>,
     param_idents: Vec<IdentStr>,
-    body: FunctionBody,
+    body: FunctionBody<Cfg>,
 }
-impl FunctionThing {
+impl<Cfg: CMCfg> FunctionThing<Cfg> {
     fn unwrap_translated_return_ty(&self) -> &CMType {
         match &self.body {
             FunctionBody::Translated { ty_return, .. } => ty_return,
@@ -28,7 +32,7 @@ impl FunctionThing {
     }
 }
 #[derive(Debug, Clone)]
-enum FunctionBody {
+enum FunctionBody<Cfg: CMCfg> {
     Untranslated {
         ty_return: WithResolutionStatus<CMType>,
         all_scoped: ScopedStatics,
@@ -37,11 +41,11 @@ enum FunctionBody {
     Translated {
         ty_return: CMType,
         locals: Vec<CMLocalVarInfo>,
-        block: Vec<CMExpression>,
+        block: Vec<CMExpression<Cfg>>,
     },
 }
-impl FunctionBody {
-    fn unwrap_translated(self) -> (CMType, Vec<CMExpression>, Vec<CMLocalVarInfo>) {
+impl<Cfg: CMCfg> FunctionBody<Cfg> {
+    fn unwrap_translated(self) -> (CMType, Vec<CMExpression<Cfg>>, Vec<CMLocalVarInfo>) {
         match self {
             FunctionBody::Translated {
                 ty_return,
@@ -66,14 +70,14 @@ impl FunctionBody {
     }
 }
 
-struct ResolverGlobalState {
-    functions: Vec<FunctionThing>,
+struct ResolverGlobalState<Cfg: CMCfg> {
+    functions: Vec<FunctionThing<Cfg>>,
     diagnostics: Vec<Raw2CommonDiagnostic>,
 }
-impl ResolverGlobalState {
+impl<Cfg: CMCfg> ResolverGlobalState<Cfg> {
     fn add_diagnostic(&mut self, diagnostic: Raw2CommonDiagnostic) -> Raw2CommonDiagnostic {
         self.diagnostics.push(diagnostic.clone());
-        diagnostic
+        dbg!(diagnostic)
     }
 }
 
@@ -126,7 +130,10 @@ struct Raw2CommonDiagnostic {
     // TODO pointing out location
 }
 
-pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
+pub fn raw_2_common<Cfg: CMCfg>(
+    raw_module: RawModule,
+    intrinsics: &IntrinsicAssociatedFnLuts<Cfg::IntrinsicFnRef>,
+) -> CommonModule<Cfg> {
     let mut state = ResolverGlobalState {
         functions: raw_module
             .functions
@@ -199,6 +206,7 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                     },
                 )
                 .collect(),
+            ty_top_level,
         ),
         functions: state
             .functions
@@ -289,8 +297,8 @@ fn static_resolve_value_type(
 struct ResolvedFnInfo<'a> {
     ty_return: &'a CMType,
 }
-fn resolve_fn<'a>(
-    state: &'a mut ResolverGlobalState,
+fn resolve_fn<'a, Cfg: CMCfg>(
+    state: &'a mut ResolverGlobalState<Cfg>,
     current_fn_id: IdentInt,
     current_fn_stack: &mut Vec<IdentInt>,
 ) -> ResolvedFnInfo<'a> {
@@ -403,10 +411,10 @@ fn resolve_fn<'a>(
     }
 }
 
-fn resolve_block(
+fn resolve_block<Cfg: CMCfg>(
     block: RMBlock,
 
-    state: &mut ResolverGlobalState,
+    state: &mut ResolverGlobalState<Cfg>,
     current_fn_stack: &mut Vec<IdentInt>,
     statics_stack: &mut Vec<ScopedStatics>,
 
@@ -416,7 +424,7 @@ fn resolve_block(
     loop_context_stack: &mut Vec<LoopContext>,
 
     ty_return: &mut Option<WithResolutionStatus<CMType>>,
-) -> (Vec<CMExpression>, CMType) {
+) -> (Vec<CMExpression<Cfg>>, CMType) {
     // The value that this entire block will evaluate to.
     // It's determined by the last element in the block unless
     // the block evaluates to `never` in the middle, which signifies
@@ -450,10 +458,10 @@ fn resolve_block(
     (exprs_out, ty_eval)
 }
 
-fn resolve_expr(
+fn resolve_expr<Cfg: CMCfg>(
     expr: RMExpression,
 
-    state: &mut ResolverGlobalState,
+    state: &mut ResolverGlobalState<Cfg>,
     current_fn_stack: &mut Vec<IdentInt>,
     statics_stack: &mut Vec<ScopedStatics>,
 
@@ -463,7 +471,7 @@ fn resolve_expr(
     loop_context_stack: &mut Vec<LoopContext>,
 
     ty_return: &mut Option<WithResolutionStatus<CMType>>,
-) -> (CMExpression, CMType) {
+) -> (CMExpression<Cfg>, CMType) {
     match expr {
         // TODO use CMType::Never to detect dead code
         RMExpression::Void => (CMExpression::Void, CMType::Void),
@@ -634,7 +642,31 @@ fn resolve_expr(
             expr,
             property_ident,
         } => todo!(),
-        RMExpression::Read { ident } => todo!(),
+        RMExpression::Read { ident } => match locals_lookup.get(&ident) {
+            Some(id) => {
+                let var = &locals[*id];
+                let (eval_ty, ty_ok) = match &var.ty {
+                    WithResolutionStatus::Resolved(ty) => (CMType::Value(ty.clone()), true),
+                    _ => (CMType::Void, false),
+                };
+                if !var.assigned {
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("attempt var '{ident}' before assignment"),
+                    });
+                    (CMExpression::Fail, eval_ty)
+                } else if !ty_ok {
+                    todo!("// TODO make a thing that points to the original dianostic (in the meantime this case is impossible)");
+                } else {
+                    (CMExpression::ReadVar { ident: *id }, eval_ty)
+                }
+            }
+            None => {
+                state.add_diagnostic(Raw2CommonDiagnostic {
+                    text: format!("attempt to read nonexistant var '{ident}'"),
+                });
+                (CMExpression::Fail, CMType::Never)
+            }
+        },
 
         RMExpression::Call {
             callable,

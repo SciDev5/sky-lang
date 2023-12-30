@@ -1,11 +1,17 @@
 use crate::{
-    common::common_module::{CMClass, CMExpression, CMFunction, CMLiteralValue, CommonModule},
+    common::common_module::{CMClass, CMExpression, CMFunction, CMLiteralValue, CommonModule, CMCfg},
     interpreter::bytecode::Literal,
 };
 
-use super::bytecode::{BClass, BFunction, BytecodeModule, Instr};
+use super::{bytecode::{BClass, BFunction, BytecodeModule, Instr}, intrinsics::InterpreterIntrinsicFn};
 
-pub fn compile_interpreter_bytecode_module(common: CommonModule) -> BytecodeModule {
+#[derive(Debug, Clone, Copy)]
+pub struct InterpreterCfg;
+impl CMCfg for InterpreterCfg {
+    type IntrinsicFnRef = InterpreterIntrinsicFn;
+}
+
+pub fn compile_interpreter_bytecode_module(common: CommonModule<InterpreterCfg>) -> BytecodeModule {
     BytecodeModule {
         functions: common.functions.into_iter().map(compile_fn).collect(),
         classes: common.classes.into_iter().map(compile_class).collect(),
@@ -21,7 +27,7 @@ pub fn compile_interpreter_bytecode_module(common: CommonModule) -> BytecodeModu
     }
 }
 
-fn compile_fn(func: CMFunction) -> BFunction {
+fn compile_fn(func: CMFunction<InterpreterCfg>) -> BFunction {
     BFunction {
         params: func.params,
         locals: func.locals.into_iter().map(|it| it.ty).collect(),
@@ -34,12 +40,12 @@ fn compile_class(class: CMClass) -> BClass {
         functions: class.functions.into_values().flatten().collect(),
     }
 }
-fn compile_block_top(block: Vec<CMExpression>) -> Vec<Instr> {
+fn compile_block_top(block: Vec<CMExpression<InterpreterCfg>>) -> Vec<Instr> {
     let mut out = vec![];
     compile_block(block, &mut out);
     out
 }
-fn compile_block(mut block: Vec<CMExpression>, instructions: &mut Vec<Instr>) -> CompileExprResult {
+fn compile_block(mut block: Vec<CMExpression<InterpreterCfg>>, instructions: &mut Vec<Instr>) -> CompileExprResult {
     use CompileExprResult::*;
 
     if block.is_empty() {
@@ -65,7 +71,7 @@ enum CompileExprResult {
     Value,
     Never,
 }
-fn compile_expr(block: CMExpression, instructions: &mut Vec<Instr>) -> CompileExprResult {
+fn compile_expr(block: CMExpression<InterpreterCfg>, instructions: &mut Vec<Instr>) -> CompileExprResult {
     use CompileExprResult::*;
 
     // ValueOrVoid -> should always end with one additional value in the iv stack coressponding
@@ -123,6 +129,10 @@ fn compile_expr(block: CMExpression, instructions: &mut Vec<Instr>) -> CompileEx
             arguments,
             always_inline,
             inlined_lambdas,
+        } => todo!(),
+        CMExpression::CallIntrinsic {
+            function_ref: function_id,
+            arguments,
         } => todo!(),
         CMExpression::LiteralValue(literal) => {
             instructions.push(Instr::Literal(match literal {

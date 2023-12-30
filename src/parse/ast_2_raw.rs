@@ -5,7 +5,7 @@ use crate::common::{IdentInt, IdentStr};
 use super::{
     ast::{ASTArray, ASTBlock, ASTExpression, ASTLiteral, ASTVarAccessExpression},
     raw_module::{
-        RMBlock, RMClass, RMExpression, RMFunction, RMLiteralArray, RMLiteralNumber, RawModule,
+        RMBlock, RMClass, RMExpression, RMFunction, RMLiteralArray, RMLiteralValue, RawModule,
         ScopedStatics,
     },
 };
@@ -211,11 +211,11 @@ fn transform_expr(
             property_ident,
         },
         ASTExpression::Literal(literal) => match literal {
-            ASTLiteral::Int(v) => RMExpression::LiteralNumber(RMLiteralNumber::Int(v)),
-            ASTLiteral::Float(v) => RMExpression::LiteralNumber(RMLiteralNumber::Float(v)),
-            ASTLiteral::Complex(v) => RMExpression::LiteralNumber(RMLiteralNumber::Complex(v)),
-            ASTLiteral::Bool(v) => RMExpression::LiteralBool(v),
-            ASTLiteral::String(v) => RMExpression::LiteralString(v),
+            ASTLiteral::Int(v) => RMExpression::LiteralValue(RMLiteralValue::Int(v)),
+            ASTLiteral::Float(v) => RMExpression::LiteralValue(RMLiteralValue::Float(v)),
+            ASTLiteral::Complex(v) => RMExpression::LiteralValue(RMLiteralValue::Complex(v)),
+            ASTLiteral::Bool(v) => RMExpression::LiteralValue(RMLiteralValue::Bool(v)),
+            ASTLiteral::String(v) => RMExpression::LiteralValue(RMLiteralValue::String(v)),
         },
         ASTExpression::Range { start, step, end } => RMExpression::LiteralRange {
             start: transform_expr_option_box(start, state, scope),

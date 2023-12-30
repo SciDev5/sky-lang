@@ -17,6 +17,7 @@ pub struct CMLocalVarInfo {
 pub struct CMFunction {
     pub doc_comment: Option<String>,
     pub params: Vec<CMValueType>,
+    /// local variables, including auto-generated parameter locals
     pub locals: Vec<CMLocalVarInfo>,
     pub ty_return: CMType,
     pub block: Vec<CMExpression>,
@@ -24,6 +25,7 @@ pub struct CMFunction {
 pub struct CMClosureFunction {
     params: Vec<CMValueType>,
     captures: Vec<IdentInt>,
+    /// local variables, including auto-generated parameter locals
     locals: Vec<CMLocalVarInfo>,
     return_ty: CMType,
     block: Vec<CMExpression>,
@@ -32,6 +34,7 @@ pub struct CMClosureFunction {
 pub struct CMInlineLambda {
     params: Vec<CMValueType>,
     captures: Vec<IdentInt>,
+    /// local variables, including auto-generated parameter locals
     locals: Vec<CMLocalVarInfo>,
     block: Vec<CMExpression>,
 }
@@ -72,10 +75,12 @@ impl CMType {
 }
 
 #[derive(Debug, Clone)]
-pub enum CMLiteralNumber {
+pub enum CMLiteralValue {
     Int(i128),
     Float(f64),
     Complex(Complex64),
+    Bool(bool),
+    String(String),
 }
 #[derive(Debug, Clone)]
 pub enum CMLiteralArray {
@@ -102,7 +107,7 @@ pub enum CMExpression {
         expr: Box<CMExpression>,
         property_ident: IdentInt,
     },
-    Read {
+    ReadVar {
         ident: IdentInt,
     },
 
@@ -113,9 +118,7 @@ pub enum CMExpression {
         inlined_lambdas: Option<Vec<CMInlineLambda>>,
     },
 
-    LiteralNumber(CMLiteralNumber),
-    LiteralBool(bool),
-    LiteralString(String),
+    LiteralValue(CMLiteralValue),
     LiteralArray(CMLiteralArray),
     LiteralFunctionRef {
         function_id: IdentInt,
@@ -150,5 +153,5 @@ pub struct CommonModule {
     pub closure_functions: Vec<CMClosureFunction>,
     pub classes: Vec<CMClass>,
 
-    pub top_level: Vec<CMExpression>,
+    pub top_level: (Vec<CMExpression>, Vec<CMLocalVarInfo>),
 }

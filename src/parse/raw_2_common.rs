@@ -2,14 +2,14 @@ use std::{collections::HashMap, fmt::Debug};
 
 use crate::common::{
     common_module::{
-        CMClass, CMExpression, CMFunction, CMLiteralNumber, CMLocalVarInfo, CMType, CMValueType,
+        CMClass, CMExpression, CMFunction, CMLiteralValue, CMLocalVarInfo, CMType, CMValueType,
         CommonModule,
     },
     IdentInt, IdentStr,
 };
 
 use super::raw_module::{
-    RMBlock, RMClass, RMExpression, RMLiteralNumber, RMType, RMValueType, RawModule, ScopedStatics,
+    RMBlock, RMClass, RMExpression, RMLiteralValue, RMType, RMValueType, RawModule, ScopedStatics,
 };
 
 #[derive(Debug, Clone)]
@@ -179,7 +179,27 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
     }
 
     CommonModule {
-        top_level,
+        top_level: (
+            top_level,
+            locals
+                .into_iter()
+                .map(
+                    |LocalVar {
+                         doc_comment,
+                         ty,
+                         writable,
+                         ..
+                     }| CMLocalVarInfo {
+                        doc_comment,
+                        ty: match ty {
+                            WithResolutionStatus::Resolved(ty) => CMType::Value(ty),
+                            _ => CMType::Never,
+                        },
+                        writable,
+                    },
+                )
+                .collect(),
+        ),
         functions: state
             .functions
             .into_iter()
@@ -621,22 +641,16 @@ fn resolve_expr(
             arguments,
         } => todo!(),
 
-        RMExpression::LiteralNumber(literal) => {
+        RMExpression::LiteralValue(literal) => {
             let (expr, ty) = match literal {
-                RMLiteralNumber::Int(v) => (CMLiteralNumber::Int(v), CMValueType::Int),
-                RMLiteralNumber::Float(v) => (CMLiteralNumber::Float(v), CMValueType::Float),
-                RMLiteralNumber::Complex(v) => (CMLiteralNumber::Complex(v), CMValueType::Complex),
+                RMLiteralValue::Int(v) => (CMLiteralValue::Int(v), CMValueType::Int),
+                RMLiteralValue::Float(v) => (CMLiteralValue::Float(v), CMValueType::Float),
+                RMLiteralValue::Complex(v) => (CMLiteralValue::Complex(v), CMValueType::Complex),
+                RMLiteralValue::Bool(v) => (CMLiteralValue::Bool(v), CMValueType::Bool),
+                RMLiteralValue::String(v) => (CMLiteralValue::String(v), CMValueType::String),
             };
-            (CMExpression::LiteralNumber(expr), CMType::Value(ty))
+            (CMExpression::LiteralValue(expr), CMType::Value(ty))
         }
-        RMExpression::LiteralBool(v) => (
-            CMExpression::LiteralBool(v),
-            CMType::Value(CMValueType::Bool),
-        ),
-        RMExpression::LiteralString(v) => (
-            CMExpression::LiteralString(v),
-            CMType::Value(CMValueType::String),
-        ),
         RMExpression::LiteralRange { start, step, end } => todo!("// TODO range constructor"),
         RMExpression::LiteralArray(_) => todo!(),
 

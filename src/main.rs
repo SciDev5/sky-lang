@@ -1,21 +1,17 @@
+use skylab::{parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common}, interpreter::{compile::compile_interpreter_bytecode_module, interpreter::execute, gc::GarbageCollector}};
+
 
 fn main() {
     let t = skylab::parse::tokenization::SLTokenizer::new();
-    let tokens = dbg!(t.tokenize(r"
-    
-    let a = 3
-    
-    let b = a + 4
-
-    if b > a {
-        b = 2
-    }
-    
-    "));
-
+    let tokens = t.tokenize("69.420");
     let parsed = skylab::parse::parser::parse(tokens).unwrap();
+    let common = raw_2_common(ast_2_raw(parsed));
+    let bytecode = compile_interpreter_bytecode_module(common);
 
-    dbg!(parsed);
+    let mut gc = GarbageCollector::new();
+    let return_val = execute(&bytecode, &mut gc);
+
+    dbg!(return_val);
 
     // let serialized_code = skylab::interpreter::interpreter::serialize_program(parsed);
 

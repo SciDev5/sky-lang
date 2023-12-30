@@ -62,10 +62,12 @@ pub enum RMType {
 }
 
 #[derive(Debug, Clone)]
-pub enum RMLiteralNumber {
+pub enum RMLiteralValue {
     Int(i128),
     Float(f64),
     Complex(Complex64),
+    Bool(bool),
+    String(String),
 }
 #[derive(Debug, Clone)]
 pub enum RMLiteralArray {
@@ -117,9 +119,7 @@ pub enum RMExpression {
         arguments: Vec<RMExpression>,
     },
 
-    LiteralNumber(RMLiteralNumber),
-    LiteralBool(bool),
-    LiteralString(String),
+    LiteralValue(RMLiteralValue),
     LiteralRange {
         start: Option<Box<RMExpression>>,
         step: Option<Box<RMExpression>>,

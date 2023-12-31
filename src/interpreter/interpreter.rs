@@ -5,6 +5,7 @@ use crate::common::IdentInt;
 use super::{
     bytecode::{BytecodeModule, Instr, Literal},
     gc::GarbageCollector,
+    intrinsics::{apply_intrinsic, apply_intrinsic1, apply_intrinsic2},
     value::Value,
 };
 
@@ -14,7 +15,7 @@ enum CallStackFrameId {
     Function(IdentInt),
 }
 
-struct CallStackFrame<'a> {
+pub struct CallStackFrame<'a> {
     id: CallStackFrameId,
     code: &'a Vec<Instr>,
     instruction_index: usize,
@@ -40,9 +41,26 @@ impl<'a> CallStackFrame<'a> {
     }
 }
 
+pub struct PanicGen;
+impl PanicGen {
+    fn to_panic(self, call_stack: Vec<CallStackFrame>) -> Panic {
+        Panic::new(call_stack)
+    }
+}
+
 #[derive(Debug)]
 pub struct Panic {
     stack: Vec<(CallStackFrameId, usize)>,
+}
+impl Panic {
+    pub fn new(call_stack: Vec<CallStackFrame>) -> Self {
+        Panic {
+            stack: call_stack
+                .into_iter()
+                .map(|frame| (frame.id, frame.instruction_index))
+                .collect(),
+        }
+    }
 }
 
 pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Value, Panic> {
@@ -84,6 +102,32 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
                     locals,
                 });
                 continue;
+            }
+            Instr::CallIntrinsic1 { function_id } => {
+                let value = call_stack_top.pop_iv();
+                let ret = apply_intrinsic1(*function_id, value);
+                call_stack_top.iv_stack.push(ret);
+            }
+            Instr::CallIntrinsic2 { function_id } => {
+                // rhs is popped first because it is created second
+                let value_rhs = call_stack_top.pop_iv();
+                let value_lhs = call_stack_top.pop_iv();
+                let ret = match apply_intrinsic2(*function_id, value_lhs, value_rhs) {
+                    Ok(v) => v,
+                    Err(panic_gen) => return Err(panic_gen.to_panic(call_stack)),
+                };
+                call_stack_top.iv_stack.push(ret);
+            }
+            Instr::CallIntrinsicN { function_id } => {
+                let args = call_stack_top
+                    .iv_stack
+                    .drain(call_stack_top.iv_stack.len() - function_id.n_args()..)
+                    .collect();
+                let ret = match apply_intrinsic(*function_id, args) {
+                    Ok(v) => v,
+                    Err(panic_gen) => return Err(panic_gen.to_panic(call_stack)),
+                };
+                call_stack_top.iv_stack.push(ret);
             }
             Instr::LiteralFunctionRef { function_id } => todo!(),
             Instr::CallDyn => todo!(),

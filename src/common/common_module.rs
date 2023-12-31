@@ -4,7 +4,7 @@ use num::complex::Complex64;
 
 use crate::{
     common::{IdentInt, IdentStr},
-    math::tensor::Tensor,
+    math::tensor::Tensor, parse::fn_lookup::FnRef,
 };
 
 #[derive(Debug, Clone)]
@@ -14,29 +14,29 @@ pub struct CMLocalVarInfo {
     pub writable: bool,
 }
 
-pub struct CMFunction<Cfg: CMCfg> {
+pub struct CMFunction {
     pub doc_comment: Option<String>,
     pub params: Vec<CMValueType>,
     /// local variables, including auto-generated parameter locals
     pub locals: Vec<CMLocalVarInfo>,
     pub ty_return: CMType,
-    pub block: Vec<CMExpression<Cfg>>,
+    pub block: Vec<CMExpression>,
 }
-pub struct CMClosureFunction<Cfg: CMCfg> {
+pub struct CMClosureFunction {
     params: Vec<CMValueType>,
     captures: Vec<IdentInt>,
     /// local variables, including auto-generated parameter locals
     locals: Vec<CMLocalVarInfo>,
     return_ty: CMType,
-    block: Vec<CMExpression<Cfg>>,
+    block: Vec<CMExpression>,
 }
 #[derive(Debug, Clone)]
-pub struct CMInlineLambda<Cfg: CMCfg> {
+pub struct CMInlineLambda {
     params: Vec<CMValueType>,
     captures: Vec<IdentInt>,
     /// local variables, including auto-generated parameter locals
     locals: Vec<CMLocalVarInfo>,
-    block: Vec<CMExpression<Cfg>>,
+    block: Vec<CMExpression>,
 }
 pub struct CMClass {
     pub doc_comment: Option<String>,
@@ -83,32 +83,29 @@ pub enum CMLiteralValue {
     String(String),
 }
 #[derive(Debug, Clone)]
-pub enum CMLiteralArray<Cfg: CMCfg> {
-    List(Vec<CMExpression<Cfg>>),
-    Matrix(Tensor<CMExpression<Cfg>>),
-    Tensor(Tensor<CMExpression<Cfg>>),
-}
-
-pub trait CMCfg : Debug + Clone + Copy {
-    type IntrinsicFnRef: Debug + Clone;
+pub enum CMLiteralArray {
+    List(Vec<CMExpression>),
+    Matrix(Tensor<CMExpression>),
+    Tensor(Tensor<CMExpression>),
 }
 
 #[derive(Debug, Clone)]
-pub enum CMExpression<Cfg: CMCfg> {
+pub enum CMExpression {
     Void,
     Fail, // TODO put references to the causing errors in CMExpression::Fail
+    FailAfter(Vec<CMExpression>), // TODO put references to the causing errors in CMExpression::Fail
 
     AssignProperty {
-        object: Box<CMExpression<Cfg>>,
+        object: Box<CMExpression>,
         property: IdentInt,
-        value: Box<CMExpression<Cfg>>,
+        value: Box<CMExpression>,
     },
     AssignVar {
         ident: IdentInt,
-        value: Box<CMExpression<Cfg>>,
+        value: Box<CMExpression>,
     },
     ReadProperty {
-        expr: Box<CMExpression<Cfg>>,
+        expr: Box<CMExpression>,
         property_ident: IdentInt,
     },
     ReadVar {
@@ -116,18 +113,14 @@ pub enum CMExpression<Cfg: CMCfg> {
     },
 
     Call {
-        function_id: IdentInt,
-        arguments: Vec<CMExpression<Cfg>>,
+        function_id: FnRef,
+        arguments: Vec<CMExpression>,
         always_inline: bool,
-        inlined_lambdas: Option<Vec<CMInlineLambda<Cfg>>>,
-    },
-    CallIntrinsic {
-        function_ref: Cfg::IntrinsicFnRef,
-        arguments: Vec<CMExpression<Cfg>>,
+        inlined_lambdas: Option<Vec<CMInlineLambda>>,
     },
 
     LiteralValue(CMLiteralValue),
-    LiteralArray(CMLiteralArray<Cfg>),
+    LiteralArray(CMLiteralArray),
     LiteralFunctionRef {
         function_id: IdentInt,
     },
@@ -137,29 +130,29 @@ pub enum CMExpression<Cfg: CMCfg> {
     },
 
     Conditional {
-        condition: Box<CMExpression<Cfg>>,
-        block: Vec<CMExpression<Cfg>>,
-        elifs: Vec<(CMExpression<Cfg>, Vec<CMExpression<Cfg>>)>,
-        else_block: Option<Vec<CMExpression<Cfg>>>,
+        condition: Box<CMExpression>,
+        block: Vec<CMExpression>,
+        elifs: Vec<(CMExpression, Vec<CMExpression>)>,
+        else_block: Option<Vec<CMExpression>>,
     },
     Loop {
-        block: Vec<CMExpression<Cfg>>,
+        block: Vec<CMExpression>,
     },
     LoopFor {
         loop_var: (IdentStr, CMValueType),
-        iterable: Box<CMExpression<Cfg>>,
-        block: Vec<CMExpression<Cfg>>,
+        iterable: Box<CMExpression>,
+        block: Vec<CMExpression>,
     },
-    LoopBreak(Option<Box<CMExpression<Cfg>>>),
+    LoopBreak(Option<Box<CMExpression>>),
     LoopContinue,
 
-    Return(Option<Box<CMExpression<Cfg>>>),
+    Return(Option<Box<CMExpression>>),
 }
 
-pub struct CommonModule<Cfg: CMCfg> {
-    pub functions: Vec<CMFunction<Cfg>>,
-    pub closure_functions: Vec<CMClosureFunction<Cfg>>,
+pub struct CommonModule {
+    pub functions: Vec<CMFunction>,
+    pub closure_functions: Vec<CMClosureFunction>,
     pub classes: Vec<CMClass>,
 
-    pub top_level: (Vec<CMExpression<Cfg>>, Vec<CMLocalVarInfo>, CMType),
+    pub top_level: (Vec<CMExpression>, Vec<CMLocalVarInfo>, CMType),
 }

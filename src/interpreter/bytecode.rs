@@ -1,6 +1,6 @@
 use num::complex::Complex64;
 
-use crate::common::{common_module::{CMValueType, CMType}, IdentInt};
+use crate::{common::{common_module::{CMValueType, CMType}, IdentInt}, parse::fn_lookup::{Intrinsic2FnId, Intrinsic1FnId, IntrinsicFnId}};
 
 pub enum Literal {
     Int(i128),
@@ -12,6 +12,9 @@ pub enum Literal {
 
 pub enum Instr {
     Call { function_id: IdentInt },
+    CallIntrinsic1 { function_id: Intrinsic1FnId },
+    CallIntrinsic2 { function_id: Intrinsic2FnId },
+    CallIntrinsicN { function_id: IntrinsicFnId },
     LiteralFunctionRef { function_id: IdentInt },
     CallDyn,
     /// `[..., obj] -> invalidated`

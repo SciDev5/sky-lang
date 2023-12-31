@@ -1,15 +1,40 @@
-use skylab::{parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common}, interpreter::{compile::compile_interpreter_bytecode_module, interpreter::execute, gc::GarbageCollector, intrinsics::interpreter_gen_intrinsics}};
-
+use skylab::{
+    interpreter::{
+        compile::compile_interpreter_bytecode_module, gc::GarbageCollector, interpreter::execute,
+    },
+    parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common},
+};
 
 fn main() {
+    /* Work in progress
+            ___       ___
+           /  /      /  /  _________    ____      _____      ____
+          /  /      /  /   |__   __|   / __ \    |  __ \    / __ \
+         /  /      /  /       | |     | |  | |   | |  | |  | |  | |
+        /  /      /  /        | |     | |  | |   | |  | |  | |  | |
+       /  /      /  /         | |     | |__| |   | |__| |  | |__| |
+      /  /      /  /          |_|      \____/    |_____/    \____/
+     /__/      /__/
+
+    */
     let t = skylab::parse::tokenization::SLTokenizer::new();
-    let tokens = t.tokenize(r"
-        let a = 69.420
+    let tokens = t.tokenize(
+        r"
+
+        fn k() {
+            3
+        }
+
+        fn k(b: int) {
+            -b + k()
+        }
+
+        let a = k(k())
         a
-    ");
+    ",
+    );
     let parsed = skylab::parse::parser::parse(tokens).unwrap();
-    let interpreter_intrinsics = interpreter_gen_intrinsics();
-    let common = raw_2_common(ast_2_raw(parsed), &interpreter_intrinsics);
+    let common = raw_2_common(ast_2_raw(parsed));
     let bytecode = compile_interpreter_bytecode_module(common);
 
     let mut gc = GarbageCollector::new();

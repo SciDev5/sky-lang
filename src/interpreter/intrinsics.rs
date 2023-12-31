@@ -1,240 +1,84 @@
-use std::{collections::HashMap, ops::Not};
+use num::traits::Pow;
 
 use crate::{
-    common::common_module::{CMType, CMValueType},
-    interpreter::value::{ValueBool, ValueComplex, ValueFloat, ValueInt},
-    parse::{
-        fn_lookup::{AssociatedFnLut, FnRef, IntrinsicAssociatedFnLuts},
-        ops::SLOperator,
-    },
+    interpreter::interpreter::PanicGen,
+    parse::fn_lookup::{Intrinsic1FnId, Intrinsic2FnId, IntrinsicFnId},
 };
 
 use super::value::Value;
 
-type Args = Vec<Value>;
-macro_rules! unpack_args {
-    ($args: expr; $($id: ident : $ty: ty),* $(,)?) => {
-        let [ $( ref $id ),* ] = $args [ .. ] else { panic!("intrinsic function received incorrect number of arguments") };
-        $(
-            let $id = unsafe { value_contents_into::<$ty>(& $id) };
-        )*
-    };
-}
-
-mod rhs_val {
-    use crate::{
-        common::common_module::CMValueType,
-        interpreter::value::{ValueBool, ValueComplex, ValueFloat, ValueInt, ValueString},
-    };
-
-    pub trait RhsTy {
-        const TY_VAL: CMValueType;
-        type Ty;
-    }
-    // int
-    pub struct RhsInt;
-    impl RhsTy for RhsInt {
-        const TY_VAL: CMValueType = CMValueType::Int;
-        type Ty = ValueInt;
-    }
-    // float
-    pub struct RhsFloat;
-    impl RhsTy for RhsFloat {
-        const TY_VAL: CMValueType = CMValueType::Float;
-        type Ty = ValueFloat;
-    }
-    // complex
-    pub struct RhsComplex;
-    impl RhsTy for RhsComplex {
-        const TY_VAL: CMValueType = CMValueType::Complex;
-        type Ty = ValueComplex;
-    }
-    // bool
-    pub struct RhsBool;
-    impl RhsTy for RhsBool {
-        const TY_VAL: CMValueType = CMValueType::Bool;
-        type Ty = ValueBool;
-    }
-    // string
-    pub struct RhsString;
-    impl RhsTy for RhsString {
-        const TY_VAL: CMValueType = CMValueType::String;
-        type Ty = ValueString;
+pub fn apply_intrinsic1(id: Intrinsic1FnId, value: Value) -> Value {
+    use Value::*;
+    match id {
+        Intrinsic1FnId::IntMinus => Int(-value.into_int()),
+        Intrinsic1FnId::IntBitNot => Int(!value.into_int()),
+        Intrinsic1FnId::FloatMinus => Float(-value.into_float()),
+        Intrinsic1FnId::ComplexMinus => Complex(-value.into_complex()),
+        Intrinsic1FnId::ComplexConj => Complex(value.into_complex().conj()),
+        Intrinsic1FnId::BoolNot => Bool(!value.into_bool()),
     }
 }
+pub fn apply_intrinsic2(id: Intrinsic2FnId, lhs: Value, rhs: Value) -> Result<Value, PanicGen> {
+    use Value::*;
+    Ok(match id {
+        Intrinsic2FnId::PrimitiveEquals => Bool(lhs == rhs),
+        Intrinsic2FnId::PrimitiveNotEquals => Bool(lhs != rhs),
+        Intrinsic2FnId::IntLessEqual => Bool(lhs.into_int() <= rhs.into_int()),
+        Intrinsic2FnId::IntLessThan => Bool(lhs.into_int() < rhs.into_int()),
+        Intrinsic2FnId::IntGreaterEqual => Bool(lhs.into_int() >= rhs.into_int()),
+        Intrinsic2FnId::IntGreaterThan => Bool(lhs.into_int() > rhs.into_int()),
 
-macro_rules! gen_ops_binary {
-    (
-        lhs ( $ty_lhs: ty );
-        [
-            $(( $rhs: ty) [
-                $(
-                    ($op: expr) { $v_lhs: ident, $v_rhs: ident -> $ret: expr } $block: block
-                ),* $(,)?
-            ]),* $(,)?
-        ]
-    ) => {
-        {
-            HashMap::from([
-                $(
-                    $(
-                        {
-                            use rhs_val::*;
-                            (
-                                ({
-                                    use SLOperator::*;
-                                    $op
-                                }, <$rhs> :: TY_VAL),
-                                FnRef::Intrinsic(InterpreterIntrinsicFn(|args| {
-                                    type TyRhs = <$rhs as RhsTy> :: Ty;
+        Intrinsic2FnId::FloatLessEqual => Bool(lhs.into_float() <= rhs.into_float()),
+        Intrinsic2FnId::FloatLessThan => Bool(lhs.into_float() < rhs.into_float()),
+        Intrinsic2FnId::FloatGreaterEqual => Bool(lhs.into_float() >= rhs.into_float()),
+        Intrinsic2FnId::FloatGreaterThan => Bool(lhs.into_float() > rhs.into_float()),
 
-                                    unpack_args!(args; $v_lhs : $ty_lhs, $v_rhs : TyRhs);
-                                    $block
-                                }), {
-                                    use CMValueType::*;
-                                    CMType::Value($ret)
-                                }),
-                            )
-                        }
-                    ),*,
-                ),*
-            ])
-        }
-    };
+        Intrinsic2FnId::IntPlus => Int(lhs.into_int() + rhs.into_int()),
+        Intrinsic2FnId::IntMinus => Int(lhs.into_int() - rhs.into_int()),
+        Intrinsic2FnId::IntTimes => Int(lhs.into_int() * rhs.into_int()),
+        Intrinsic2FnId::IntDiv => Int(lhs.into_int() / rhs.into_int()),
+        Intrinsic2FnId::IntPow => Int({
+            let lhs = lhs.into_int();
+            let rhs: u32 = rhs.into_int().try_into().map_err(|_| PanicGen)?;
+            
+            if rhs == 0 && lhs == 0 {
+                // 0 ^ 0
+                return Err(PanicGen);
+            } else {
+                lhs.pow(rhs)
+            }
+        }),
+
+        Intrinsic2FnId::IntBitXor => Int(lhs.into_int() ^ rhs.into_int()),
+        Intrinsic2FnId::IntBitAnd => Int(lhs.into_int() & rhs.into_int()),
+        Intrinsic2FnId::IntBitOr => Int(lhs.into_int() | rhs.into_int()),
+
+        Intrinsic2FnId::FloatPlus => Float(lhs.into_float() + rhs.into_float()),
+        Intrinsic2FnId::FloatMinus => Float(lhs.into_float() - rhs.into_float()),
+        Intrinsic2FnId::FloatTimes => Float(lhs.into_float() * rhs.into_float()),
+        Intrinsic2FnId::FloatDiv => Float(lhs.into_float() / rhs.into_float()),
+        Intrinsic2FnId::FloatPow => Float({
+            let lhs = lhs.into_float();
+            let rhs = rhs.into_float();
+            if lhs < 0.0 && rhs.fract() != 0.0 || lhs == 0.0 && rhs == 0.0 {
+                // 0^0 or root of negative
+                return Err(PanicGen);
+            } else {
+                lhs.pow(rhs)
+            }
+        }),
+
+        Intrinsic2FnId::ComplexPlus => Complex(lhs.into_complex() + rhs.into_complex()),
+        Intrinsic2FnId::ComplexMinus => Complex(lhs.into_complex() - rhs.into_complex()),
+        Intrinsic2FnId::ComplexTimes => Complex(lhs.into_complex() * rhs.into_complex()),
+        Intrinsic2FnId::ComplexDiv => Complex(lhs.into_complex() / rhs.into_complex()),
+        Intrinsic2FnId::ComplexPow => todo!(),
+
+        Intrinsic2FnId::BoolAnd => Bool(lhs.into_bool() && rhs.into_bool()),
+        Intrinsic2FnId::BoolXor => Bool(lhs.into_bool() ^ rhs.into_bool()),
+        Intrinsic2FnId::BoolOr => Bool(lhs.into_bool() || rhs.into_bool()),
+    })
 }
-macro_rules! gen_ops_unary {
-    (
-        lhs ( $ty_lhs: ty );
-        [
-            $(
-                ($op: expr) { $v: ident -> $ret: expr } $block: block
-            ),* $(,)?
-        ]
-    ) => {
-        {
-            HashMap::from([
-                $(
-                    {
-                        (
-                            {
-                                use SLOperator::*;
-                                $op
-                            },
-                            FnRef::Intrinsic(InterpreterIntrinsicFn(|args| {
-                                unpack_args!(args; $v : $ty_lhs);
-                                $block
-                            }), {
-                                use CMValueType::*;
-                                CMType::Value($ret)
-                            }),
-                        )
-                    }
-                ),*
-            ])
-        }
-    };
-}
-
-#[inline(always)]
-unsafe fn value_contents_into<T>(v: &Value) -> T {
-    const VALUE_DISCRIMINANT_SIZE: usize = std::mem::size_of::<std::mem::Discriminant<Value>>();
-    std::mem::transmute_copy(
-        (v as *const Value)
-            .add(VALUE_DISCRIMINANT_SIZE)
-            .as_ref()
-            .unwrap_unchecked(),
-    )
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct InterpreterIntrinsicFn(fn(Args) -> Value);
-
-pub fn interpreter_gen_intrinsics() -> IntrinsicAssociatedFnLuts<InterpreterIntrinsicFn> {
-    IntrinsicAssociatedFnLuts {
-        int: AssociatedFnLut {
-            op_binary: gen_ops_binary!(lhs (ValueInt); [
-                (RhsInt) [
-                    (Plus) { l, r -> Int } { Value::Int(l + r) },
-                    (Minus) { l, r -> Int } { Value::Int(l - r) },
-                    (Equal) { l, r -> Bool } { Value::Bool(l == r) },
-                    (NotEqual) { l, r -> Bool } { Value::Bool(l != r) },
-                ],
-            ]),
-            op_binary_rhs: HashMap::from([]),
-            op_unary: gen_ops_unary!(lhs (ValueInt); [
-                (Plus) { v -> Int } { Value::Int(v) },
-                (Minus) { v -> Int } { Value::Int(-v) },
-                (BitXor) { v -> Int } { Value::Int(v.not()) },
-                (HermitianConjugate) { v -> Int } { Value::Int(v) },
-                (Transpose) { v -> Int } { Value::Int(v) },
-            ]),
-
-            named: HashMap::from([]),
-            op_call: vec![],
-            op_index: vec![],
-        },
-        float: AssociatedFnLut {
-            op_binary: gen_ops_binary!(lhs (ValueFloat); [
-                (RhsFloat) [
-                    (Plus) { l, r -> Float } { Value::Float(l + r) },
-                    (Minus) { l, r -> Float } { Value::Float(l - r) },
-                    (Equal) { l, r -> Bool } { Value::Bool(l == r) },
-                    (NotEqual) { l, r -> Bool } { Value::Bool(l != r) },
-                ],
-            ]),
-            op_binary_rhs: HashMap::from([]),
-            op_unary: gen_ops_unary!(lhs (ValueFloat); [
-                (Plus) { v -> Float } { Value::Float(v) },
-                (Minus) { v -> Float } { Value::Float(-v) },
-                (HermitianConjugate) { v -> Float } { Value::Float(v) },
-                (Transpose) { v -> Float } { Value::Float(v) },
-            ]),
-
-            named: HashMap::from([]),
-            op_call: vec![],
-            op_index: vec![],
-        },
-        complex: AssociatedFnLut {
-            op_binary: gen_ops_binary!(lhs (ValueComplex); [
-                (RhsComplex) [
-                    (Plus) { l, r -> Complex } { Value::Complex(l + r) },
-                    (Minus) { l, r -> Complex } { Value::Complex(l - r) },
-                    (Equal) { l, r -> Bool } { Value::Bool(l == r) },
-                    (NotEqual) { l, r -> Bool } { Value::Bool(l != r) },
-                ],
-            ]),
-            op_binary_rhs: HashMap::from([]),
-            op_unary: gen_ops_unary!(lhs (ValueComplex); [
-                (Plus) { v -> Complex } { Value::Complex(v) },
-                (Minus) { v -> Complex } { Value::Complex(-v) },
-                (HermitianConjugate) { v -> Complex } { Value::Complex(v.conj()) },
-                (Transpose) { v -> Complex } { Value::Complex(v) },
-            ]),
-
-            named: HashMap::from([]),
-            op_call: vec![],
-            op_index: vec![],
-        },
-        bool: AssociatedFnLut {
-            op_binary: gen_ops_binary!(lhs (ValueBool); [
-                (RhsBool) [
-                    (And) { l, r -> Bool } { Value::Bool(l && r) },
-                    (Or) { l, r -> Bool } { Value::Bool(l || r) },
-                    (Xor) { l, r -> Bool } { Value::Bool(l ^ r) },
-                    (Equal) { l, r -> Bool } { Value::Bool(l == r) },
-                    (NotEqual) { l, r -> Bool } { Value::Bool(l != r) },
-                ],
-            ]),
-            op_binary_rhs: HashMap::from([]),
-            op_unary: gen_ops_unary!(lhs (ValueBool); [
-                (Not) { v -> Bool } { Value::Bool(v) },
-            ]),
-
-            named: HashMap::from([]),
-            op_call: vec![],
-            op_index: vec![],
-        },
-        string: AssociatedFnLut::empty(), // TODO string functions
-        empty_lut: AssociatedFnLut::empty(),
-    }
+pub fn apply_intrinsic(id: IntrinsicFnId, _values: Vec<Value>) -> Result<Value, PanicGen> {
+    match id {}
 }

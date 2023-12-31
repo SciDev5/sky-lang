@@ -1,17 +1,12 @@
 use crate::{
-    common::common_module::{CMClass, CMExpression, CMFunction, CMLiteralValue, CommonModule, CMCfg},
+    common::common_module::{CMClass, CMExpression, CMFunction, CMLiteralValue, CommonModule},
     interpreter::bytecode::Literal,
+    parse::fn_lookup::FnRef,
 };
 
-use super::{bytecode::{BClass, BFunction, BytecodeModule, Instr}, intrinsics::InterpreterIntrinsicFn};
+use super::bytecode::{BClass, BFunction, BytecodeModule, Instr};
 
-#[derive(Debug, Clone, Copy)]
-pub struct InterpreterCfg;
-impl CMCfg for InterpreterCfg {
-    type IntrinsicFnRef = InterpreterIntrinsicFn;
-}
-
-pub fn compile_interpreter_bytecode_module(common: CommonModule<InterpreterCfg>) -> BytecodeModule {
+pub fn compile_interpreter_bytecode_module(common: CommonModule) -> BytecodeModule {
     BytecodeModule {
         functions: common.functions.into_iter().map(compile_fn).collect(),
         classes: common.classes.into_iter().map(compile_class).collect(),
@@ -27,7 +22,7 @@ pub fn compile_interpreter_bytecode_module(common: CommonModule<InterpreterCfg>)
     }
 }
 
-fn compile_fn(func: CMFunction<InterpreterCfg>) -> BFunction {
+fn compile_fn(func: CMFunction) -> BFunction {
     BFunction {
         params: func.params,
         locals: func.locals.into_iter().map(|it| it.ty).collect(),
@@ -40,12 +35,12 @@ fn compile_class(class: CMClass) -> BClass {
         functions: class.functions.into_values().flatten().collect(),
     }
 }
-fn compile_block_top(block: Vec<CMExpression<InterpreterCfg>>) -> Vec<Instr> {
+fn compile_block_top(block: Vec<CMExpression>) -> Vec<Instr> {
     let mut out = vec![];
     compile_block(block, &mut out);
     out
 }
-fn compile_block(mut block: Vec<CMExpression<InterpreterCfg>>, instructions: &mut Vec<Instr>) -> CompileExprResult {
+fn compile_block(mut block: Vec<CMExpression>, instructions: &mut Vec<Instr>) -> CompileExprResult {
     use CompileExprResult::*;
 
     if block.is_empty() {
@@ -71,17 +66,27 @@ enum CompileExprResult {
     Value,
     Never,
 }
-fn compile_expr(block: CMExpression<InterpreterCfg>, instructions: &mut Vec<Instr>) -> CompileExprResult {
+fn compile_expr(expr: CMExpression, instructions: &mut Vec<Instr>) -> CompileExprResult {
     use CompileExprResult::*;
 
     // ValueOrVoid -> should always end with one additional value in the iv stack coressponding
     // Never -> doesn't matter because the iv stack gets discarded
-    match block {
+    match expr {
         CMExpression::Void => {
             instructions.push(Instr::PushVoid);
             Value
         }
         CMExpression::Fail => {
+            instructions.push(Instr::Fail);
+            Never
+        }
+        CMExpression::FailAfter(exprs) => {
+            for expr in exprs {
+                match compile_expr(expr, instructions) {
+                    Never => return Never,
+                    _ => { /* ok */ }
+                };
+            }
             instructions.push(Instr::Fail);
             Never
         }
@@ -129,11 +134,57 @@ fn compile_expr(block: CMExpression<InterpreterCfg>, instructions: &mut Vec<Inst
             arguments,
             always_inline,
             inlined_lambdas,
-        } => todo!(),
-        CMExpression::CallIntrinsic {
-            function_ref: function_id,
-            arguments,
-        } => todo!(),
+        } => {
+            if always_inline || inlined_lambdas.is_some() {
+                todo!();
+            }
+            match function_id {
+                FnRef::Identity => {
+                    let [argument] = <[_; 1]>::try_from(arguments).expect("there was not 1 argument for FnRef::Identity, this means fn_lookup has an issue");
+                    compile_expr(argument, instructions)
+                }
+                FnRef::ModuleFunction(function_id) => {
+                    for expr in arguments {
+                        match compile_expr(expr, instructions) {
+                            Never => return Never,
+                            _ => { /* ok (+1 iv) */ }
+                        };
+                    }
+                    instructions.push(Instr::Call { function_id });
+                    Value
+                }
+                FnRef::Intrinsic1(function_id) => {
+                    let [argument] = <[_; 1]>::try_from(arguments).expect("there was not 1 argument for FnRef::Intrinsic1, this means fn_lookup has an issue");
+                    match compile_expr(argument, instructions) {
+                        Never => return Never,
+                        _ => { /* ok (+1 iv) */ }
+                    };
+                    instructions.push(Instr::CallIntrinsic1 { function_id });
+                    Value
+                }
+                FnRef::Intrinsic2(function_id) => {
+                    let arguments = <[_; 2]>::try_from(arguments).expect("there were not 2 arguments for FnRef::Intrinsic2, this means fn_lookup has an issue");
+                    for expr in arguments {
+                        match compile_expr(expr, instructions) {
+                            Never => return Never,
+                            _ => { /* ok (+1 iv) */ }
+                        };
+                    }
+                    instructions.push(Instr::CallIntrinsic2 { function_id });
+                    Value
+                }
+                FnRef::Intrinsic(function_id) => {
+                    for expr in arguments {
+                        match compile_expr(expr, instructions) {
+                            Never => return Never,
+                            _ => { /* ok (+1 iv) */ }
+                        };
+                    }
+                    instructions.push(Instr::CallIntrinsicN { function_id });
+                    Value
+                }
+            }
+        }
         CMExpression::LiteralValue(literal) => {
             instructions.push(Instr::Literal(match literal {
                 CMLiteralValue::Int(v) => Literal::Int(v),

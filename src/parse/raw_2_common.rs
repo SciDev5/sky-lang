@@ -1,15 +1,18 @@
 use std::{collections::HashMap, fmt::Debug};
 
-use crate::common::{
-    common_module::{
-        CMCfg, CMClass, CMExpression, CMFunction, CMLiteralValue, CMLocalVarInfo, CMType,
-        CMValueType, CommonModule,
+use crate::{
+    common::{
+        common_module::{
+            CMClass, CMExpression, CMFunction, CMLiteralValue, CMLocalVarInfo, CMType, CMValueType,
+            CommonModule,
+        },
+        IdentInt, IdentStr,
     },
-    IdentInt, IdentStr,
+    parse::fn_lookup::get_fn_lut,
 };
 
 use super::{
-    fn_lookup::IntrinsicAssociatedFnLuts,
+    fn_lookup::{lookup_fallback, AssociatedFnLut, FnRef},
     raw_module::{
         RMBlock, RMClass, RMExpression, RMLiteralValue, RMType, RMValueType, RawModule,
         ScopedStatics,
@@ -17,13 +20,13 @@ use super::{
 };
 
 #[derive(Debug, Clone)]
-struct FunctionThing<Cfg: CMCfg> {
+struct FunctionThing {
     doc_comment: Option<String>,
     params: Vec<CMValueType>,
     param_idents: Vec<IdentStr>,
-    body: FunctionBody<Cfg>,
+    body: FunctionBody,
 }
-impl<Cfg: CMCfg> FunctionThing<Cfg> {
+impl FunctionThing {
     fn unwrap_translated_return_ty(&self) -> &CMType {
         match &self.body {
             FunctionBody::Translated { ty_return, .. } => ty_return,
@@ -32,7 +35,7 @@ impl<Cfg: CMCfg> FunctionThing<Cfg> {
     }
 }
 #[derive(Debug, Clone)]
-enum FunctionBody<Cfg: CMCfg> {
+enum FunctionBody {
     Untranslated {
         ty_return: WithResolutionStatus<CMType>,
         all_scoped: ScopedStatics,
@@ -41,11 +44,11 @@ enum FunctionBody<Cfg: CMCfg> {
     Translated {
         ty_return: CMType,
         locals: Vec<CMLocalVarInfo>,
-        block: Vec<CMExpression<Cfg>>,
+        block: Vec<CMExpression>,
     },
 }
-impl<Cfg: CMCfg> FunctionBody<Cfg> {
-    fn unwrap_translated(self) -> (CMType, Vec<CMExpression<Cfg>>, Vec<CMLocalVarInfo>) {
+impl FunctionBody {
+    fn unwrap_translated(self) -> (CMType, Vec<CMExpression>, Vec<CMLocalVarInfo>) {
         match self {
             FunctionBody::Translated {
                 ty_return,
@@ -70,11 +73,11 @@ impl<Cfg: CMCfg> FunctionBody<Cfg> {
     }
 }
 
-struct ResolverGlobalState<Cfg: CMCfg> {
-    functions: Vec<FunctionThing<Cfg>>,
+struct ResolverGlobalState {
+    functions: Vec<FunctionThing>,
     diagnostics: Vec<Raw2CommonDiagnostic>,
 }
-impl<Cfg: CMCfg> ResolverGlobalState<Cfg> {
+impl ResolverGlobalState {
     fn add_diagnostic(&mut self, diagnostic: Raw2CommonDiagnostic) -> Raw2CommonDiagnostic {
         self.diagnostics.push(diagnostic.clone());
         dbg!(diagnostic)
@@ -130,10 +133,7 @@ struct Raw2CommonDiagnostic {
     // TODO pointing out location
 }
 
-pub fn raw_2_common<Cfg: CMCfg>(
-    raw_module: RawModule,
-    intrinsics: &IntrinsicAssociatedFnLuts<Cfg::IntrinsicFnRef>,
-) -> CommonModule<Cfg> {
+pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
     let mut state = ResolverGlobalState {
         functions: raw_module
             .functions
@@ -297,8 +297,8 @@ fn static_resolve_value_type(
 struct ResolvedFnInfo<'a> {
     ty_return: &'a CMType,
 }
-fn resolve_fn<'a, Cfg: CMCfg>(
-    state: &'a mut ResolverGlobalState<Cfg>,
+fn resolve_fn<'a>(
+    state: &'a mut ResolverGlobalState,
     current_fn_id: IdentInt,
     current_fn_stack: &mut Vec<IdentInt>,
 ) -> ResolvedFnInfo<'a> {
@@ -411,10 +411,10 @@ fn resolve_fn<'a, Cfg: CMCfg>(
     }
 }
 
-fn resolve_block<Cfg: CMCfg>(
+fn resolve_block(
     block: RMBlock,
 
-    state: &mut ResolverGlobalState<Cfg>,
+    state: &mut ResolverGlobalState,
     current_fn_stack: &mut Vec<IdentInt>,
     statics_stack: &mut Vec<ScopedStatics>,
 
@@ -424,7 +424,7 @@ fn resolve_block<Cfg: CMCfg>(
     loop_context_stack: &mut Vec<LoopContext>,
 
     ty_return: &mut Option<WithResolutionStatus<CMType>>,
-) -> (Vec<CMExpression<Cfg>>, CMType) {
+) -> (Vec<CMExpression>, CMType) {
     // The value that this entire block will evaluate to.
     // It's determined by the last element in the block unless
     // the block evaluates to `never` in the middle, which signifies
@@ -458,10 +458,25 @@ fn resolve_block<Cfg: CMCfg>(
     (exprs_out, ty_eval)
 }
 
-fn resolve_expr<Cfg: CMCfg>(
+fn lookup_fn_ref_ty_return(
+    state: &mut ResolverGlobalState,
+    current_fn_stack: &mut Vec<IdentInt>,
+    fn_ref: FnRef,
+    params: &[CMValueType],
+) -> CMType {
+    match fn_ref {
+        FnRef::ModuleFunction(id) => resolve_fn(state, id, current_fn_stack).ty_return.clone(),
+        FnRef::Identity => CMType::Value(params[0].clone()),
+        FnRef::Intrinsic1(id) => id.ty_ret(),
+        FnRef::Intrinsic2(id) => id.ty_ret(),
+        FnRef::Intrinsic(id) => id.ty_ret(),
+    }
+}
+
+fn resolve_expr(
     expr: RMExpression,
 
-    state: &mut ResolverGlobalState<Cfg>,
+    state: &mut ResolverGlobalState,
     current_fn_stack: &mut Vec<IdentInt>,
     statics_stack: &mut Vec<ScopedStatics>,
 
@@ -471,7 +486,7 @@ fn resolve_expr<Cfg: CMCfg>(
     loop_context_stack: &mut Vec<LoopContext>,
 
     ty_return: &mut Option<WithResolutionStatus<CMType>>,
-) -> (CMExpression<Cfg>, CMType) {
+) -> (CMExpression, CMType) {
     match expr {
         // TODO use CMType::Never to detect dead code
         RMExpression::Void => (CMExpression::Void, CMType::Void),
@@ -671,7 +686,144 @@ fn resolve_expr<Cfg: CMCfg>(
         RMExpression::Call {
             callable,
             arguments,
-        } => todo!(),
+        } => {
+            let n_args = arguments.len();
+            let mut resolved_arguments = Vec::with_capacity(n_args);
+            let mut ty_arguments = Vec::with_capacity(n_args);
+            let mut args_ok = true;
+            for arg in arguments {
+                let (resolved, ty) = resolve_expr(
+                    arg,
+                    state,
+                    current_fn_stack,
+                    statics_stack,
+                    locals,
+                    locals_lookup,
+                    loop_context_stack,
+                    ty_return,
+                );
+                resolved_arguments.push(resolved);
+                match ty {
+                    CMType::Value(ty) => {
+                        ty_arguments.push(Some(ty));
+                    }
+                    _ => {
+                        args_ok = false;
+                        ty_arguments.push(None);
+                        break;
+                    }
+                }
+            }
+
+            if args_ok {
+                let ty_arguments = ty_arguments
+                    .into_iter()
+                    .map(Option::unwrap)
+                    .collect::<Vec<_>>();
+                match callable.as_ref() {
+                    RMExpression::Read { ident } => {
+                        // function call
+                        let mut best_fallback = None;
+                        let mut had_semimatch = false;
+                        for function_id in statics_stack
+                            .iter()
+                            .rev()
+                            .flat_map(|frame| frame.functions.get(ident))
+                            .flatten()
+                            .copied()
+                        {
+                            let k = &state.functions[function_id];
+                            if &k.params == &ty_arguments {
+                                let ResolvedFnInfo { ty_return } =
+                                    resolve_fn(state, function_id, current_fn_stack);
+                                return (
+                                    CMExpression::Call {
+                                        function_id: FnRef::ModuleFunction(function_id),
+                                        arguments: resolved_arguments,
+                                        always_inline: false,
+                                        inlined_lambdas: None,
+                                    },
+                                    ty_return.clone(),
+                                );
+                            } else if k.params.len() == ty_arguments.len() {
+                                if had_semimatch {
+                                    best_fallback = None;
+                                } else {
+                                    best_fallback = Some(function_id)
+                                }
+                                had_semimatch = true;
+                            }
+                        }
+                        // did not find lny suitable call signatures
+                        state.add_diagnostic(Raw2CommonDiagnostic {
+                            text: format!("did not find any suitable call signatures"),
+                        });
+                        // try to salvage a return value to try to yield as much useful results to the user as possible
+                        let return_ty = if let Some(fallback_id) = best_fallback {
+                            let ResolvedFnInfo { ty_return } =
+                                resolve_fn(state, fallback_id, current_fn_stack);
+                            ty_return.clone()
+                        } else {
+                            CMType::Never
+                        };
+                        (CMExpression::FailAfter(resolved_arguments), return_ty)
+                    }
+                    RMExpression::ReadProperty {
+                        expr,
+                        property_ident,
+                    } => {
+                        todo!("named associated functions");
+                    }
+                    _ => {
+                        // fail
+                        state.add_diagnostic(Raw2CommonDiagnostic {
+                            text: format!("object is not callable"),
+                        });
+                        (CMExpression::Fail, CMType::Never)
+                    }
+                }
+            } else {
+                state.add_diagnostic(Raw2CommonDiagnostic {
+                    text: format!("illegal void parameter"),
+                });
+                match callable.as_ref() {
+                    RMExpression::Read { ident } => {
+                        let fallback_id = lookup_fallback(
+                            &ty_arguments,
+                            statics_stack
+                                .iter()
+                                .rev()
+                                .flat_map(|frame| frame.functions.get(ident))
+                                .flatten()
+                                .map(|i| (&state.functions[*i].params, FnRef::ModuleFunction(*i))),
+                        );
+                        if let Some(FnRef::ModuleFunction(fallback_id)) = fallback_id {
+                            // we have an assumption for what real function this is, use it to fill in later type annotations.
+                            let ResolvedFnInfo { ty_return } =
+                                resolve_fn(state, fallback_id, current_fn_stack);
+
+                            (CMExpression::FailAfter(resolved_arguments), ty_return.clone())
+                        } else {
+                            (CMExpression::FailAfter(resolved_arguments), CMType::Void)
+                        }
+                    }
+                    RMExpression::ReadProperty {
+                        expr,
+                        property_ident,
+                    } => {
+                        todo!("named associated functions");
+                        // (CMExpression::Fail, CMType::Void)
+                    }
+                    _ => {
+                        // fail
+                        state.add_diagnostic(Raw2CommonDiagnostic {
+                            text: format!("object is not callable"),
+                        });
+                        (CMExpression::Fail, CMType::Void)
+                    }
+                }
+            }
+        }
 
         RMExpression::LiteralValue(literal) => {
             let (expr, ty) = match literal {
@@ -688,8 +840,130 @@ fn resolve_expr<Cfg: CMCfg>(
 
         RMExpression::AnonymousFunction { params, block } => todo!(),
 
-        RMExpression::OpBinary { op, lhs, rhs } => todo!(),
-        RMExpression::OpUnary { op, value } => todo!(),
+        RMExpression::OpBinary { op, lhs, rhs } => {
+            let (lhs, ty_lhs) = resolve_expr(
+                *lhs,
+                state,
+                current_fn_stack,
+                statics_stack,
+                locals,
+                locals_lookup,
+                loop_context_stack,
+                ty_return,
+            );
+            let (rhs, ty_rhs) = resolve_expr(
+                *rhs,
+                state,
+                current_fn_stack,
+                statics_stack,
+                locals,
+                locals_lookup,
+                loop_context_stack,
+                ty_return,
+            );
+            match (ty_lhs, ty_rhs) {
+                (CMType::Never, _) => {
+                    // just do the first thing, it will never finish anyway so dont bother wrapping it anyway
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("cannot operate on never"),
+                    });
+                    (lhs, CMType::Never)
+                }
+                (CMType::Void | CMType::Value(_), CMType::Never) => {
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("cannot operate on never"),
+                    });
+                    (CMExpression::FailAfter(vec![lhs, rhs]), CMType::Never)
+                }
+                (CMType::Void, CMType::Void | CMType::Value(_)) => {
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("cannot operate on void"),
+                    });
+                    (CMExpression::FailAfter(vec![lhs, rhs]), CMType::Never)
+                }
+                (CMType::Value(_), CMType::Void) => {
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("cannot operate on void"),
+                    });
+                    (CMExpression::FailAfter(vec![lhs, rhs]), CMType::Never)
+                }
+                (CMType::Value(ty_lhs), CMType::Value(ty_rhs)) => {
+                    let lut_lhs = get_fn_lut(&ty_lhs);
+                    let lut_rhs = get_fn_lut(&ty_rhs);
+                    if let Some(function_id) = AssociatedFnLut::lookup_binary(
+                        (lut_lhs, ty_lhs.clone()),
+                        (lut_rhs, ty_rhs.clone()),
+                        op,
+                    ) {
+                        let ty_return =
+                            lookup_fn_ref_ty_return(state, current_fn_stack, function_id, &vec![]);
+                        (
+                            CMExpression::Call {
+                                function_id,
+                                arguments: vec![lhs, rhs],
+                                always_inline: false,
+                                inlined_lambdas: None,
+                            },
+                            ty_return,
+                        )
+                    } else {
+                        state.add_diagnostic(Raw2CommonDiagnostic { text: format!("no valid operation found for types {:?} and {:?} and operator {:?}", ty_lhs, ty_rhs, op) });
+                        (CMExpression::FailAfter(vec![lhs, rhs]), CMType::Never)
+                    }
+                }
+            }
+        }
+        RMExpression::OpUnary { op, value } => {
+            let (value, ty_value) = resolve_expr(
+                *value,
+                state,
+                current_fn_stack,
+                statics_stack,
+                locals,
+                locals_lookup,
+                loop_context_stack,
+                ty_return,
+            );
+            match ty_value {
+                CMType::Value(ty) => {
+                    let lut = get_fn_lut(&ty);
+                    if let Some(function_id) = lut.lookup_unary(op) {
+                        let ty_return =
+                            lookup_fn_ref_ty_return(state, current_fn_stack, function_id, &[ty]);
+                        (
+                            CMExpression::Call {
+                                function_id,
+                                arguments: vec![value],
+                                always_inline: false,
+                                inlined_lambdas: None,
+                            },
+                            ty_return,
+                        )
+                    } else {
+                        state.add_diagnostic(Raw2CommonDiagnostic {
+                            text: format!(
+                                "no valid operation found for type {:?} and operator {:?}",
+                                ty, op
+                            ),
+                        });
+                        (CMExpression::FailAfter(vec![value]), CMType::Never)
+                    }
+                }
+                CMType::Void => {
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("cannot operate on void"),
+                    });
+                    (CMExpression::FailAfter(vec![value]), CMType::Never)
+                }
+                CMType::Never => {
+                    // just do the first thing, it will never finish anyway so dont bother wrapping it anyway
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("cannot operate on never"),
+                    });
+                    (value, CMType::Never)
+                }
+            }
+        }
 
         RMExpression::Conditional {
             condition,

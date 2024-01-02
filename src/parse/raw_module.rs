@@ -23,6 +23,7 @@ impl ScopedStatics {
     }
 }
 
+#[derive(Debug)]
 pub struct RMFunction {
     pub doc_comment: Option<String>,
     pub params: Vec<(IdentStr, RMValueType)>,
@@ -31,6 +32,7 @@ pub struct RMFunction {
     /// Contains references to all static references this function can see, including itself.
     pub all_scoped: ScopedStatics,
 }
+#[derive(Debug)]
 pub struct RMClass {
     pub doc_comment: Option<String>,
     pub fields: HashMap<IdentStr, RMValueType>,
@@ -169,7 +171,7 @@ pub struct RMBlock {
     /// excluding outer scopes.
     pub inner_scoped: ScopedStatics,
 }
-
+#[derive(Debug)]
 pub struct RawModule {
     pub functions: Vec<RMFunction>,
     pub classes: Vec<RMClass>,

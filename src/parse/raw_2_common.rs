@@ -525,7 +525,7 @@ fn resolve_expr(
             let ty = match (ty_value, ty_var) {
                 (None, ty) => WithResolutionStatus::from_option_none_unknown(ty),
                 (Some(CMType::Void), ty_var) => {
-                    error = Some(Raw2CommonDiagnostic { text: format!("type mismatch at variable assignment at /* TODO location */! found void, it should never be void")});
+                    error = Some(state.add_diagnostic(Raw2CommonDiagnostic { text: format!("type mismatch at variable assignment at /* TODO location */! found void, it should never be void")}));
                     WithResolutionStatus::from_option_none_unknown(ty_var)
                 }
                 (Some(CMType::Never), ty_var) => {
@@ -536,7 +536,7 @@ fn resolve_expr(
                 (Some(CMType::Value(ty_value)), Some(ty_var)) => {
                     if ty_value != ty_var {
                         // type mismatch
-                        error = Some(Raw2CommonDiagnostic { text: format!("type mismatch at variable assignment at /* TODO location */! expected {:?}, found {:?}", &ty_var, ty_value)});
+                        error = Some(state.add_diagnostic(Raw2CommonDiagnostic { text: format!("type mismatch at variable assignment at /* TODO location */! expected {:?}, found {:?}", &ty_var, ty_value)}));
                         WithResolutionStatus::Resolved(ty_var)
                     } else {
                         WithResolutionStatus::Resolved(ty_var)
@@ -634,6 +634,7 @@ fn resolve_expr(
                     });
                     (CMExpression::Fail, eval_ty)
                 } else {
+                    var.assigned = true;
                     (
                         CMExpression::AssignVar {
                             ident: var_id,
@@ -1025,7 +1026,12 @@ fn resolve_expr(
                     }
                 }
             }
-            let mut ty_eval;
+
+            let mut ty_eval = if else_block.is_none() {
+                CMType::Void
+            } else {
+                CMType::Never
+            };
             let condition = resolve_expr(
                 *condition,
                 state,
@@ -1037,7 +1043,7 @@ fn resolve_expr(
                 ty_return,
             );
             let condition = check_condition(state, condition);
-            let (block, ty_block) = resolve_block(
+            let block = resolve_block(
                 block,
                 state,
                 current_fn_stack,
@@ -1047,7 +1053,7 @@ fn resolve_expr(
                 loop_context_stack,
                 ty_return,
             );
-            ty_eval = ty_block;
+            let block = check_block(state, &mut ty_eval, block);
 
             let mut elifs_ = vec![];
             for (condition, block) in elifs {
@@ -1093,7 +1099,8 @@ fn resolve_expr(
 
                 Some(else_block)
             } else {
-                None
+                // None
+                Some(vec![CMExpression::Void])
             };
 
             (
@@ -1112,7 +1119,26 @@ fn resolve_expr(
                 returnable: true,
                 return_value: CMType::Never,
             });
-            todo!()
+            let (block, _) = resolve_block(
+                block,
+                state,
+                current_fn_stack,
+                statics_stack,
+                locals,
+                locals_lookup,
+                loop_context_stack,
+                ty_return,
+            );
+            let LoopContext { return_value, .. } = loop_context_stack
+                .pop()
+                .expect("loop_context_stack somehow got drained");
+            (
+                CMExpression::Loop {
+                    block,
+                    is_infinite: return_value.is_never(),
+                },
+                return_value,
+            )
         }
         RMExpression::LoopFor {
             loop_var,

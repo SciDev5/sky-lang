@@ -1,8 +1,9 @@
 use skylab::{
+    dbg_bytecode_module_code,
     interpreter::{
         compile::compile_interpreter_bytecode_module, gc::GarbageCollector, interpreter::execute,
     },
-    parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common}, dbg_bytecode_module_code,
+    parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common},
 };
 
 fn main() {
@@ -32,15 +33,37 @@ fn main() {
         let a = k(k())
         let b = a + 1
 
-        if b < a {
+        let some_result = if b > a {
             1 + k(b * a)
         } else {
             2
-        }
+        } // -> 4
 
-        
+        let a = 5
+        let b = 1
+        loop {
+            if a == 1 {
+                break b
+            }
+            b = b * a
+            a = a - 1
+        } + some_result // -> 5! + 4 = 124
     ",
     );
+    // let tokens = t.tokenize(
+    //     r"
+    //     let a: bool = 3
+
+    //     let b: int
+    //     b = false
+    //     b = 2
+
+    //     let c
+    //     c = true
+
+    //     let d = b + c
+    // ",
+    // );
     let parsed = skylab::parse::parser::parse(tokens).unwrap();
     let common = raw_2_common(ast_2_raw(parsed));
     let bytecode = compile_interpreter_bytecode_module(common);
@@ -49,7 +72,7 @@ fn main() {
     let mut gc = GarbageCollector::new();
     let return_val = execute(&bytecode, &mut gc);
 
-    dbg!(return_val);
+    dbg!(return_val).unwrap();
 
     // let serialized_code = skylab::interpreter::interpreter::serialize_program(parsed);
 

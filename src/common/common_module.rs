@@ -14,6 +14,7 @@ pub struct CMLocalVarInfo {
     pub writable: bool,
 }
 
+#[derive(Debug)]
 pub struct CMFunction {
     pub doc_comment: Option<String>,
     pub params: Vec<CMValueType>,
@@ -22,6 +23,7 @@ pub struct CMFunction {
     pub ty_return: CMType,
     pub block: Vec<CMExpression>,
 }
+#[derive(Debug)]
 pub struct CMClosureFunction {
     params: Vec<CMValueType>,
     captures: Vec<IdentInt>,
@@ -38,6 +40,7 @@ pub struct CMInlineLambda {
     locals: Vec<CMLocalVarInfo>,
     block: Vec<CMExpression>,
 }
+#[derive(Debug)]
 pub struct CMClass {
     pub doc_comment: Option<String>,
     pub fields: HashMap<IdentStr, CMValueType>,
@@ -137,6 +140,7 @@ pub enum CMExpression {
     },
     Loop {
         block: Vec<CMExpression>,
+        is_infinite: bool,
     },
     LoopFor {
         loop_var: (IdentStr, CMValueType),
@@ -149,6 +153,7 @@ pub enum CMExpression {
     Return(Option<Box<CMExpression>>),
 }
 
+#[derive(Debug)]
 pub struct CommonModule {
     pub functions: Vec<CMFunction>,
     pub closure_functions: Vec<CMClosureFunction>,

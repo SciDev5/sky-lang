@@ -41,7 +41,9 @@ impl InstrList {
     fn push_break(&mut self, n_layers_out: u8) {
         self.break_locations
             .push((self.instructions.len(), n_layers_out));
-        // fail if we can't get rid of it
+
+        // placeholder for the proper ScopePop and Jump instructions
+        self.instructions.push(Instr::Fail);
         self.instructions.push(Instr::Fail);
     }
     /// Add one placeholder instruction and necessary metadata to the end of this.
@@ -49,7 +51,9 @@ impl InstrList {
     fn push_continue(&mut self, n_layers_out: u8) {
         self.continue_locations
             .push((self.instructions.len(), n_layers_out));
-        // fail if we can't get rid of it
+
+        // placeholder for the proper ScopeReset and Jump instructions
+        self.instructions.push(Instr::Fail);
         self.instructions.push(Instr::Fail);
     }
     /// Push a `Jump` instruction, but automatically calculate relative jump index
@@ -97,11 +101,14 @@ impl InstrList {
         let continue_locations = get_locations_to_modify(&mut self.continue_locations);
 
         for break_loc in break_locations {
-            self.instructions[break_loc] = Instr::Jump(break_jump_target - break_loc as isize);
+            self.instructions[break_loc] = Instr::PopScope;
+            self.instructions[break_loc + 1] =
+                Instr::Jump(break_jump_target - (break_loc + 1) as isize);
         }
         for continue_loc in continue_locations {
-            self.instructions[continue_loc] =
-                Instr::Jump(continue_jump_target - continue_loc as isize);
+            self.instructions[continue_loc] = Instr::ResetScope;
+            self.instructions[continue_loc + 1] =
+                Instr::Jump(continue_jump_target - (continue_loc + 1) as isize);
         }
     }
 }
@@ -446,14 +453,49 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
                 Value
             }
         }
-        CMExpression::Loop { block } => todo!(),
+        CMExpression::Loop { block, is_infinite } => {
+            let mut loop_code = InstrList::new();
+            compile_block(block, &mut loop_code);
+
+            // pre-loop push scope to allow break/continue not to leak memory into the iv stack
+            instructions.push(Instr::PushScope);
+
+            // loop end buffer to reset the loop
+            loop_code.push(Instr::Discard); // discard the working value
+            loop_code.push_jmp_absolute(0); // loop start is at the beginning of the block (after the PushScope)
+
+            // write the loop code to the instructions list
+            loop_code.unwrap_loop_layer(loop_code.len() as isize, 0);
+            instructions.append(&mut loop_code);
+
+            if is_infinite {
+                Never
+            } else {
+                Value
+            }
+        }
         CMExpression::LoopFor {
             loop_var,
             iterable,
             block,
         } => todo!(),
-        CMExpression::LoopBreak(_) => todo!(),
-        CMExpression::LoopContinue => todo!(),
+        CMExpression::LoopBreak(value) => {
+            let res = match value {
+                Some(value) => compile_expr(*value, instructions),
+                None => {
+                    instructions.push(Instr::PushVoid);
+                    Value
+                }
+            };
+            if !res.is_never() {
+                instructions.push_break(0);
+            }
+            Never
+        }
+        CMExpression::LoopContinue => {
+            instructions.push_continue(0);
+            Never
+        }
         CMExpression::Return(value) => {
             match value {
                 Some(value) => match compile_expr(*value, instructions) {

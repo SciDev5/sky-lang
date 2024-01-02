@@ -42,6 +42,8 @@ pub enum Instr {
     PushScope,
     /// `[...<keep>], [...<discard>, value] -> [...<keep>, value]`
     PopScope,
+    /// `[...<keep>], [...<discard>] -> [...<keep>]`
+    ResetScope,
 
     /// `[..., obj] -> [..., value]`
     ReadProp(IdentInt),

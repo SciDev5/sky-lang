@@ -81,7 +81,7 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
         let call_stack_top = call_stack
             .last_mut()
             .expect("unnaturally exhausted call stack");
-        
+
         // Check if we've hit the end of the call's instructions.
         if call_stack_top.instruction_index == call_stack_top.code.len() {
             let call_eval_value = call_stack_top
@@ -183,6 +183,13 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
                     .expect("scope stack was drained");
                 call_stack_top.iv_stack.drain(reset_iv_stack_to_len..);
                 call_stack_top.iv_stack.push(top);
+            }
+            Instr::ResetScope => {
+                let reset_iv_stack_to_len = *call_stack_top
+                    .scope_ivlen_stack
+                    .last()
+                    .expect("scope stack was drained");
+                call_stack_top.iv_stack.drain(reset_iv_stack_to_len..);
             }
             Instr::ReadProp(_) => todo!(),
             Instr::WriteProp(_) => todo!(),

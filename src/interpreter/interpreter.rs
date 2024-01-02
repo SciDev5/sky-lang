@@ -30,7 +30,9 @@ impl<'a> CallStackFrame<'a> {
             .instruction_index
             .checked_add_signed(delta)
             .expect("jump out of bounds");
-        if self.instruction_index >= self.code.len() {
+        if self.instruction_index > self.code.len() {
+            // not using >= here is intentional. if self.instruction_index == self.code.len(), then
+            // that signifies we jump to the end of the block without running the last instruction.
             panic!("jump out of bounds");
         }
     }
@@ -79,7 +81,29 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
         let call_stack_top = call_stack
             .last_mut()
             .expect("unnaturally exhausted call stack");
+        
+        // Check if we've hit the end of the call's instructions.
+        if call_stack_top.instruction_index == call_stack_top.code.len() {
+            let call_eval_value = call_stack_top
+                .iv_stack
+                .pop()
+                .expect("missing call block eval value somehow");
+            call_stack.pop();
+            match call_stack.last_mut() {
+                Some(call_stack_top) => {
+                    // function return, push return value to the iv stack and increment instruction index
+                    call_stack_top.iv_stack.push(call_eval_value);
+                    call_stack_top.instruction_index += 1;
+                }
+                None => {
+                    // top level finished
+                    return Ok(call_eval_value);
+                }
+            }
+            continue;
+        }
 
+        // Run the next instruction.
         match &call_stack_top.code[call_stack_top.instruction_index] {
             Instr::Call { function_id } => {
                 let func = &module.functions[*function_id];
@@ -210,24 +234,5 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
         }
 
         call_stack_top.instruction_index += 1;
-        if call_stack_top.instruction_index == call_stack_top.code.len() {
-            // hit end of call code
-            let call_eval_value = call_stack_top
-                .iv_stack
-                .pop()
-                .expect("missing call block eval value somehow");
-            call_stack.pop();
-            match call_stack.last_mut() {
-                Some(call_stack_top) => {
-                    // function return, push return value to the iv stack and increment instruction index
-                    call_stack_top.iv_stack.push(call_eval_value);
-                    call_stack_top.instruction_index += 1;
-                }
-                None => {
-                    // top level finished
-                    return Ok(call_eval_value);
-                }
-            }
-        }
     }
 }

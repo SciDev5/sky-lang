@@ -802,7 +802,10 @@ fn resolve_expr(
                             let ResolvedFnInfo { ty_return } =
                                 resolve_fn(state, fallback_id, current_fn_stack);
 
-                            (CMExpression::FailAfter(resolved_arguments), ty_return.clone())
+                            (
+                                CMExpression::FailAfter(resolved_arguments),
+                                ty_return.clone(),
+                            )
                         } else {
                             (CMExpression::FailAfter(resolved_arguments), CMType::Void)
                         }
@@ -970,7 +973,139 @@ fn resolve_expr(
             block,
             elifs,
             else_block,
-        } => todo!(),
+        } => {
+            fn check_block(
+                state: &mut ResolverGlobalState,
+                ty_eval: &mut CMType,
+                (mut block, ty_block): (Vec<CMExpression>, CMType),
+            ) -> Vec<CMExpression> {
+                let is_type_mismatch = match (&ty_eval, ty_block) {
+                    (_, CMType::Never) => None, /* nothing changes */
+                    (CMType::Never, ty_block) => {
+                        *ty_eval = ty_block;
+                        None
+                    }
+                    (CMType::Void, CMType::Void) => None, /* ok */
+                    (CMType::Value(a), CMType::Value(b)) => {
+                        /* ok if no type mismatch */
+                        if a != &b {
+                            Some(CMType::Value(b))
+                        } else {
+                            None
+                        }
+                    }
+                    (_, ty_block) => {
+                        /* type mismatch */
+                        Some(ty_block)
+                    }
+                };
+                if let Some(ty_found_incorrect) = is_type_mismatch {
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!(
+                            "type mismatch in conditional block, expected {:?}, found {:?}",
+                            ty_eval, ty_found_incorrect
+                        ),
+                    });
+                    block.push(CMExpression::Fail);
+                }
+                block
+            }
+            /// Check condition so if it doesn't evaluate to a boolean it fails.
+            fn check_condition(
+                state: &mut ResolverGlobalState,
+                (condition, ty_condition): (CMExpression, CMType),
+            ) -> CMExpression {
+                match ty_condition {
+                    CMType::Value(CMValueType::Bool) | CMType::Never => condition,
+                    _ => {
+                        state.add_diagnostic(Raw2CommonDiagnostic {
+                            text: format!("condition was not boolean"),
+                        });
+                        CMExpression::FailAfter(vec![condition])
+                    }
+                }
+            }
+            let mut ty_eval;
+            let condition = resolve_expr(
+                *condition,
+                state,
+                current_fn_stack,
+                statics_stack,
+                locals,
+                locals_lookup,
+                loop_context_stack,
+                ty_return,
+            );
+            let condition = check_condition(state, condition);
+            let (block, ty_block) = resolve_block(
+                block,
+                state,
+                current_fn_stack,
+                statics_stack,
+                locals,
+                locals_lookup,
+                loop_context_stack,
+                ty_return,
+            );
+            ty_eval = ty_block;
+
+            let mut elifs_ = vec![];
+            for (condition, block) in elifs {
+                let condition = resolve_expr(
+                    condition,
+                    state,
+                    current_fn_stack,
+                    statics_stack,
+                    locals,
+                    locals_lookup,
+                    loop_context_stack,
+                    ty_return,
+                );
+                let condition = check_condition(state, condition);
+                let block = resolve_block(
+                    block,
+                    state,
+                    current_fn_stack,
+                    statics_stack,
+                    locals,
+                    locals_lookup,
+                    loop_context_stack,
+                    ty_return,
+                );
+                let block = check_block(state, &mut ty_eval, block);
+
+                elifs_.push((condition, block))
+            }
+            let elifs = elifs_;
+
+            let else_block = if let Some(else_block) = else_block {
+                let else_block = resolve_block(
+                    else_block,
+                    state,
+                    current_fn_stack,
+                    statics_stack,
+                    locals,
+                    locals_lookup,
+                    loop_context_stack,
+                    ty_return,
+                );
+                let else_block = check_block(state, &mut ty_eval, else_block);
+
+                Some(else_block)
+            } else {
+                None
+            };
+
+            (
+                CMExpression::Conditional {
+                    condition: Box::new(condition),
+                    block,
+                    elifs,
+                    else_block,
+                },
+                ty_eval,
+            )
+        }
         RMExpression::Loop { block } => {
             // return_value defaults to never because if there are no breaks it won't ever end. it's just that shrimple, such a sofishticated solution, mantastic.
             loop_context_stack.push(LoopContext {

@@ -2,7 +2,7 @@ use skylab::{
     interpreter::{
         compile::compile_interpreter_bytecode_module, gc::GarbageCollector, interpreter::execute,
     },
-    parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common},
+    parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common}, dbg_bytecode_module_code,
 };
 
 fn main() {
@@ -30,12 +30,21 @@ fn main() {
         }
 
         let a = k(k())
-        a
+        let b = a + 1
+
+        if b < a {
+            1 + k(b * a)
+        } else {
+            2
+        }
+
+        
     ",
     );
     let parsed = skylab::parse::parser::parse(tokens).unwrap();
     let common = raw_2_common(ast_2_raw(parsed));
     let bytecode = compile_interpreter_bytecode_module(common);
+    dbg_bytecode_module_code!(bytecode);
 
     let mut gc = GarbageCollector::new();
     let return_val = execute(&bytecode, &mut gc);

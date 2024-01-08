@@ -47,12 +47,12 @@ pub enum Instr {
 
     /// `[..., obj] -> [..., value]`
     ReadProp(IdentInt),
-    /// `[..., obj, value] -> [..., <void>]`
+    /// `[..., obj, value] -> [...]`
     WriteProp(IdentInt),
 
     /// `[...] -> [..., value]`
     ReadLocal(IdentInt),
-    /// `[..., value] -> [..., <void>]`
+    /// `[..., value] -> [...]`
     WriteLocal(IdentInt),
 
     /// `[...] -> [...]`

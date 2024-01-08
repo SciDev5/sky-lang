@@ -144,10 +144,14 @@ fn compile_class(class: CMClass) -> BClass {
 }
 fn compile_block_top(block: Vec<CMExpression>) -> InstrList {
     let mut out = InstrList::new();
-    compile_block(block, &mut out);
+    compile_block(block, &mut out, true);
     out
 }
-fn compile_block(mut block: Vec<CMExpression>, instructions: &mut InstrList) -> CompileExprResult {
+fn compile_block(
+    mut block: Vec<CMExpression>,
+    instructions: &mut InstrList,
+    yield_value: bool,
+) -> CompileExprResult {
     use CompileExprResult::*;
 
     if block.is_empty() {
@@ -156,16 +160,14 @@ fn compile_block(mut block: Vec<CMExpression>, instructions: &mut InstrList) -> 
     }
     let last_line = block.pop().unwrap();
     for line in block {
-        match compile_expr(line, instructions) {
-            Value => {
-                instructions.push(Instr::Discard);
-            }
+        match compile_expr(line, instructions, false) {
+            Value => {}
             Never => {
                 return Never;
             }
         }
     }
-    compile_expr(last_line, instructions)
+    compile_expr(last_line, instructions, yield_value)
     // do not discard value, forward everything from the last line
 }
 
@@ -178,14 +180,20 @@ impl CompileExprResult {
         matches!(self, Self::Never)
     }
 }
-fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExprResult {
+fn compile_expr(
+    expr: CMExpression,
+    instructions: &mut InstrList,
+    yield_value: bool,
+) -> CompileExprResult {
     use CompileExprResult::*;
 
     // ValueOrVoid -> should always end with one additional value in the iv stack coressponding
     // Never -> doesn't matter because the iv stack gets discarded
     match expr {
         CMExpression::Void => {
-            instructions.push(Instr::PushVoid);
+            if yield_value {
+                instructions.push(Instr::PushVoid);
+            }
             Value
         }
         CMExpression::Fail => {
@@ -194,7 +202,7 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
         }
         CMExpression::FailAfter(exprs) => {
             for expr in exprs {
-                match compile_expr(expr, instructions) {
+                match compile_expr(expr, instructions, yield_value) {
                     Never => return Never,
                     _ => { /* ok */ }
                 };
@@ -207,38 +215,50 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
             property,
             value,
         } => {
-            match compile_expr(*object, instructions) {
+            match compile_expr(*object, instructions, true) {
                 Never => return Never,
                 _ => { /* ok (+1 iv) */ }
             };
-            match compile_expr(*value, instructions) {
+            match compile_expr(*value, instructions, true) {
                 Never => return Never,
                 _ => { /* ok (+1 iv) */ }
             };
             instructions.push(Instr::WriteProp(property));
+            if yield_value {
+                instructions.push(Instr::PushVoid);
+            }
             Value
         }
         CMExpression::AssignVar { ident, value } => {
-            match compile_expr(*value, instructions) {
+            match compile_expr(*value, instructions, true) {
                 Never => return Never,
                 _ => { /* ok (+1 iv) */ }
             };
             instructions.push(Instr::WriteLocal(ident));
+            if yield_value {
+                instructions.push(Instr::PushVoid);
+            }
             Value
         }
         CMExpression::ReadProperty {
             expr,
             property_ident,
         } => {
-            match compile_expr(*expr, instructions) {
+            match compile_expr(*expr, instructions, true) {
                 Never => return Never,
                 _ => { /* ok (+1 iv) */ }
             };
             instructions.push(Instr::ReadProp(property_ident));
+            if !yield_value {
+                instructions.push(Instr::Discard);
+            }
             Value
         }
         CMExpression::ReadVar { ident } => {
             instructions.push(Instr::ReadLocal(ident));
+            if !yield_value {
+                instructions.push(Instr::Discard);
+            }
             Value
         }
         CMExpression::Call {
@@ -253,58 +273,58 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
             match function_id {
                 FnRef::Identity => {
                     let [argument] = <[_; 1]>::try_from(arguments).expect("there was not 1 argument for FnRef::Identity, this means fn_lookup has an issue");
-                    compile_expr(argument, instructions)
+                    return compile_expr(argument, instructions, yield_value);
                 }
                 FnRef::ModuleFunction(function_id) => {
                     for expr in arguments {
-                        match compile_expr(expr, instructions) {
+                        match compile_expr(expr, instructions, true) {
                             Never => return Never,
                             _ => { /* ok (+1 iv) */ }
                         };
                     }
                     instructions.push(Instr::Call { function_id });
-                    Value
                 }
                 FnRef::Intrinsic1(function_id) => {
                     let [argument] = <[_; 1]>::try_from(arguments).expect("there was not 1 argument for FnRef::Intrinsic1, this means fn_lookup has an issue");
-                    match compile_expr(argument, instructions) {
+                    match compile_expr(argument, instructions, true) {
                         Never => return Never,
                         _ => { /* ok (+1 iv) */ }
                     };
                     instructions.push(Instr::CallIntrinsic1 { function_id });
-                    Value
                 }
                 FnRef::Intrinsic2(function_id) => {
                     let arguments = <[_; 2]>::try_from(arguments).expect("there were not 2 arguments for FnRef::Intrinsic2, this means fn_lookup has an issue");
                     for expr in arguments {
-                        match compile_expr(expr, instructions) {
+                        match compile_expr(expr, instructions, true) {
                             Never => return Never,
                             _ => { /* ok (+1 iv) */ }
                         };
                     }
                     instructions.push(Instr::CallIntrinsic2 { function_id });
-                    Value
                 }
                 FnRef::Intrinsic(function_id) => {
                     for expr in arguments {
-                        match compile_expr(expr, instructions) {
+                        match compile_expr(expr, instructions, true) {
                             Never => return Never,
                             _ => { /* ok (+1 iv) */ }
                         };
                     }
                     instructions.push(Instr::CallIntrinsicN { function_id });
-                    Value
                 }
             }
+            Value
         }
         CMExpression::LiteralValue(literal) => {
-            instructions.push(Instr::Literal(match literal {
-                CMLiteralValue::Int(v) => Literal::Int(v),
-                CMLiteralValue::Float(v) => Literal::Float(v),
-                CMLiteralValue::Complex(v) => Literal::Complex(v),
-                CMLiteralValue::Bool(v) => Literal::Bool(v),
-                CMLiteralValue::String(v) => Literal::String(v),
-            })); // +1 iv
+            if yield_value {
+                // yield nothing if no yield because literals can't have side effects.
+                instructions.push(Instr::Literal(match literal {
+                    CMLiteralValue::Int(v) => Literal::Int(v),
+                    CMLiteralValue::Float(v) => Literal::Float(v),
+                    CMLiteralValue::Complex(v) => Literal::Complex(v),
+                    CMLiteralValue::Bool(v) => Literal::Bool(v),
+                    CMLiteralValue::String(v) => Literal::String(v),
+                })); // +1 iv
+            }
             Value
         }
         CMExpression::LiteralArray(_) => todo!(),
@@ -387,12 +407,12 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
             let mut condition_out = InstrList::new();
             let mut block_out = InstrList::new();
             let mut blocks_all_never = true;
-            condition_never = compile_expr(*condition, &mut condition_out).is_never();
+            condition_never = compile_expr(*condition, &mut condition_out, true).is_never();
             if condition_never {
                 instructions.append(&mut condition_out);
                 return Never;
             } else {
-                match compile_block(block, &mut block_out) {
+                match compile_block(block, &mut block_out, yield_value) {
                     Value => {
                         blocks_all_never = false;
                     }
@@ -404,7 +424,8 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
                 let mut elif_condition_out = InstrList::new();
                 let mut elif_block_out = InstrList::new();
 
-                condition_never = compile_expr(condition, &mut elif_condition_out).is_never();
+                condition_never |=
+                    compile_expr(condition, &mut elif_condition_out, true).is_never();
                 if condition_never {
                     let mut else_block = Some(elif_condition_out);
                     // ^ don't worry about the return value because we know it won't return
@@ -417,7 +438,7 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
                     );
                     return Never;
                 }
-                match compile_block(block, &mut elif_block_out) {
+                match compile_block(block, &mut elif_block_out, yield_value) {
                     Value => {
                         blocks_all_never = false;
                     }
@@ -428,12 +449,17 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
 
             let mut else_block_out = if let Some(else_block) = else_block {
                 let mut else_out = InstrList::new();
-                match compile_block(else_block, &mut else_out) {
+                match compile_block(else_block, &mut else_out, yield_value) {
                     Value => {
                         blocks_all_never = false;
                     }
                     Never => {}
                 }
+                Some(else_out)
+            } else if yield_value {
+                let mut else_out = InstrList::new();
+                else_out.push(Instr::PushVoid);
+                blocks_all_never = false;
                 Some(else_out)
             } else {
                 None
@@ -447,7 +473,7 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
                 &mut else_block_out,
             );
 
-            if blocks_all_never {
+            if blocks_all_never && else_block_out.is_some() {
                 Never
             } else {
                 Value
@@ -455,14 +481,14 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
         }
         CMExpression::Loop { block, is_infinite } => {
             let mut loop_code = InstrList::new();
-            compile_block(block, &mut loop_code);
+            compile_block(block, &mut loop_code, false);
 
             // pre-loop push scope to allow break/continue not to leak memory into the iv stack
             instructions.push(Instr::PushScope);
 
             // loop end buffer to reset the loop
-            loop_code.push(Instr::Discard); // discard the working value
-            loop_code.push_jmp_absolute(0); // loop start is at the beginning of the block (after the PushScope)
+            // (start is at the beginning of the block (after the PushScope))
+            loop_code.push_jmp_absolute(0);
 
             // write the loop code to the instructions list
             loop_code.unwrap_loop_layer(loop_code.len() as isize, 0);
@@ -481,7 +507,7 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
         } => todo!(),
         CMExpression::LoopBreak(value) => {
             let res = match value {
-                Some(value) => compile_expr(*value, instructions),
+                Some(value) => compile_expr(*value, instructions, true),
                 None => {
                     instructions.push(Instr::PushVoid);
                     Value
@@ -498,7 +524,7 @@ fn compile_expr(expr: CMExpression, instructions: &mut InstrList) -> CompileExpr
         }
         CMExpression::Return(value) => {
             match value {
-                Some(value) => match compile_expr(*value, instructions) {
+                Some(value) => match compile_expr(*value, instructions, true) {
                     Value => { /* ok (+1 iv) */ }
                     Never => return Never,
                 },

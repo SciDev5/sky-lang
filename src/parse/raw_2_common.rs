@@ -1099,8 +1099,7 @@ fn resolve_expr(
 
                 Some(else_block)
             } else {
-                // None
-                Some(vec![CMExpression::Void])
+                None
             };
 
             (

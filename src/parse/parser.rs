@@ -192,7 +192,7 @@ mod expr {
                 parse_block, parse_curly_block, parse_ident_optionally_typed, parse_ident_typed,
                 varaccessexpr::parse_varaccessexpr,
             },
-            raw_module::RMValueType,
+            raw_module::{RMValueType, LiteralStructInit},
             tokenization::{
                 AngleBracketShape, BracketType, Keyword, SLToken, SeparatorType, SyntacticSugarType,
             },
@@ -359,6 +359,8 @@ mod expr {
             let expr_main = parse_match_first!(
                 tokens;
                 parse_func_def => |it| it,
+                parse_struct => |it| it,
+                parse_struct_instance_curly => |it| it,
                 parse_var_def => |it| it,
                 parse_var_assign => |it| it,
                 parse_expr_literal => |literal| ASTExpression::Literal(literal),
@@ -888,6 +890,65 @@ mod expr {
             let value = Box::new(tokens.next_parse(parse_var_assignment_rhs)?);
 
             ASTExpression::Assign { target: access_expr, value }
+        }
+    }
+
+    parse_rule! {
+        pub fn parse_struct(tokens) -> _matched: ASTExpression, _failed: None {
+            let doc_comment = tokens.next_parse(parse_doc_comment);
+            
+            try_match!(tokens.next_skip_break(), SLToken::Keyword(Keyword::StructDefinition))?;
+
+            let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(ident) => ident)?.to_string();
+
+            // TODO type parameters
+
+            let mut properties = vec![];
+            if let Some(SLToken::BracketOpen(BracketType::Curly)) = tokens.peek_skip_break() {
+                tokens.next_skip_break();
+
+                while let Some(SLToken::Identifier(_)) = tokens.peek_skip_break() {
+                    let doc_comment = tokens.next_parse(parse_doc_comment);
+                    let (ident, ty) = tokens.next_parse(parse_ident_typed)?;
+                    properties.push((ident, doc_comment, ty));
+                }
+
+                try_match!(tokens.next_skip_break(), SLToken::BracketClose(BracketType::Curly))?;
+            }
+
+            ASTExpression::StructDefinition { doc_comment, ident, properties }
+        }
+    }
+
+    parse_rule! {
+        pub fn parse_struct_instance_curly(tokens) -> _matched: ASTExpression, failed: None {
+            let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(ident) => ident)?.to_string();
+
+            try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
+
+            let mut properties = vec![];
+
+            let mut next = tokens.next_skip_break();
+            while let Some(SLToken::Identifier(ident)) = next {
+                try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon))?;
+
+                
+                let expr = tokens.next_parse(parse_expr)?;
+                properties.push((ident.to_string(), expr));
+                
+                tokens.next_parse(|mut tokens| {
+                    let res = try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Comma))?;
+                    Some((tokens, res))
+                }); // optional comma
+                next = tokens.next_skip_break();
+            }
+            try_match!(next, SLToken::BracketClose(BracketType::Curly))?;
+
+            if properties.len() == 0 {
+                failed!();
+            }
+
+            ASTExpression::LiteralStructInit { ident, properties: LiteralStructInit::Struct(properties) }
         }
     }
 

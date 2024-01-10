@@ -1,10 +1,13 @@
-use std::{collections::HashMap, fmt::Debug};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::{format, Debug},
+};
 
 use crate::{
     common::{
         common_module::{
-            CMClass, CMExpression, CMFunction, CMLiteralValue, CMLocalVarInfo, CMType, CMValueType,
-            CommonModule,
+            CMExpression, CMFunction, CMLiteralValue, CMLocalVarInfo, CMStruct, CMType,
+            CMValueType, CommonModule, DocComment,
         },
         IdentInt, IdentStr,
     },
@@ -14,14 +17,14 @@ use crate::{
 use super::{
     fn_lookup::{lookup_fallback, AssociatedFnLut, FnRef},
     raw_module::{
-        RMBlock, RMClass, RMExpression, RMLiteralValue, RMType, RMValueType, RawModule,
-        ScopedStatics,
+        LiteralStructInit, RMBlock, RMExpression, RMLiteralValue, RMStruct, RMType, RMValueType,
+        RawModule, ScopedStatics,
     },
 };
 
 #[derive(Debug, Clone)]
 struct FunctionThing {
-    doc_comment: Option<String>,
+    doc_comment: DocComment,
     params: Vec<CMValueType>,
     param_idents: Vec<IdentStr>,
     body: FunctionBody,
@@ -73,8 +76,16 @@ impl FunctionBody {
     }
 }
 
+#[derive(Debug, Clone)]
+struct StructThing {
+    doc_comment: DocComment,
+    fields: Vec<CMValueType>,
+    fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
+    functions: HashMap<IdentStr, Vec<IdentInt>>,
+}
 struct ResolverGlobalState {
     functions: Vec<FunctionThing>,
+    structs: Vec<StructThing>,
     diagnostics: Vec<Raw2CommonDiagnostic>,
 }
 impl ResolverGlobalState {
@@ -115,7 +126,7 @@ impl<T: Debug + Clone> WithResolutionStatus<T> {
 
 #[derive(Debug, Clone)]
 struct LocalVar {
-    doc_comment: Option<String>,
+    doc_comment: DocComment,
     ty: WithResolutionStatus<CMValueType>,
     writable: bool,
     assigned: bool,
@@ -158,6 +169,39 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                     block: func.block,
                 },
             })
+            .collect(),
+        structs: raw_module
+            .structs
+            .into_iter()
+            .map(
+                |RMStruct {
+                     doc_comment,
+                     fields,
+                     functions,
+                     all_scoped,
+                 }| {
+                    let (fields, fields_info) = fields
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (ident, (ty, doc_comment)))| {
+                            (
+                                match static_resolve_type(&[all_scoped.clone()], &RMType::Value(ty))
+                                {
+                                    CMType::Value(v) => v,
+                                    _ => todo!(),
+                                },
+                                (ident, (i, doc_comment)),
+                            )
+                        })
+                        .unzip();
+                    StructThing {
+                        doc_comment,
+                        fields,
+                        fields_info,
+                        functions,
+                    }
+                },
+            )
             .collect(),
         diagnostics: vec![],
     };
@@ -229,19 +273,21 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                 },
             )
             .collect(),
-        classes: raw_module
-            .classes
+        structs: state
+            .structs
             .into_iter()
             .map(
-                |RMClass {
+                |StructThing {
                      doc_comment,
                      fields,
+                     fields_info,
                      functions,
                  }| {
-                    CMClass {
+                    CMStruct {
                         doc_comment,
-                        fields: HashMap::new(), // TODO classes
-                        functions,
+                        fields,
+                        fields_info,
+                        functions: functions.into_iter().flat_map(|(_, v)| v).collect(),
                     }
                 },
             )
@@ -267,9 +313,9 @@ fn static_resolve_value_type(
             if let Some(id) = statics_scope_stack
                 .iter()
                 .rev()
-                .find_map(|statics_elt| statics_elt.classes.get(ident))
+                .find_map(|statics_elt| statics_elt.structs.get(ident))
             {
-                CMValueType::ClassInstance(*id)
+                CMValueType::StructInstance(*id)
             } else {
                 todo!("// TODO handle invalid types.")
             }
@@ -841,6 +887,142 @@ fn resolve_expr(
         }
         RMExpression::LiteralRange { start, step, end } => todo!("// TODO range constructor"),
         RMExpression::LiteralArray(_) => todo!(),
+        RMExpression::LiteralStructInit {
+            ident: ident_str,
+            properties,
+        } => {
+            let ident = statics_stack
+                .iter()
+                .find_map(|frame| frame.structs.get(&ident_str))
+                .copied();
+            let (mut data, types, names): (Vec<_>, Vec<_>, Option<Vec<_>>) = match properties {
+                LiteralStructInit::Tuple(vars) => {
+                    let (data, types): (Vec<_>, Vec<_>) = vars
+                        .into_iter()
+                        .map(|var| {
+                            resolve_expr(
+                                var,
+                                state,
+                                current_fn_stack,
+                                statics_stack,
+                                locals,
+                                locals_lookup,
+                                loop_context_stack,
+                                ty_return,
+                            )
+                        })
+                        .unzip();
+                    (data, types, None)
+                }
+                LiteralStructInit::Struct(vars) => {
+                    let (data_and_types, names): (Vec<_>, Vec<_>) = vars
+                        .into_iter()
+                        .map(|(property_ident, expr)| {
+                            (
+                                resolve_expr(
+                                    expr,
+                                    state,
+                                    current_fn_stack,
+                                    statics_stack,
+                                    locals,
+                                    locals_lookup,
+                                    loop_context_stack,
+                                    ty_return,
+                                ),
+                                property_ident,
+                            )
+                        })
+                        .unzip();
+                    let (data, types): (Vec<_>, Vec<_>) = data_and_types.into_iter().unzip();
+                    (data, types, Some(names))
+                }
+            };
+
+            if let Some(ident) = ident {
+                let st = &state.structs[ident];
+                // TODO all structs are dict structs rn
+
+                let names = names.unwrap();
+
+                let mut diagnostics = vec![];
+                let mut fail_at = data.len();
+
+                let assign_to = names.iter().enumerate().map(|(i, name)| {
+                    let Some((id, _)) = st.fields_info.get(name) else {
+                        diagnostics.push(Raw2CommonDiagnostic { text: format!("could not find property '{}' in '{}'", name, ident_str) });
+                        fail_at = fail_at.min(i);
+                        return None;
+                    };
+                    Some(*id)
+                }).collect::<Vec<_>>();
+
+                for (i, (assign_to, eval_ty)) in
+                    assign_to.iter().copied().zip(types.into_iter()).enumerate()
+                {
+                    if let Some(assign_to) = assign_to {
+                        if match &eval_ty {
+                            CMType::Value(eval_ty) => eval_ty != &st.fields[assign_to],
+                            _ => true,
+                        } {
+                            diagnostics.push(Raw2CommonDiagnostic { text: format!("type mismatch setting property '{}' in '{}', expected {:?}, found {:?}", names[i], ident_str, st.fields[assign_to], eval_ty ) });
+                            fail_at = fail_at.min(i + 1)
+                        }
+                    }
+                }
+
+                let mut assign_to_set = HashSet::new();
+                for (i, assign_to) in assign_to.iter().enumerate() {
+                    if let Some(assign_to) = assign_to {
+                        if !assign_to_set.insert(*assign_to) {
+                            diagnostics.push(Raw2CommonDiagnostic {
+                                text: format!("duplicate property key '{}'", names[i]),
+                            });
+                            fail_at = fail_at.min(i)
+                        }
+                    }
+                }
+                let all = HashSet::from_iter(0..st.fields.len());
+                let diff = all.difference(&assign_to_set).collect::<Vec<_>>();
+                if !diff.is_empty() {
+                    diagnostics.push(Raw2CommonDiagnostic {
+                        text: format!(
+                            "missing property keys {:?}",
+                            diff.into_iter()
+                                .map(|i| st
+                                    .fields_info
+                                    .iter()
+                                    .find(|(_, (id, _))| id == i)
+                                    .map(|(ident, _)| ident)
+                                    .unwrap())
+                                .collect::<Vec<_>>()
+                        ),
+                    })
+                }
+                if !diagnostics.is_empty() {
+                    for diagnostic in diagnostics {
+                        state.add_diagnostic(diagnostic);
+                    }
+                    return (
+                        CMExpression::FailAfter(data.drain(..fail_at).collect()),
+                        CMType::Value(CMValueType::StructData(ident)),
+                    );
+                }
+
+                (
+                    CMExpression::LiteralStructInit {
+                        ident,
+                        data,
+                        assign_to: assign_to.into_iter().map(Option::unwrap).collect(),
+                    },
+                    CMType::Value(CMValueType::StructData(ident)),
+                )
+            } else {
+                state.add_diagnostic(Raw2CommonDiagnostic {
+                    text: format!("could not find struct with name '{}'", ident_str),
+                });
+                (CMExpression::FailAfter(data), CMType::Void)
+            }
+        }
 
         RMExpression::AnonymousFunction { params, block } => todo!(),
 

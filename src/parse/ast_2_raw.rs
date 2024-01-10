@@ -5,57 +5,60 @@ use crate::common::{IdentInt, IdentStr};
 use super::{
     ast::{ASTArray, ASTBlock, ASTExpression, ASTLiteral, ASTVarAccessExpression},
     raw_module::{
-        RMBlock, RMClass, RMExpression, RMFunction, RMLiteralArray, RMLiteralValue, RawModule,
+        RMBlock, RMExpression, RMFunction, RMLiteralArray, RMLiteralValue, RMStruct, RawModule,
         ScopedStatics,
     },
 };
 
 struct StaticsGlobalState {
-    classes: Vec<RMClass>,
+    structs: Vec<RMStruct>,
     functions: Vec<RMFunction>,
 }
 struct StaticsCurrentScope {
-    classes: HashMap<IdentStr, IdentInt>,
+    structs: HashMap<IdentStr, IdentInt>,
     functions: HashMap<IdentStr, Vec<IdentInt>>,
 }
 impl StaticsCurrentScope {
     fn new() -> Self {
         Self {
-            classes: HashMap::new(),
+            structs: HashMap::new(),
             functions: HashMap::new(),
         }
     }
     fn apply(self, state: &mut StaticsGlobalState) -> ScopedStatics {
+        fn add_refs(all_scoped: &mut ScopedStatics, scope_to_add: &StaticsCurrentScope) {
+            for (ident, overloads) in &scope_to_add.functions {
+                let fns = all_scoped
+                    .functions
+                    .entry(ident.clone())
+                    .or_insert_with(|| vec![]);
+                for overload in overloads {
+                    fns.push(*overload);
+                    // Because inner scopes are added first, and functions pushed
+                    // first will be considered higher priority for resolution,
+                    // this order is correct.
+                }
+            }
+            for (ident, id) in &scope_to_add.structs {
+                all_scoped.structs.entry(ident.clone()).or_insert(*id);
+                // no `and_modify`, because we want the innermost scope to determine
+                // which class is referenced, and inner scopes are applied first.
+            }
+        }
         // for each function, add all references
         for (fn_name, overloads) in &self.functions {
             let fns = self.functions.get(fn_name).unwrap();
             for fn_id_i in fns {
-                // add function refs
-                state.functions[*fn_id_i]
-                    .all_scoped
-                    .functions
-                    .entry(fn_name.clone())
-                    .and_modify(|it| {
-                        for fn_id_j in fns {
-                            it.push(*fn_id_j);
-                        }
-                    })
-                    .or_insert_with(|| fns.clone());
-                // add class refs
-                for (class_name, class_id) in &self.classes {
-                    state.functions[*fn_id_i]
-                        .all_scoped
-                        .classes
-                        .entry(class_name.clone())
-                        // Note that we do not want to overwrite any existing scoped class because
-                        // that would mean giving precedence to classes declared in a wider scope.
-                        .or_insert(*class_id);
-                }
+                add_refs(&mut state.functions[*fn_id_i].all_scoped, &self);
             }
         }
-        for id_i in &self.classes {}
+        // for each struct, add all references
+        for (fn_name, st_id_i) in &self.structs {
+            add_refs(&mut state.structs[*st_id_i].all_scoped, &self);
+        }
+
         ScopedStatics {
-            classes: self.classes,
+            structs: self.structs,
             functions: self.functions,
         }
     }
@@ -63,13 +66,13 @@ impl StaticsCurrentScope {
 
 pub fn ast_2_raw(ast: ASTBlock) -> RawModule {
     let mut state = StaticsGlobalState {
-        classes: vec![],
+        structs: vec![],
         functions: vec![],
     };
     let top_level = transform_expr_block_inner_scoped(ast, &mut state);
 
     RawModule {
-        classes: state.classes,
+        structs: state.structs,
         functions: state.functions,
         top_level,
     }
@@ -126,7 +129,7 @@ fn transform_expr(
 ) -> RMExpression {
     match expr {
         ////////////////////////////////////////////
-        // move function/class definitions to static list
+        // move function/struct definitions to static list
         //
         ASTExpression::FunctionDefinition {
             doc_comment,
@@ -153,8 +156,34 @@ fn transform_expr(
 
             RMExpression::Void
         }
+        ASTExpression::StructDefinition {
+            doc_comment,
+            ident,
+            properties,
+        } => {
+            let mut functions = HashMap::new();
 
-        // TODO classes/enums in ast_2_raw
+            let st = RMStruct {
+                doc_comment,
+                all_scoped: ScopedStatics::empty(),
+                fields: properties
+                    .into_iter()
+                    .map(|(ident, doc_comment, ty)| (ident, (ty, doc_comment)))
+                    .collect(), // TODO dedupe properties by name
+                functions,
+            };
+            let id = state.structs.len();
+            state.structs.push(st);
+            scope
+                .structs
+                .entry(ident)
+                .and_modify(|_| todo!("handle structs with name conflicts"))
+                .or_insert(id);
+
+            RMExpression::Void
+        }
+
+        // TODO enums in ast_2_raw
 
         ////////////////////////////////////////////
         // do literal translation
@@ -227,6 +256,10 @@ fn transform_expr(
             ASTArray::Matrix(_) => todo!("// TODO transform matrix/tensor literals in `ast_2_raw`"),
             ASTArray::Tensor(_) => todo!("// TODO transform matrix/tensor literals in `ast_2_raw`"),
         }),
+        ASTExpression::LiteralStructInit { ident, properties } => RMExpression::LiteralStructInit {
+            ident,
+            properties: properties.transform(|expr| transform_expr(expr, state, scope)),
+        },
         ASTExpression::AnonymousFunction { params, block } => RMExpression::AnonymousFunction {
             params,
             block: transform_expr_block_inner_scoped(block, state),

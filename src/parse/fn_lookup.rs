@@ -287,7 +287,7 @@ pub fn get_fn_lut<'a, 'b>(ty: &'b CMValueType) -> &'a AssociatedFnLut {
         CMValueType::String => &INTRINSICS.string,
         CMValueType::Tuple(_) => &INTRINSICS.empty_lut,
         CMValueType::FunctionRef { params, return_ty } => todo!(),
-        CMValueType::ClassRef(_) => todo!(),
-        CMValueType::ClassInstance(_) => todo!(),
+        CMValueType::StructData(_) => todo!(),
+        CMValueType::StructInstance(_) => todo!(),
     }
 }

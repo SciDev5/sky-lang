@@ -19,9 +19,9 @@
 ## module types
 
 General format:
-- functions and classes are all stored in a top-level list and scoping is done referencing into that list.
+- functions and structs are all stored in a top-level list and scoping is done referencing into that list.
 - functions contain instructions for execution, either as a tree or list of instructions.
-- contains a top level function-like object for executing top level instructions and referencing top-level functions and classes
+- contains a top level function-like object for executing top level instructions and referencing top-level functions and structs
 
 
 static functions
@@ -34,8 +34,8 @@ noinline non_closure anon_functions
 Specific modules:
 - `RawModule`:
     - 1-to-1-ish with text representation
-    - class/function definition instructions exist to aid in scoping
-    - string identifiers for vars and class/function calls
+    - struct/function definition instructions exist to aid in scoping
+    - string identifiers for vars and struct/function calls
     - only explicitly-declared typings are known
     - full source map, stored inline
 - `CommonModule`:

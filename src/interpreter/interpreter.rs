@@ -41,6 +41,9 @@ impl<'a> CallStackFrame<'a> {
             .pop()
             .expect("intermediate value stack was exhausted")
     }
+    fn pop_iv_many(&mut self, len: usize) -> impl Iterator<Item = Value> + '_ {
+        self.iv_stack.drain(self.iv_stack.len() - len..)
+    }
 }
 
 pub struct PanicGen;
@@ -110,9 +113,7 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
 
                 let mut locals: Vec<Option<Value>> =
                     iter::repeat_with(|| None).take(func.locals.len()).collect();
-                for (i, v) in call_stack_top
-                    .iv_stack
-                    .drain(call_stack_top.iv_stack.len() - func.params.len()..)
+                for (i, v) in call_stack_top.pop_iv_many(func.params.len())
                     .enumerate()
                 {
                     locals[i] = Some(v);
@@ -143,10 +144,7 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
                 call_stack_top.iv_stack.push(ret);
             }
             Instr::CallIntrinsicN { function_id } => {
-                let args = call_stack_top
-                    .iv_stack
-                    .drain(call_stack_top.iv_stack.len() - function_id.n_args()..)
-                    .collect();
+                let args = call_stack_top.pop_iv_many(function_id.n_args()).collect();
                 let ret = match apply_intrinsic(*function_id, args) {
                     Ok(v) => v,
                     Err(panic_gen) => return Err(panic_gen.to_panic(call_stack)),
@@ -220,7 +218,7 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
                 call_stack_top.iv_stack.push(Value::Void);
             }
             Instr::Discard => {
-                call_stack_top.iv_stack.pop();
+                call_stack_top.pop_iv();
             }
             Instr::Fail => {
                 return Err(Panic {
@@ -238,6 +236,14 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
                 Literal::Bool(v) => Value::Bool(*v),
                 Literal::String(v) => Value::String(v.clone()),
             }),
+            Instr::LiteralInitStruct(assign_to) => {
+                // assign_to is expected to be correct beforehand
+                let mut values = std::iter::repeat_with(||Value::Void).take(assign_to.len()).collect::<Vec<_>>();
+                for (value_in, assign_to_i) in call_stack_top.pop_iv_many(assign_to.len()).zip(assign_to.iter()) {
+                    values[*assign_to_i] = value_in;
+                }
+                call_stack_top.iv_stack.push(Value::Object(values));
+            }
         }
 
         call_stack_top.instruction_index += 1;

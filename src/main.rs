@@ -22,32 +22,48 @@ fn main() {
     let tokens = t.tokenize(
         r"
 
-        fn k() {
-            3
+        
+        struct Hello {
+            a: int
+            /// a property documenting comment
+            b: float
+            // d: Hello
         }
 
-        fn k(b: int) {
-            -b + k()
+        let a = Hello {
+            a: 4 + 4, 
+            // c: 3.3
+            b: 2.4 
         }
 
-        let a = k(k())
-        let b = a + 1
+        a
 
-        let some_result = if b > a {
-            1 + k(b * a)
-        } else {
-            2
-        } // -> 4
+        // fn k() {
+        //     3
+        // }
 
-        let a = 5
-        let b = 1
-        loop {
-            if a == 1 {
-                break b
-            }
-            b = b * a
-            a = a - 1
-        } + some_result // -> 5! + 4 = 124
+        // fn k(b: int) {
+        //     -b + k()
+        // }
+
+        // let a = k(k())
+        // let b = a + 1
+
+        // let some_result = if b > a {
+        //     1 + k(b * a)
+        // } else {
+        //     2
+        // } // -> 4
+
+        // let a = 5
+        // let b = 1
+        // loop {
+        //     if a == 1 {
+        //         break b
+        //     }
+        //     b = b * a
+        //     a = a - 1
+        // } + some_result // -> 5! + 4 = 124
     ",
     );
     // let tokens = t.tokenize(
@@ -66,6 +82,7 @@ fn main() {
     // );
     let parsed = skylab::parse::parser::parse(tokens).unwrap();
     let common = raw_2_common(ast_2_raw(parsed));
+    dbg!(&common.structs);
     let bytecode = compile_interpreter_bytecode_module(common);
     dbg_bytecode_module_code!(bytecode);
 

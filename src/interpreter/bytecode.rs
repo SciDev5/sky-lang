@@ -69,6 +69,8 @@ pub enum Instr {
 
     /// `[...] -> [..., value]`
     Literal(Literal),
+    /// `[..., ...props] -> [..., value]`
+    LiteralInitStruct(Vec<IdentInt>),
 }
 
 pub struct BFunction {
@@ -77,14 +79,14 @@ pub struct BFunction {
 
     pub code: Vec<Instr>,
 }
-pub struct BClass {
+pub struct BStruct {
     pub fields: Vec<CMValueType>,
     pub functions: Vec<IdentInt>,
 }
 
 pub struct BytecodeModule {
     pub functions: Vec<BFunction>,
-    pub classes: Vec<BClass>,
+    pub structs: Vec<BStruct>,
 
     pub top_level: (Vec<Instr>, Vec<CMType>),
 }

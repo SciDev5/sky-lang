@@ -1,10 +1,10 @@
 use crate::{
-    common::common_module::{CMClass, CMExpression, CMFunction, CMLiteralValue, CommonModule},
+    common::common_module::{CMStruct, CMExpression, CMFunction, CMLiteralValue, CommonModule},
     interpreter::bytecode::Literal,
     parse::fn_lookup::FnRef,
 };
 
-use super::bytecode::{BClass, BFunction, BytecodeModule, Instr};
+use super::bytecode::{BStruct, BFunction, BytecodeModule, Instr};
 
 struct InstrList {
     instructions: Vec<Instr>,
@@ -116,7 +116,7 @@ impl InstrList {
 pub fn compile_interpreter_bytecode_module(common: CommonModule) -> BytecodeModule {
     BytecodeModule {
         functions: common.functions.into_iter().map(compile_fn).collect(),
-        classes: common.classes.into_iter().map(compile_class).collect(),
+        structs: common.structs.into_iter().map(compile_struct).collect(),
         top_level: (
             compile_block_top(common.top_level.0).unwrap_instruction_list(),
             common
@@ -136,10 +136,10 @@ fn compile_fn(func: CMFunction) -> BFunction {
         code: compile_block_top(func.block).unwrap_instruction_list(),
     }
 }
-fn compile_class(class: CMClass) -> BClass {
-    BClass {
-        fields: class.fields.into_values().collect(),
-        functions: class.functions.into_values().flatten().collect(),
+fn compile_struct(st: CMStruct) -> BStruct {
+    BStruct {
+        fields: st.fields,
+        functions: st.functions,
     }
 }
 fn compile_block_top(block: Vec<CMExpression>) -> InstrList {
@@ -329,6 +329,20 @@ fn compile_expr(
         }
         CMExpression::LiteralArray(_) => todo!(),
         CMExpression::LiteralFunctionRef { function_id } => todo!(),
+        CMExpression::LiteralStructInit { ident: _, data, assign_to } => {
+            for expr in data {
+                match compile_expr(expr, instructions, yield_value) {
+                    Never => return Never,
+                    _ => { /* ok (+1 iv if yield_value, else +0 iv) */ }
+                }
+            }
+            if yield_value {
+                instructions.push(Instr::LiteralInitStruct(assign_to));
+            } else {
+                // do nothing, nothing to consume
+            }
+            Value
+        }
         CMExpression::Closure {
             closure_function_id,
         } => todo!(),

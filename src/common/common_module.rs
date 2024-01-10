@@ -7,16 +7,18 @@ use crate::{
     math::tensor::Tensor, parse::fn_lookup::FnRef,
 };
 
+pub type DocComment = Option<String>;
+
 #[derive(Debug, Clone)]
 pub struct CMLocalVarInfo {
-    pub doc_comment: Option<String>,
+    pub doc_comment: DocComment,
     pub ty: CMType,
     pub writable: bool,
 }
 
 #[derive(Debug)]
 pub struct CMFunction {
-    pub doc_comment: Option<String>,
+    pub doc_comment: DocComment,
     pub params: Vec<CMValueType>,
     /// local variables, including auto-generated parameter locals
     pub locals: Vec<CMLocalVarInfo>,
@@ -41,10 +43,11 @@ pub struct CMInlineLambda {
     block: Vec<CMExpression>,
 }
 #[derive(Debug)]
-pub struct CMClass {
-    pub doc_comment: Option<String>,
-    pub fields: HashMap<IdentStr, CMValueType>,
-    pub functions: HashMap<IdentStr, Vec<IdentInt>>,
+pub struct CMStruct {
+    pub doc_comment: DocComment,
+    pub fields: Vec<CMValueType>,
+    pub fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
+    pub functions: Vec<IdentInt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -58,8 +61,8 @@ pub enum CMValueType {
         params: Vec<CMValueType>,
         return_ty: Box<CMType>,
     },
-    ClassRef(IdentInt),
-    ClassInstance(IdentInt),
+    StructData(IdentInt),
+    StructInstance(IdentInt),
     Tuple(Vec<CMValueType>),
     // List(Box<RMValueType>),
     // TODO Template types
@@ -127,6 +130,11 @@ pub enum CMExpression {
     LiteralFunctionRef {
         function_id: IdentInt,
     },
+    LiteralStructInit {
+        ident: IdentInt,
+        data: Vec<CMExpression>,
+        assign_to: Vec<IdentInt>,
+    },
 
     Closure {
         closure_function_id: IdentInt,
@@ -157,7 +165,7 @@ pub enum CMExpression {
 pub struct CommonModule {
     pub functions: Vec<CMFunction>,
     pub closure_functions: Vec<CMClosureFunction>,
-    pub classes: Vec<CMClass>,
+    pub structs: Vec<CMStruct>,
 
     pub top_level: (Vec<CMExpression>, Vec<CMLocalVarInfo>, CMType),
 }

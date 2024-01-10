@@ -106,6 +106,12 @@ pub enum Keyword {
     ConditionalElse,
     /** `fn` Function definition */
     FunctionDefinition,
+    /** `struct` Structured data type definition */
+    StructDefinition,
+    /** `tuple` Struct tuple data definition keyword */
+    StructTuple,
+    /** `enum` Enum definition */
+    EnumDefinition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,6 +430,9 @@ subtokenize_sub_enum_words! {
     "elif" => Keyword::ConditionalElseIf,
     "else" => Keyword::ConditionalElse,
     "fn" => Keyword::FunctionDefinition,
+    "struct" => Keyword::StructDefinition,
+    "tuple" => Keyword::StructTuple,
+    "enum" => Keyword::EnumDefinition,
 }
 subtokenize_sub_enum! {
     tokenize_boolean;

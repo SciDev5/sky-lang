@@ -3,11 +3,11 @@ use std::fmt::Debug;
 use num::complex::Complex64;
 
 use crate::{
-    common::IdentStr,
+    common::{IdentStr, common_module::DocComment},
     math::tensor::Tensor,
 };
 
-use super::{raw_module::{RMType, RMValueType}, ops::SLOperator};
+use super::{raw_module::{RMType, RMValueType, LiteralStructInit}, ops::SLOperator};
 
 #[derive(Debug, Clone)]
 pub enum ASTVarAccessExpression {
@@ -27,7 +27,7 @@ pub enum ASTVarAccessExpression {
 #[derive(Debug, Clone)]
 pub enum ASTExpression {
     VarDeclare {
-        doc_comment: Option<String>,
+        doc_comment: DocComment,
         ident: IdentStr,
         writable: bool,
         initial_value: Option<Box<ASTExpression>>,
@@ -92,11 +92,22 @@ pub enum ASTExpression {
 
     Return(Option<Box<ASTExpression>>),
     FunctionDefinition {
-        doc_comment: Option<String>,
+        doc_comment: DocComment,
         ident: IdentStr,
         params: Vec<(IdentStr, RMValueType)>,
         return_ty: Option<RMType>,
         block: ASTBlock,
+    },
+
+    LiteralStructInit {
+        ident: IdentStr,
+        properties: LiteralStructInit<ASTExpression>,
+    },
+    StructDefinition {
+        doc_comment: DocComment,
+        ident: IdentStr,
+        properties: Vec<(IdentStr, DocComment, RMValueType)>,
+        // TODO associated functionality
     },
 }
 

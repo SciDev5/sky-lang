@@ -12,9 +12,7 @@ pub enum SLToken<'a> {
     BracketOpen(BracketType),
     BracketClose(BracketType),
     Separator(SeparatorType),
-    Operator(SLOperator),
-    AmbiguityAngleBracket(AngleBracketShape),
-    SyntacticSugar(SyntacticSugarType),
+    Symbol(SLSymbol),
     Unknown(&'a str),
     Comment { content: &'a str, documenting: bool },
 }
@@ -74,44 +72,6 @@ impl AngleBracketShape {
             Self::OpenOrLessThan => SLOperator::LessThan,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Keyword {
-    /** `let` Declare variable */
-    VarDeclare,
-    /** `const` Declare constant variable */
-    VarConstDeclare,
-    /** `del` Delete/destroy variable */
-    VarDestroy,
-    /** `return` Function return value */
-    Return,
-    /** `for` For loop keyword */
-    LoopFor,
-    /** `in` In keyword */
-    In,
-    /** `while` While loop keyword */
-    LoopWhile,
-    /** `loop` Forever loop keyword */
-    LoopForever,
-    /** `break` Break out of loop */
-    LoopBreak,
-    /** `continue` Continue to next loop iteration */
-    LoopContinue,
-    /** `if` Conditional */
-    ConditionalIf,
-    /** `elif` Conditional else if branch */
-    ConditionalElseIf,
-    /** `else` Conditional else branch */
-    ConditionalElse,
-    /** `fn` Function definition */
-    FunctionDefinition,
-    /** `struct` Structured data type definition */
-    StructDefinition,
-    /** `tuple` Struct tuple data definition keyword */
-    StructTuple,
-    /** `enum` Enum definition */
-    EnumDefinition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,6 +270,160 @@ subtokenize_fn! {
         }
     }
 }
+
+macro_rules! gen_Keyword {
+    ($(
+        $(#[doc = $doc: expr])?
+        $ident: ident ( $key_str: expr )
+    ),* $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Keyword {
+            $(
+                $(#[doc = $doc])?
+                $ident
+            ),*
+        }
+
+        subtokenize_sub_enum_words! {
+            tokenize_keyword;
+            SLToken : |keyword| SLToken::Keyword(keyword);
+            $($key_str => Keyword:: $ident ),*,
+        }
+    };
+}
+gen_Keyword! {
+    /// Declare variable
+    VarDeclare ("let"),
+    /// Declare constant variable
+    VarConstDeclare ("const"),
+    /// Delete/destroy variable
+    VarDestroy ("del"),
+    /// Function return value
+    Return ("return"),
+    /// For loop keyword
+    LoopFor ("for"),
+    /// In keyword
+    In ("in"),
+    /// While loop keyword
+    LoopWhile ("while"),
+    /// Forever loop keyword
+    LoopForever ("loop"),
+    /// Break out of loop
+    LoopBreak ("break"),
+    /// Continue to next loop iteration
+    LoopContinue ("continue"),
+    /// Conditional
+    ConditionalIf ("if"),
+    /// Conditional else if branch
+    ConditionalElseIf ("elif"),
+    /// Conditional else branch
+    ConditionalElse ("else"),
+    /// Function definition
+    FunctionDefinition ("fn"),
+    /// Structured data type definition
+    StructDefinition ("struct"),
+    /// Struct tuple data definition keyword
+    StructTuple ("tuple"),
+    /// Enum definition
+    EnumDefinition ("enum"),
+}
+
+macro_rules! gen_SLSymbol {
+    ($(
+        $ident: ident ( $key_str: expr $(, op = $op: expr)? $(, assign_op = $assign_op: expr)?)
+    ),* $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum SLSymbol {
+            $($ident),*
+        }
+        impl SLSymbol {
+            pub fn to_operator(self) -> Option<SLOperator> {
+                match self {
+                    $(
+                        Self:: $ident => {
+                            None $( .or({
+                                use SLOperator::*;
+                                Some($op)
+                            }) )?
+                        }
+                    )*
+                }
+            }
+            pub fn to_assignment_operator(self) -> Option<Option<SLOperator>> {
+                match self {
+                    $(
+                        Self:: $ident => {
+                            None $( .or({
+                                #[allow(unused)] // assign_op = None will not reference, but this is still convenient
+                                use SLOperator::*;
+                                Some($assign_op)
+                            }) )?
+                        }
+                    )*
+                }
+            }
+        }
+
+
+        subtokenize_sub_enum! {
+            tokenize_symbols;
+            SLToken : |sep| SLToken::Symbol(sep);
+            $($key_str => SLSymbol:: $ident ),*,
+        }
+    };
+}
+gen_SLSymbol! {
+    // operators with longer sequences go first in order to make sure they don't
+    // get mixed up with shorter ops that start with the same thing.
+
+    Shl (">>", op = Shl),
+    Shr ("<<", op = Shr),
+
+    Equal ("==", op = Equal),
+    GreaterEqual (">=", op = GreaterEqual),
+    LessEqual ("<=", op = LessEqual),
+    NotEqual ("!=", op = NotEqual),
+
+    AngleOpen ("<", op = LessThan),
+    AngleClose (">", op = GreaterThan),
+    
+    MatExp ("^^", op = MatExp),
+    MatTimes ("**", op = MatTimes),
+    Inverse ("_/", op = Inverse),
+
+    Assign ("=", assign_op = None), // `None` here means no associated operator to assignment like the `+` in `+=`
+    AssignPlus ("+=", assign_op = Some(Plus)),
+    AssignMinus ("-=", assign_op = Some(Minus)),
+    AssignTimes ("*=", assign_op = Some(Times)),
+    AssignDiv ("/=", assign_op = Some(Div)),
+    AssignRemainder ("/%=", assign_op = Some(Remainder)),
+    AssignModulo ("%=", assign_op = Some(Modulo)),
+    AssignXor ("~=", assign_op = Some(Xor)),
+    AssignAnd ("&=", assign_op = Some(And)),
+    AssignOr ("|=", assign_op = Some(Or)),
+
+
+    HermitianConjugate ("'", op = HermitianConjugate),
+    Transpose ("\"", op = Transpose),
+    
+    Not ("!", op = Not),
+    Xor ("~", op = Xor),
+    Or ("|", op = Or),
+    And ("&", op = And),
+
+    Plus ("+", op = Plus),
+    Minus ("-", op = Minus),
+    Times ("*", op = Times),
+    Div ("/", op = Div),
+    Exp ("^", op = Exp),
+    Remainder ("/%", op = Remainder),
+    Modulo ("%", op = Modulo),
+
+    PropertyAccess ("."),
+
+    Hash ("#"),
+}
+
 subtokenize_sub_enum! {
     tokenize_separators;
     SLToken : |sep| SLToken::Separator(sep);
@@ -318,17 +432,6 @@ subtokenize_sub_enum! {
     ";" => SeparatorType::Semicolon,
     ":" => SeparatorType::Colon,
     "->" => SeparatorType::ThinArrowRight,
-}
-subtokenize_sub_enum! {
-    tokenize_ambiguity_angle_bracket;
-    SLToken : |which| SLToken::AmbiguityAngleBracket(which);
-    "<" => AngleBracketShape::OpenOrLessThan,
-    ">" => AngleBracketShape::CloseOrGreaterThan,
-}
-subtokenize_sub_enum! {
-    tokenize_syntactic_sugar;
-    SLToken : |it| SLToken::SyntacticSugar(it);
-    "#" => SyntacticSugarType::Hash,
 }
 subtokenize_fn! {
     tokenize_whitespace;
@@ -373,68 +476,6 @@ subtokenize_fn! {
     }
 }
 subtokenize_sub_enum! {
-    tokenize_ops;
-    SLToken : |op| SLToken::Operator(op);
-    // operators with longer sequences go first in order to make sure they don't
-    // get mixed up with shorter ops that start with the same thing.
-
-    ">>" => SLOperator::Shl,
-    "<<" => SLOperator::Shr,
-
-    "~~" => SLOperator::Xor,
-    "||" => SLOperator::Or,
-    "&&" => SLOperator::And,
-
-    "==" => SLOperator::Equal,
-    ">=" => SLOperator::GreaterEqual,
-    "<=" => SLOperator::LessEqual,
-    "!=" => SLOperator::NotEqual,
-
-    "^^" => SLOperator::MatExp,
-
-    "!" => SLOperator::Not,
-    "'" => SLOperator::HermitianConjugate,
-    "\"" => SLOperator::Transpose,
-    "$" => SLOperator::Inverse,
-
-    "~" => SLOperator::BitXor,
-    "|" => SLOperator::BitOr,
-    "&" => SLOperator::BitAnd,
-
-    "+" => SLOperator::Plus,
-    "-" => SLOperator::Minus,
-    "*" => SLOperator::ScalarTimes,
-    "/" => SLOperator::ScalarDiv,
-    "^" => SLOperator::ScalarExp,
-    "%" => SLOperator::ScalarModulo,
-    "@" => SLOperator::MatTimes,
-
-    "=" => SLOperator::Assign,
-    // "<" => SLOperator::LessThan,     // specifically not included
-    // ">" => SLOperator::GreaterThan, //  see `tokenize_ambiguity_angle_bracket`
-
-}
-subtokenize_sub_enum_words! {
-    tokenize_keyword;
-    SLToken : |op| SLToken::Keyword(op);
-    "let" => Keyword::VarDeclare,
-    "const" => Keyword::VarConstDeclare,
-    "del" => Keyword::VarDestroy,
-    "for" => Keyword::LoopFor,
-    "in" => Keyword::In,
-    "while" => Keyword::LoopWhile,
-    "loop" => Keyword::LoopForever,
-    "break" => Keyword::LoopBreak,
-    "continue" => Keyword::LoopContinue,
-    "if" => Keyword::ConditionalIf,
-    "elif" => Keyword::ConditionalElseIf,
-    "else" => Keyword::ConditionalElse,
-    "fn" => Keyword::FunctionDefinition,
-    "struct" => Keyword::StructDefinition,
-    "tuple" => Keyword::StructTuple,
-    "enum" => Keyword::EnumDefinition,
-}
-subtokenize_sub_enum! {
     tokenize_boolean;
     SLToken : |b| SLToken::Bool(b);
     "true" => true,
@@ -457,9 +498,7 @@ impl_tokenizer! {
         // key symbols
         tokenize_brackets,
         tokenize_separators,
-        tokenize_ops,
-        tokenize_syntactic_sugar,
-        tokenize_ambiguity_angle_bracket,
+        tokenize_symbols,
         tokenize_keyword,
 
         // many-valued symbols
@@ -474,7 +513,7 @@ impl_tokenizer! {
 
 #[cfg(test)]
 mod test {
-    use crate::parse::{ops::SLOperator, tokenization::Keyword};
+    use crate::parse::tokenization::{Keyword, SLSymbol};
 
     use super::{SLToken, SLTokenizer};
 
@@ -486,12 +525,12 @@ mod test {
             vec![
                 SLToken::Space { hard: false },
                 SLToken::Keyword(Keyword::LoopFor),
-                SLToken::Operator(SLOperator::Minus),
+                SLToken::Symbol(SLSymbol::Minus),
                 SLToken::Int {
                     value: 3,
                     imaginary: false
                 },
-                SLToken::Operator(SLOperator::Plus),
+                SLToken::Symbol(SLSymbol::Plus),
                 SLToken::Unknown("东西"),
                 SLToken::Int {
                     value: 69420621,
@@ -507,7 +546,7 @@ mod test {
                 SLToken::BracketOpen(super::BracketType::Paren),
                 SLToken::BracketClose(super::BracketType::Square),
                 SLToken::Separator(super::SeparatorType::Semicolon),
-                SLToken::Operator(SLOperator::MatExp),
+                SLToken::Symbol(SLSymbol::MatExp),
                 SLToken::Identifier("ide_nt"),
             ],
         );

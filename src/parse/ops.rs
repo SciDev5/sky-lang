@@ -2,53 +2,23 @@ use crate::math::shunting_yard::ShuntingYardOperator;
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub enum SLOperator {
+    // BOOLEAN / BITWISE OPERATORS
+
     /** `! x` not (bitwise, boolean) */
     Not,
-
-    /** `x '` hermitian conjugate (transpose + complex conjugate) */
-    HermitianConjugate,
-    /** `x "` non-complex-conjugating transpose */
-    Transpose,
-    /** `x $` matrix inverse */
-    Inverse,
-
-    /** `x ~ y` exclusive or (bitwise) */
-    BitXor,
-    /** `x | y` or (bitwise) */
-    BitOr,
-    /** `x & y` and (bitwise) */
-    BitAnd,
-    /** `x ~~ y` exclusive or (boolean) */
+    /** `x ~ y` exclusive or (boolean and bitwise) */
     Xor,
-    /** `x || y` or (boolean) */
+    /** `x | y` or (boolean and bitwise) */
     Or,
-    /** `x && y` and (boolean) */
+    /** `x & y` and (boolean and bitwise) */
     And,
     /** `x >> y` left shift */
     Shl,
     /** `x << y` right shift */
     Shr,
 
-    /** `x + y` addition */
-    Plus,
-    /** `x - y` subtraction */
-    Minus,
-    /** `x * y` scalar / elementwise multiply */
-    ScalarTimes,
-    /** `x / y` scalar / elementwise divide */
-    ScalarDiv,
-    /** `x ^ y` scalar / elementwise exponentiation */
-    ScalarExp,
-    /** `x % y` modulo, using floormod */
-    ScalarModulo,
 
-    /** `x @ y` matrix multiplication */
-    MatTimes,
-    /** `x ^^ y` matrix exponentiation */
-    MatExp,
-
-    /** `x = y` variable assignment */
-    Assign,
+    // COMPARISON
 
     /** `x == y` equals comparison */
     Equal,
@@ -62,35 +32,65 @@ pub enum SLOperator {
     GreaterThan,
     /** `x != y` not equals comparison */
     NotEqual,
+
+
+    // NUMERIC
+
+    /** `x + y` addition */
+    Plus,
+    /** `x - y` subtraction */
+    Minus,
+    /** `x * y` scalar / elementwise multiply */
+    Times,
+    /** `x / y` scalar / elementwise divide */
+    Div,
+    /** `x ^ y` scalar / elementwise exponentiation */
+    Exp,
+    /** `x % y` modulus (not remainder), using floormod */
+    Modulo,
+    /** `x /% y` remainder after division */
+    Remainder,
+
+
+    // MATRIX
+
+    /** `x '` hermitian conjugate (transpose + complex conjugate) */
+    HermitianConjugate,
+    /** `x "` non-complex-conjugating transpose */
+    Transpose,
+    /** `_/ x` multiplicative inverse */
+    Inverse,
+    /** `x ** y` matrix multiplication */
+    MatTimes,
+    /** `x ^^ y` matrix exponentiation */
+    MatExp,
 }
 impl SLOperator {
     pub fn is_prefix(self) -> bool {
         match self {
-            Self::Not | Self::Plus | Self::Minus => true,
+            Self::Not | Self::Plus | Self::Minus | Self::Inverse => true,
             _ => false,
         }
     }
     pub fn is_postfix(self) -> bool {
         match self {
-            Self::HermitianConjugate | Self::Transpose | Self::Inverse => true,
+            Self::HermitianConjugate | Self::Transpose => true,
             _ => false,
         }
     }
     pub fn is_infix(self) -> bool {
         match self {
             Self::Xor
-            | Self::BitOr
-            | Self::BitAnd
             | Self::Or
             | Self::And
             | Self::Shl
             | Self::Shr
             | Self::Plus
             | Self::Minus
-            | Self::ScalarTimes
-            | Self::ScalarDiv
-            | Self::ScalarExp
-            | Self::ScalarModulo
+            | Self::Times
+            | Self::Div
+            | Self::Exp
+            | Self::Modulo
             | Self::MatTimes
             | Self::MatExp
             | Self::Equal
@@ -125,16 +125,17 @@ impl ShuntingYardOperator for SLOperator {
             Self::Minus => 20,
             // multiplication -> 30
             Self::MatTimes => 30,
-            Self::ScalarTimes => 35,
-            Self::ScalarDiv => 35,
-            Self::ScalarModulo => 35,
+            Self::Times => 35,
+            Self::Div => 35,
+            Self::Modulo => 35,
+            Self::Remainder => 35,
             // exponentiation -> 40
             Self::MatExp => 40,
-            Self::ScalarExp => 45,
+            Self::Exp => 45,
             // bitmath -> 50
-            Self::BitOr => 50,
-            Self::BitXor => 51,
-            Self::BitAnd => 52,
+            Self::Or => 50,
+            Self::Xor => 51,
+            Self::And => 52,
             Self::Shl => 55,
             Self::Shr => 55,
 
@@ -142,14 +143,12 @@ impl ShuntingYardOperator for SLOperator {
             Self::HermitianConjugate => 60,
             Self::Transpose => 60,
             Self::Inverse => 60,
-
-            Self::Assign => panic!("never part of expressions"),
         }
     }
     fn right_associative(self) -> bool {
         match self {
             Self::MatExp => true,
-            Self::ScalarExp => true,
+            Self::Exp => true,
             _ => false,
         }
     }

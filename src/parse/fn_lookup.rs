@@ -236,12 +236,12 @@ lazy_static! {
                 op_binary: HashMap::from([
                     ((Plus, Int), fn2!(IntPlus)),
                     ((Minus, Int), fn2!(IntMinus)),
-                    ((ScalarTimes, Int), fn2!(IntTimes)),
-                    ((ScalarDiv, Int), fn2!(IntDiv)),
-                    ((ScalarExp, Int), fn2!(IntPow)),
-                    ((BitXor, Int), fn2!(IntBitXor)),
-                    ((BitAnd, Int), fn2!(IntBitAnd)),
-                    ((BitOr, Int), fn2!(IntBitOr)),
+                    ((Times, Int), fn2!(IntTimes)),
+                    ((Div, Int), fn2!(IntDiv)),
+                    ((Exp, Int), fn2!(IntPow)),
+                    ((Xor, Int), fn2!(IntBitXor)),
+                    ((And, Int), fn2!(IntBitAnd)),
+                    ((Or, Int), fn2!(IntBitOr)),
 
                     ((Equal, Int), fn2!(PrimitiveEquals)),
                     ((NotEqual, Int), fn2!(PrimitiveNotEquals)),
@@ -255,7 +255,7 @@ lazy_static! {
                 op_unary: HashMap::from([
                     (Plus, Identity),
                     (Minus, fn1!(IntMinus)),
-                    (BitXor, fn1!(IntBitNot)),
+                    (Xor, fn1!(IntBitNot)),
 
                     (HermitianConjugate, Identity),
                     (Transpose, Identity),

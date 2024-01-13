@@ -3,7 +3,7 @@ use skylab::{
     interpreter::{
         compile::compile_interpreter_bytecode_module, gc::GarbageCollector, interpreter::execute,
     },
-    parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common},
+    parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common, parser2},
 };
 
 fn main() {
@@ -22,7 +22,18 @@ fn main() {
     let tokens = t.tokenize(
         r"
 
+        fn k(b: int) -> int {
+            (c + 1) * k()
+        }
+        fn k() {
+            2
+        }
+        let a: int = 1 + k(1) {
+            4 + 3
+        }
         
+        "/*
+        // -a(2,4)[b]'
         struct Hello {
             a: int
             /// a property documenting comment
@@ -34,10 +45,9 @@ fn main() {
             a: 4 + 4, 
             // c: 3.3
             b: 2.4 
-        }
+        } { it -> 3 }
 
         a
-
         // fn k() {
         //     3
         // }
@@ -64,8 +74,12 @@ fn main() {
         //     b = b * a
         //     a = a - 1
         // } + some_result // -> 5! + 4 = 124
-    ",
+    ", // */
     );
+    for (i, token) in tokens.iter().enumerate() {
+        println!("TOKEN[{}] | {:?}", i, &token);
+    }
+    dbg!(parser2::parse(tokens));
     // let tokens = t.tokenize(
     //     r"
     //     let a: bool = 3
@@ -80,16 +94,17 @@ fn main() {
     //     let d = b + c
     // ",
     // );
-    let parsed = skylab::parse::parser::parse(tokens).unwrap();
-    let common = raw_2_common(ast_2_raw(parsed));
-    dbg!(&common.structs);
-    let bytecode = compile_interpreter_bytecode_module(common);
-    dbg_bytecode_module_code!(bytecode);
 
-    let mut gc = GarbageCollector::new();
-    let return_val = execute(&bytecode, &mut gc);
+    // let parsed = skylab::parse::parser::parse(tokens).unwrap();
+    // let common = raw_2_common(ast_2_raw(parsed));
+    // dbg!(&common.structs);
+    // let bytecode = compile_interpreter_bytecode_module(common);
+    // dbg_bytecode_module_code!(bytecode);
 
-    dbg!(return_val).unwrap();
+    // let mut gc = GarbageCollector::new();
+    // let return_val = execute(&bytecode, &mut gc);
+
+    // dbg!(return_val).unwrap();
 
     // let serialized_code = skylab::interpreter::interpreter::serialize_program(parsed);
 

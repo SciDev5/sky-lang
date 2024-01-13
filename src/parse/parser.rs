@@ -321,18 +321,18 @@ mod expr {
         /// Parse the next infix operator token, such as `+`, `*`, `||` or the like
         fn parse_expr_infix_op(tokens) -> matched: SLOperator, failed: None {
             match tokens.next_skip_break()? {
-                SLToken::Operator(op) => {
-                    if op.is_infix() {
-                        let result = *op;
-                        matched!(result);
-                    } else {
-                        failed!();
-                    }
-                }
-                SLToken::AmbiguityAngleBracket(b) => {
-                    let op = b.to_operator();
-                    matched!(op);
-                }
+                // SLToken::Operator(op) => {
+                //     if op.is_infix() {
+                //         let result = *op;
+                //         matched!(result);
+                //     } else {
+                //         failed!();
+                //     }
+                // }
+                // SLToken::AmbiguityAngleBracket(b) => {
+                //     let op = b.to_operator();
+                //     matched!(op);
+                // }
                 _ => failed!(),
             }
         }
@@ -404,14 +404,14 @@ mod expr {
     parse_rule! {
         fn parse_expr_prefix(tokens) -> matched: ExprAffix, failed: None {
             match tokens.next_skip_break()? {
-                SLToken::Operator(op) => {
-                    if op.is_prefix() {
-                        let result = ExprAffix::Op(*op);
-                        matched!(result);
-                    } else {
-                        failed!();
-                    }
-                }
+                // SLToken::Operator(op) => {
+                //     if op.is_prefix() {
+                //         let result = ExprAffix::Op(*op);
+                //         matched!(result);
+                //     } else {
+                //         failed!();
+                //     }
+                // }
                 _ => failed!(),
             }
         }
@@ -433,14 +433,14 @@ mod expr {
             // only skipping soft breaks, postfixes dangling after newlines are hard
             // to spot or often not actually meant to be postfixes.
             match tokens.next_skip_soft_break()? {
-                SLToken::Operator(op) => {
-                    if op.is_postfix() {
-                        let result = ExprAffix::Op(*op);
-                        matched!(result);
-                    } else {
-                        failed!();
-                    }
-                }
+                // SLToken::Operator(op) => {
+                //     if op.is_postfix() {
+                //         let result = ExprAffix::Op(*op);
+                //         matched!(result);
+                //     } else {
+                //         failed!();
+                //     }
+                // }
                 SLToken::BracketOpen(BracketType::Square) => {
                     let indices = tokens.next_parse(|tokens| parse_list(tokens,
                         &parse_expr,
@@ -503,7 +503,7 @@ mod expr {
     }
     parse_rule! {
         fn parse_expr_grouping(tokens) -> _matched: ASTExpression, failed: None {
-            let had_array_symbol = tokens.next_skip_break_if(|token| matches!(token, Some(SLToken::SyntacticSugar(SyntacticSugarType::Hash))));
+            let had_array_symbol = true ;// tokens.next_skip_break_if(|token| matches!(token, Some(SLToken::SyntacticSugar(SyntacticSugarType::Hash))));
             match (
                 had_array_symbol,
                 (if had_array_symbol {
@@ -552,7 +552,7 @@ mod expr {
                 (
                     true,
                     SLToken::BracketOpen(BracketType::Angle)
-                    | SLToken::AmbiguityAngleBracket(AngleBracketShape::OpenOrLessThan),
+                    // | SLToken::AmbiguityAngleBracket(AngleBracketShape::OpenOrLessThan),
                 ) => {
                     let rank = if let Some(SLToken::Int { value, imaginary }) = tokens.next_skip_break() {
                         if *imaginary || *value < 0 || *value > std::usize::MAX as i128 {
@@ -564,7 +564,8 @@ mod expr {
                     };
                     if !matches!(tokens.next_skip_break(),
                         Some(SLToken::BracketClose(BracketType::Angle)
-                            | SLToken::AmbiguityAngleBracket(AngleBracketShape::CloseOrGreaterThan))
+                            // | SLToken::AmbiguityAngleBracket(AngleBracketShape::CloseOrGreaterThan)
+                        )
                     ) {
                         failed!()
                     }
@@ -848,7 +849,7 @@ mod expr {
         /// `= $expr`
         fn parse_var_assignment_rhs(tokens) -> _matched: ASTExpression, _failed: None {
             // `=`
-            try_match!(tokens.next_skip_break(), SLToken::Operator(SLOperator::Assign))?;
+            // try_match!(tokens.next_skip_break(), SLToken::Operator(SLOperator::Assign))?;
 
             // assigned value `$expr`
             tokens.next_parse(parse_expr)?

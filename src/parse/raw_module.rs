@@ -41,7 +41,7 @@ pub struct RMStruct {
     pub all_scoped: ScopedStatics,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RMValueType {
     Int,
     Float,
@@ -58,7 +58,7 @@ pub enum RMValueType {
     // TODO Template types
     // TODO Units / dimensional analysis
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RMType {
     Void,
     Never,

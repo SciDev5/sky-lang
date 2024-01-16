@@ -164,7 +164,10 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                         }
                         continue;
                     }
-                    token => return token,
+                    token => {
+                        self.prev_index = prev_index;
+                        return token;
+                    }
                 }
             }
         } else {
@@ -574,7 +577,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
 
     /// parses a code block, ending at EOF or close curly brace, depending on if it's the top level.
     ///
-    /// NOTE: doesn't match initiating curly brace.
+    /// NOTE(TOP_LEVEL=false): **Doesn't** match initiating curly brace, but **does** match closing curly brace.
     fn parse_block<const TOP_LEVEL: bool>(&mut self) -> ParseResult<AST2Block> {
         let mut out = vec![];
 
@@ -609,6 +612,14 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         }
 
         Ok(out)
+    }
+    /// Parses a code block surrounded by curly braces.
+    ///
+    /// `{ $($expr)* }`
+    fn parse_curly_block(&mut self) -> ParseResult<AST2Block> {
+        self.bracket_open(BracketType::Curly)?;
+        let block = self.parse_block::</* not top level */false>();
+        block
     }
 
     fn parse_expr<const ALLOW_RANGE_LITERAL: bool, const ALLOW_BLOCK_POSTFIX: bool>(
@@ -717,7 +728,6 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
 
 
             // -- control flow -- //
-            // TODO control flow (if, loop, break, return, etc.)
             try_parse_conditional => |expr| expr?,
             try_parse_infinite_loop => |expr| expr?,
             try_parse_for => |expr| expr?,
@@ -851,6 +861,10 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                     AST2CompoundPostfixContents::Call(args)
                 }
                 BracketType::Curly => {
+                    if !ALLOW_BLOCK_POSTFIX {
+                        self.rewind();
+                        return None;
+                    }
                     // `target{ ... }` callback function shorthand //
                     AST2CompoundPostfixContents::BlockCallback(match self.finish_parse_anonfunc() {
                         Ok(v) => v,
@@ -863,26 +877,122 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         }
     }
 
+    fn parse_condition_expr(&mut self) -> ParseResult<AST2Expression> {
+        self.parse_expr::<
+            /* allow range literal (even if it won't get used, it's not going to cause problems) */true,
+            /* disallow block postfix, those will cause problems */false,
+        >()
+    }
     fn try_parse_conditional(&mut self) -> Option<ParseResult<AST2Expression>> {
-        self.parse_optional_result(|t| t.try_keyword(Keyword::ConditionalIf), |t, _| todo!())
+        self.parse_optional_result(
+            |t| {
+                // if ...
+                t.try_keyword(Keyword::ConditionalIf)
+            },
+            |t, _| {
+                // ... $condition { $block } ...
+                let condition = Box::new(t.parse_condition_expr()?);
+                let block = t.parse_curly_block()?;
+
+                let mut elifs = vec![];
+                // ... $( else if $condition { $block } )* ...
+                while let Some(elif) = t.parse_optional_result(
+                    |t| {
+                        t.try_keyword(Keyword::ConditionalElse)?;
+                        t.try_keyword(Keyword::ConditionalIf)
+                    },
+                    |t, _| {
+                        let condition = t.parse_condition_expr()?;
+                        let block = t.parse_curly_block()?;
+
+                        Ok((condition, block))
+                    },
+                ) {
+                    match elif {
+                        Ok(elif) => elifs.push(elif),
+                        Err(recoverable) => {
+                            if recoverable {
+                                let _ = t.try_keyword(Keyword::ConditionalElse); // step forward to avoid infinite looping
+                                let _ = t.try_keyword(Keyword::ConditionalIf); // step forward to avoid infinite looping
+                                break;
+                            } else {
+                                return Err(false);
+                            }
+                        }
+                    }
+                }
+
+                // ... $( else { $block} )?
+                let else_block = if let Some(else_block) = t.parse_optional_result(
+                    |t| t.try_keyword(Keyword::ConditionalElse),
+                    |t, _| t.parse_curly_block(),
+                ) {
+                    match else_block {
+                        Ok(else_block) => Some(else_block),
+                        Err(recoverable) => {
+                            if recoverable {
+                                None
+                            } else {
+                                return Err(false);
+                            }
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                Ok(AST2Expression::Conditional {
+                    condition,
+                    block,
+                    elifs,
+                    else_block,
+                })
+            },
+        )
     }
     fn try_parse_infinite_loop(&mut self) -> Option<ParseResult<AST2Expression>> {
-        self.parse_optional_result(|t| t.try_keyword(Keyword::LoopForever), |t, _| todo!())
+        self.parse_optional_result(
+            |t| {
+                // loop ...
+                t.try_keyword(Keyword::LoopForever)
+            },
+            |t, _| {
+                // ... { $block }
+                let block = t.parse_curly_block()?;
+
+                Ok(AST2Expression::Loop { block })
+            },
+        )
     }
     fn try_parse_for(&mut self) -> Option<ParseResult<AST2Expression>> {
-        self.parse_optional_result(|t| t.try_keyword(Keyword::LoopFor), |t, _| todo!())
+        self.parse_optional_result(
+            |t| t.try_keyword(Keyword::LoopFor),
+            |t, _| todo!("// TODO try_parse_for"),
+        )
     }
     fn try_parse_while(&mut self) -> Option<ParseResult<AST2Expression>> {
-        self.parse_optional_result(|t| t.try_keyword(Keyword::LoopWhile), |t, _| todo!())
+        self.parse_optional_result(
+            |t| {
+                // while ...
+                t.try_keyword(Keyword::LoopWhile)
+            },
+            |t, _| {
+                // ... $condition { $block }
+                let condition = Box::new(t.parse_condition_expr()?);
+                let block = t.parse_curly_block()?;
+
+                Ok(AST2Expression::LoopWhile { condition, block })
+            },
+        )
     }
     fn try_parse_control_word(&mut self) -> Option<AST2Expression> {
         self.parse_optional(|t| {
             Some(match t.try_any_keyword()? {
                 Keyword::LoopContinue => AST2Expression::Continue,
-                Keyword::LoopBreak => AST2Expression::Break(t.try_else_discard_diagnostics(|t| {
+                Keyword::LoopBreak => AST2Expression::Break(t.require_soft_break().try_else_discard_diagnostics(|t| {
                     Ok(Box::new(t.parse_expr::</* allow range literal */true, /* allow block postfix */true>()?))
                 })),
-                Keyword::Return => AST2Expression::Return(t.try_else_discard_diagnostics(|t| {
+                Keyword::Return => AST2Expression::Return(t.require_soft_break().try_else_discard_diagnostics(|t| {
                     Ok(Box::new(t.parse_expr::</* allow range literal */true, /* allow block postfix */true>()?))
                 })),
                 _ => return None

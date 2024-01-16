@@ -3,11 +3,14 @@ use std::fmt::Debug;
 use num::complex::Complex64;
 
 use crate::{
-    common::{IdentStr, common_module::DocComment},
+    common::{common_module::DocComment, IdentStr},
     math::tensor::Tensor,
 };
 
-use super::{raw_module::{RMType, RMValueType}, ops::SLOperator};
+use super::{
+    ops::SLOperator,
+    raw_module::{RMType, RMValueType},
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AST2VarAccessExpression {
@@ -97,7 +100,7 @@ pub enum AST2Expression {
         initial_value: Option<Box<AST2Expression>>,
         ty: Option<RMValueType>,
     },
-    Assign { 
+    Assign {
         target: AST2VarAccessExpression,
         op: Option<SLOperator>,
         value: Box<AST2Expression>,
@@ -135,6 +138,10 @@ pub enum AST2Expression {
         else_block: Option<AST2Block>,
     },
     Loop {
+        block: AST2Block,
+    },
+    LoopWhile {
+        condition: Box<AST2Expression>,
         block: AST2Block,
     },
     For {

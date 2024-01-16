@@ -740,7 +740,7 @@ mod expr {
             let block = tokens.next_parse(parse_curly_block)?;
 
             let mut elifs = vec![];
-            while try_match!(tokens.peek_skip_break(), SLToken::Keyword(Keyword::ConditionalElseIf)).is_some() {
+            while try_match!(tokens.peek_skip_break(), SLToken::Keyword(Keyword::ConditionalIf) => panic!("REMOVED")).is_some() {
                 tokens.next_skip_break(); // actualize the peek.
                 let elif_condition = tokens.next_parse(parse_expr_no_anonfunc_postfix)?;
                 let elif_block = tokens.next_parse(parse_curly_block)?;

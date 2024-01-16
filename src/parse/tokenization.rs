@@ -314,8 +314,6 @@ gen_Keyword! {
     LoopContinue ("continue"),
     /// Conditional
     ConditionalIf ("if"),
-    /// Conditional else if branch
-    ConditionalElseIf ("elif"),
     /// Conditional else branch
     ConditionalElse ("else"),
     /// Function definition

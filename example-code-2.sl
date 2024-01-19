@@ -126,3 +126,45 @@ fn func_name(param_a: BasicData) {
 fn func_name(param_a: BasicData) -> void {
     // explicit void type
 }
+
+
+
+
+
+///////////////// FANCY ITERATOR LITERALS
+
+
+
+
+let x = for i in 0 : 4 { i ^ 2 }.sum()
+let x = (0 : 4).map { it ^ 2 }.sum()
+let x = (0 : 4).map { i -> i ^ 2 }.sum()
+
+let k = iterate while some_condition() { // may be a bad idea because they are fundamentally different
+    // ...
+    if a {
+        continue 5
+    }
+    59
+}
+// no iter for because that's just a map
+let k = iter_while {
+    // ...
+    if a {
+        return 5
+    }
+    if b {
+        return null // break
+    }
+    59
+}
+
+let x = while condition() {
+    do_stuff()
+    if something() {
+        break "hello"
+    }
+} else {
+    "world"
+}
+// for ... else is also allowed

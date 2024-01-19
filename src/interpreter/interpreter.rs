@@ -113,9 +113,7 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
 
                 let mut locals: Vec<Option<Value>> =
                     iter::repeat_with(|| None).take(func.locals.len()).collect();
-                for (i, v) in call_stack_top.pop_iv_many(func.params.len())
-                    .enumerate()
-                {
+                for (i, v) in call_stack_top.pop_iv_many(func.params.len()).enumerate() {
                     locals[i] = Some(v);
                 }
                 call_stack.push(CallStackFrame {
@@ -238,8 +236,13 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
             }),
             Instr::LiteralInitStruct(assign_to) => {
                 // assign_to is expected to be correct beforehand
-                let mut values = std::iter::repeat_with(||Value::Void).take(assign_to.len()).collect::<Vec<_>>();
-                for (value_in, assign_to_i) in call_stack_top.pop_iv_many(assign_to.len()).zip(assign_to.iter()) {
+                let mut values = std::iter::repeat_with(|| Value::Void)
+                    .take(assign_to.len())
+                    .collect::<Vec<_>>();
+                for (value_in, assign_to_i) in call_stack_top
+                    .pop_iv_many(assign_to.len())
+                    .zip(assign_to.iter())
+                {
                     values[*assign_to_i] = value_in;
                 }
                 call_stack_top.iv_stack.push(Value::Object(values));

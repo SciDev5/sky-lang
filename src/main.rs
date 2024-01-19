@@ -3,7 +3,7 @@ use skylab::{
     interpreter::{
         compile::compile_interpreter_bytecode_module, gc::GarbageCollector, interpreter::execute,
     },
-    parse::{ast_2_raw::ast_2_raw, parser2, raw_2_common::raw_2_common},
+    parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common},
 };
 
 fn main() {
@@ -22,72 +22,71 @@ fn main() {
     let tokens = t.tokenize(
         r"
 
-        fn k(b: int) -> int {
-            (c + 1) * k()
-        }
-        fn k() {
-            2
-        }
-        let a: int = 1 + k(1) {
-            4 + 3
-        }
+let a: int = 1 + k(1)
+/*{
+    4 + 3
+}*/
 
-        if a > b {
-            true
-        } else if 4 < 32 {
-            false
-        } else {
-            69420
-        }
-        
-        ", /*
-           // -a(2,4)[b]'
-           struct Hello {
-               a: int
-               /// a property documenting comment
-               b: float
-               // d: Hello
-           }
+let j = if a < 0 {
+    69
+} else if 4 < 32 {
+    420
+} else {
+    58913
+} * 10000
 
-           let a = Hello {
-               a: 4 + 4,
-               // c: 3.3
-               b: 2.4
-           } { it -> 3 }
+// -a(2,4)[b]'
+struct Hello {
+    a: int
+    /// a property documenting comment
+    b: float
+    // d: Hello
+}
 
-           a
-           // fn k() {
-           //     3
-           // }
+// let x = 3 + 3
+let a = Hello.{
+    a: 4 + 4,
+    // c: 3.3
+    b: 2.4
+}
+// { it -> 3 }
 
-           // fn k(b: int) {
-           //     -b + k()
-           // }
+//    let x = 3 + 3
+a
 
-           // let a = k(k())
-           // let b = a + 1
+fn k() {
+    3
+}
 
-           // let some_result = if b > a {
-           //     1 + k(b * a)
-           // } else {
-           //     2
-           // } // -> 4
+fn k(b: int) {
+    -b + k()
+}
 
-           // let a = 5
-           // let b = 1
-           // loop {
-           //     if a == 1 {
-           //         break b
-           //     }
-           //     b = b * a
-           //     a = a - 1
-           // } + some_result // -> 5! + 4 = 124
+let a = k(k())
+let b = a + 1
+
+let some_result = if b > a {
+    1 + k(b * a)
+} else {
+    2
+} // -> 4
+
+let a = 5
+let b = 1
+loop {
+    if a == 1 {
+        break b
+    }
+    b = b * a
+    a = a - 1
+} + some_result + j // -> 5! + 4 + 420*10000 = 4200124
+
            ", // */
     );
     for (i, token) in tokens.iter().enumerate() {
         println!("TOKEN[{}] | {:?}", i, &token);
     }
-    let _ = dbg!(parser2::parse(tokens));
+    // let _ = dbg!(parser::parse(tokens));
     // let tokens = t.tokenize(
     //     r"
     //     let a: bool = 3
@@ -103,16 +102,18 @@ fn main() {
     // ",
     // );
 
-    // let parsed = skylab::parse::parser::parse(tokens).unwrap();
-    // let common = raw_2_common(ast_2_raw(parsed));
-    // dbg!(&common.structs);
-    // let bytecode = compile_interpreter_bytecode_module(common);
-    // dbg_bytecode_module_code!(bytecode);
+    let (parsed, diagnostics) = skylab::parse::parser::parse(tokens);
+    dbg!(diagnostics);
+    let parsed = parsed.unwrap();
+    let common = raw_2_common(ast_2_raw(parsed));
+    dbg!(&common.structs);
+    let bytecode = compile_interpreter_bytecode_module(common);
+    dbg_bytecode_module_code!(bytecode);
 
-    // let mut gc = GarbageCollector::new();
-    // let return_val = execute(&bytecode, &mut gc);
+    let mut gc = GarbageCollector::new();
+    let return_val = execute(&bytecode, &mut gc);
 
-    // dbg!(return_val).unwrap();
+    dbg!(return_val).unwrap();
 
     // let serialized_code = skylab::interpreter::interpreter::serialize_program(parsed);
 

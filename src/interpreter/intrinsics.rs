@@ -40,7 +40,7 @@ pub fn apply_intrinsic2(id: Intrinsic2FnId, lhs: Value, rhs: Value) -> Result<Va
         Intrinsic2FnId::IntPow => Int({
             let lhs = lhs.into_int();
             let rhs: u32 = rhs.into_int().try_into().map_err(|_| PanicGen)?;
-            
+
             if rhs == 0 && lhs == 0 {
                 // 0 ^ 0
                 return Err(PanicGen);

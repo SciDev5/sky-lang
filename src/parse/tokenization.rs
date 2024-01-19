@@ -384,7 +384,7 @@ gen_SLSymbol! {
 
     AngleOpen ("<", op = LessThan),
     AngleClose (">", op = GreaterThan),
-    
+
     MatExp ("^^", op = MatExp),
     MatTimes ("**", op = MatTimes),
     Inverse ("_/", op = Inverse),
@@ -403,7 +403,7 @@ gen_SLSymbol! {
 
     HermitianConjugate ("'", op = HermitianConjugate),
     Transpose ("\"", op = Transpose),
-    
+
     Not ("!", op = Not),
     Xor ("~", op = Xor),
     Or ("|", op = Or),
@@ -426,7 +426,6 @@ subtokenize_sub_enum! {
     tokenize_separators;
     SLToken : |sep| SLToken::Separator(sep);
     "," => SeparatorType::Comma,
-    "." => SeparatorType::Period,
     ";" => SeparatorType::Semicolon,
     ":" => SeparatorType::Colon,
     "->" => SeparatorType::ThinArrowRight,

@@ -1,4 +1,3 @@
-
 pub enum ShuntingYardObj<E, O: ShuntingYardOperator> {
     Expr(E),
     Op(O),
@@ -8,8 +7,8 @@ pub trait ShuntingYardOperator: Copy {
     fn precedence(self) -> u8;
 }
 
-pub fn treeify_infix<E,O: ShuntingYardOperator,F: Fn(O,E,E)->E>(
-    stream: &mut impl Iterator<Item = ShuntingYardObj<E,O>>,
+pub fn treeify_infix<E, O: ShuntingYardOperator, F: Fn(O, E, E) -> E>(
+    stream: &mut impl Iterator<Item = ShuntingYardObj<E, O>>,
     f: &F,
 ) -> E {
     let postfix = shunting_yard_infix_to_postfix(stream);
@@ -17,9 +16,11 @@ pub fn treeify_infix<E,O: ShuntingYardOperator,F: Fn(O,E,E)->E>(
 }
 
 /// An implementation of [Shunting Yard](https://en.wikipedia.org/wiki/Shunting_yard_algorithm#The_algorithm_in_detail)
-/// 
-/// Converts infix-representation of values and operators into postfix. 
-fn shunting_yard_infix_to_postfix<E,O:ShuntingYardOperator>(input_stream: impl Iterator<Item = ShuntingYardObj<E,O>>) -> Vec<ShuntingYardObj<E,O>> {
+///
+/// Converts infix-representation of values and operators into postfix.
+fn shunting_yard_infix_to_postfix<E, O: ShuntingYardOperator>(
+    input_stream: impl Iterator<Item = ShuntingYardObj<E, O>>,
+) -> Vec<ShuntingYardObj<E, O>> {
     let mut output_queue = vec![];
     let mut operator_stack = vec![];
 
@@ -45,7 +46,7 @@ fn shunting_yard_infix_to_postfix<E,O:ShuntingYardOperator>(input_stream: impl I
 
     output_queue
 }
-fn shunting_yard_should_pop_operator<O:ShuntingYardOperator>(new_op: &O, top_op: &O) -> bool {
+fn shunting_yard_should_pop_operator<O: ShuntingYardOperator>(new_op: &O, top_op: &O) -> bool {
     if new_op.right_associative() {
         new_op.precedence() < top_op.precedence()
     } else {
@@ -54,8 +55,8 @@ fn shunting_yard_should_pop_operator<O:ShuntingYardOperator>(new_op: &O, top_op:
 }
 
 /// Transform a reversed stream of postfix order operators into a tree structure.
-fn treeify_reversed_postfix<E,O: ShuntingYardOperator,F: Fn(O,E,E)->E>(
-    stream: &mut impl Iterator<Item = ShuntingYardObj<E,O>>,
+fn treeify_reversed_postfix<E, O: ShuntingYardOperator, F: Fn(O, E, E) -> E>(
+    stream: &mut impl Iterator<Item = ShuntingYardObj<E, O>>,
     f: &F,
 ) -> E {
     match stream
@@ -65,8 +66,8 @@ fn treeify_reversed_postfix<E,O: ShuntingYardOperator,F: Fn(O,E,E)->E>(
         ShuntingYardObj::Expr(expr) => expr,
         ShuntingYardObj::Op(op) => {
             // Remember we're reading the list in reverse.
-            let second = treeify_reversed_postfix(stream,f);
-            let first = treeify_reversed_postfix(stream,f);
+            let second = treeify_reversed_postfix(stream, f);
+            let first = treeify_reversed_postfix(stream, f);
             f(op, first, second)
         }
     }

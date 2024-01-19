@@ -3,10 +3,13 @@ use std::collections::HashMap;
 use crate::common::{IdentInt, IdentStr};
 
 use super::{
-    ast::{ASTArray, ASTBlock, ASTExpression, ASTLiteral, ASTVarAccessExpression},
+    ast::{
+        ASTAnonymousFunction, ASTArray, ASTBlock, ASTCompoundPostfixContents, ASTExpression,
+        ASTLiteral, ASTOptionallyTypedIdent, ASTTypedIdent, ASTVarAccessExpression,
+    },
     raw_module::{
-        RMBlock, RMExpression, RMFunction, RMLiteralArray, RMLiteralValue, RMStruct, RawModule,
-        ScopedStatics,
+        LiteralStructInit, RMBlock, RMExpression, RMFunction, RMLiteralArray, RMLiteralValue,
+        RMStruct, RawModule, ScopedStatics,
     },
 };
 
@@ -140,7 +143,10 @@ fn transform_expr(
         } => {
             let function = RMFunction {
                 doc_comment,
-                params,
+                params: params
+                    .into_iter()
+                    .map(|ASTTypedIdent { ident, ty }| (ident, ty))
+                    .collect(),
                 return_ty,
                 block: transform_expr_block_inner_scoped(block, state),
                 all_scoped: ScopedStatics::empty(),
@@ -201,7 +207,8 @@ fn transform_expr(
             initial_value: transform_expr_option_box(initial_value, state, scope),
             ty,
         },
-        ASTExpression::Assign { target, value } => {
+        ASTExpression::Assign { target, value, op } => {
+            ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
             let value = transform_expr_box(value, state, scope);
             match target {
                 ASTVarAccessExpression::Var { ident } => RMExpression::AssignVar { ident, value },
@@ -220,23 +227,42 @@ fn transform_expr(
                 },
             }
         }
-        ASTExpression::Read(ident) => RMExpression::Read { ident },
-        ASTExpression::Call {
-            callable,
-            arguments,
+        ASTExpression::Ident(ident) => RMExpression::Ident { ident },
+        ASTExpression::CompoundPostfix {
+            target,
+            contents: ASTCompoundPostfixContents::Call(arguments, callback),
         } => RMExpression::Call {
-            callable: transform_expr_box(callable, state, scope),
-            arguments: transform_expr_vec(arguments, state, scope),
+            callable: transform_expr_box(target, state, scope),
+            arguments: transform_expr_vec(arguments, state, scope)
+                .into_iter()
+                .chain(
+                    callback
+                        .into_iter()
+                        .map(|ASTAnonymousFunction { params, block }| {
+                            RMExpression::AnonymousFunction {
+                                params: params
+                                    .expect("// TODO handle omitted anonymous function parameters")
+                                    .into_iter()
+                                    .map(|ASTOptionallyTypedIdent { ident, ty }| (ident, ty))
+                                    .collect(),
+                                block: transform_expr_block_inner_scoped(block, state),
+                            }
+                        }),
+                )
+                .collect(),
         },
-        ASTExpression::Index { expr, indices } => RMExpression::ReadIndex {
-            expr: transform_expr_box(expr, state, scope),
+        ASTExpression::CompoundPostfix {
+            target,
+            contents: ASTCompoundPostfixContents::Index(indices),
+        } => RMExpression::ReadIndex {
+            expr: transform_expr_box(target, state, scope),
             indices: transform_expr_vec(indices, state, scope),
         },
-        ASTExpression::PropertyAccess {
-            expr,
-            property_ident,
+        ASTExpression::CompoundPostfix {
+            target,
+            contents: ASTCompoundPostfixContents::PropertyAccess(property_ident),
         } => RMExpression::ReadProperty {
-            expr: transform_expr_box(expr, state, scope),
+            expr: transform_expr_box(target, state, scope),
             property_ident,
         },
         ASTExpression::Literal(literal) => match literal {
@@ -256,14 +282,47 @@ fn transform_expr(
             ASTArray::Matrix(_) => todo!("// TODO transform matrix/tensor literals in `ast_2_raw`"),
             ASTArray::Tensor(_) => todo!("// TODO transform matrix/tensor literals in `ast_2_raw`"),
         }),
-        ASTExpression::LiteralStructInit { ident, properties } => RMExpression::LiteralStructInit {
-            ident,
-            properties: properties.transform(|expr| transform_expr(expr, state, scope)),
+        ASTExpression::CompoundPostfix {
+            target,
+            contents: ASTCompoundPostfixContents::BlockStructInit(properties),
+        } => RMExpression::LiteralStructInit {
+            ident: match *target {
+                ASTExpression::Ident(ident) => ident,
+                _ => todo!("// TODO struct init things that are not just raw identifiers"),
+            },
+            properties: LiteralStructInit::Struct(
+                properties
+                    .properties
+                    .into_iter()
+                    .map(|(ident, expr)| (ident, transform_expr(expr, state, scope)))
+                    .collect(),
+            ),
         },
-        ASTExpression::AnonymousFunction { params, block } => RMExpression::AnonymousFunction {
-            params,
-            block: transform_expr_block_inner_scoped(block, state),
+        ASTExpression::CompoundPostfix {
+            target,
+            contents: ASTCompoundPostfixContents::TupleStructInit(properties),
+        } => RMExpression::LiteralStructInit {
+            ident: match *target {
+                ASTExpression::Ident(ident) => ident,
+                _ => todo!("// TODO struct init things that are not just raw identifiers"),
+            },
+            properties: LiteralStructInit::Tuple(
+                properties
+                    .into_iter()
+                    .map(|expr| transform_expr(expr, state, scope))
+                    .collect(),
+            ),
         },
+        ASTExpression::AnonymousFunction(ASTAnonymousFunction { params, block }) => {
+            RMExpression::AnonymousFunction {
+                params: params
+                    .expect("// TODO handle omitted anonymous function parameters")
+                    .into_iter()
+                    .map(|ASTOptionallyTypedIdent { ident, ty }| (ident, ty))
+                    .collect(),
+                block: transform_expr_block_inner_scoped(block, state),
+            }
+        }
         ASTExpression::BinaryOp { op, lhs, rhs } => RMExpression::OpBinary {
             op,
             lhs: transform_expr_box(lhs, state, scope),
@@ -307,6 +366,10 @@ fn transform_expr(
         } => RMExpression::LoopFor {
             loop_var,
             iterable: transform_expr_box(iterable, state, scope),
+            block: transform_expr_block_inner_scoped(block, state),
+        },
+        ASTExpression::LoopWhile { condition, block } => RMExpression::LoopWhile {
+            condition: transform_expr_box(condition, state, scope),
             block: transform_expr_block_inner_scoped(block, state),
         },
         ASTExpression::Break(value) => {

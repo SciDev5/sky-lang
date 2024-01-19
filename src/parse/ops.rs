@@ -3,7 +3,6 @@ use crate::math::shunting_yard::ShuntingYardOperator;
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub enum SLOperator {
     // BOOLEAN / BITWISE OPERATORS
-
     /** `! x` not (bitwise, boolean) */
     Not,
     /** `x ~ y` exclusive or (boolean and bitwise) */
@@ -17,9 +16,7 @@ pub enum SLOperator {
     /** `x << y` right shift */
     Shr,
 
-
     // COMPARISON
-
     /** `x == y` equals comparison */
     Equal,
     /** `x >= y` greater than or equals comparison */
@@ -33,9 +30,7 @@ pub enum SLOperator {
     /** `x != y` not equals comparison */
     NotEqual,
 
-
     // NUMERIC
-
     /** `x + y` addition */
     Plus,
     /** `x - y` subtraction */
@@ -51,9 +46,7 @@ pub enum SLOperator {
     /** `x /% y` remainder after division */
     Remainder,
 
-
     // MATRIX
-
     /** `x '` hermitian conjugate (transpose + complex conjugate) */
     HermitianConjugate,
     /** `x "` non-complex-conjugating transpose */

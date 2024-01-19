@@ -4,7 +4,8 @@ use num::complex::Complex64;
 
 use crate::{
     common::{IdentInt, IdentStr},
-    math::tensor::Tensor, parse::fn_lookup::FnRef,
+    math::tensor::Tensor,
+    parse::fn_lookup::FnRef,
 };
 
 pub type DocComment = Option<String>;

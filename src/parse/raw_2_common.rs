@@ -704,7 +704,7 @@ fn resolve_expr(
             expr,
             property_ident,
         } => todo!(),
-        RMExpression::Read { ident } => match locals_lookup.get(&ident) {
+        RMExpression::Ident { ident } => match locals_lookup.get(&ident) {
             Some(id) => {
                 let var = &locals[*id];
                 let (eval_ty, ty_ok) = match &var.ty {
@@ -768,7 +768,7 @@ fn resolve_expr(
                     .map(Option::unwrap)
                     .collect::<Vec<_>>();
                 match callable.as_ref() {
-                    RMExpression::Read { ident } => {
+                    RMExpression::Ident { ident } => {
                         // function call
                         let mut best_fallback = None;
                         let mut had_semimatch = false;
@@ -834,7 +834,7 @@ fn resolve_expr(
                     text: format!("illegal void parameter"),
                 });
                 match callable.as_ref() {
-                    RMExpression::Read { ident } => {
+                    RMExpression::Ident { ident } => {
                         let fallback_id = lookup_fallback(
                             &ty_arguments,
                             statics_stack
@@ -1326,6 +1326,7 @@ fn resolve_expr(
             iterable,
             block,
         } => todo!(),
+        RMExpression::LoopWhile { condition, block } => todo!(),
         RMExpression::LoopContinue => {
             if loop_context_stack.is_empty() {
                 state.add_diagnostic(Raw2CommonDiagnostic {

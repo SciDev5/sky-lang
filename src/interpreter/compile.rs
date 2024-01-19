@@ -1,10 +1,10 @@
 use crate::{
-    common::common_module::{CMStruct, CMExpression, CMFunction, CMLiteralValue, CommonModule},
+    common::common_module::{CMExpression, CMFunction, CMLiteralValue, CMStruct, CommonModule},
     interpreter::bytecode::Literal,
     parse::fn_lookup::FnRef,
 };
 
-use super::bytecode::{BStruct, BFunction, BytecodeModule, Instr};
+use super::bytecode::{BFunction, BStruct, BytecodeModule, Instr};
 
 struct InstrList {
     instructions: Vec<Instr>,
@@ -329,7 +329,11 @@ fn compile_expr(
         }
         CMExpression::LiteralArray(_) => todo!(),
         CMExpression::LiteralFunctionRef { function_id } => todo!(),
-        CMExpression::LiteralStructInit { ident: _, data, assign_to } => {
+        CMExpression::LiteralStructInit {
+            ident: _,
+            data,
+            assign_to,
+        } => {
             for expr in data {
                 match compile_expr(expr, instructions, yield_value) {
                     Never => return Never,

@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Debug};
 use num::complex::Complex64;
 
 use crate::{
-    common::{IdentInt, IdentStr, common_module::DocComment},
+    common::{common_module::DocComment, IdentInt, IdentStr},
     math::tensor::Tensor,
 };
 
@@ -137,7 +137,7 @@ pub enum RMExpression {
         expr: Box<RMExpression>,
         property_ident: IdentStr,
     },
-    Read {
+    Ident {
         ident: IdentStr,
     },
 
@@ -185,6 +185,10 @@ pub enum RMExpression {
     LoopFor {
         loop_var: (IdentStr, Option<RMValueType>),
         iterable: Box<RMExpression>,
+        block: RMBlock,
+    },
+    LoopWhile {
+        condition: Box<RMExpression>,
         block: RMBlock,
     },
     LoopBreak(Option<Box<RMExpression>>),

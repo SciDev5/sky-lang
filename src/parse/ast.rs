@@ -3,13 +3,16 @@ use std::fmt::Debug;
 use num::complex::Complex64;
 
 use crate::{
-    common::{IdentStr, common_module::DocComment},
+    common::{common_module::DocComment, IdentStr},
     math::tensor::Tensor,
 };
 
-use super::{raw_module::{RMType, RMValueType, LiteralStructInit}, ops::SLOperator};
+use super::{
+    ops::SLOperator,
+    raw_module::{RMType, RMValueType},
+};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ASTVarAccessExpression {
     Var {
         ident: IdentStr,
@@ -24,7 +27,70 @@ pub enum ASTVarAccessExpression {
     },
 }
 
-#[derive(Debug, Clone)]
+/*
+
+"a + b" ok
+
+"a(b)" ambiguous, either tuple struct init or function call, but can be handled later in raw_2_common
+
+ambiguous, either struct init or function call and needs to be parsed differently in each case:
+    "a { b }"
+
+non-ambiguous if ranges not allowed on top level:
+    "a { b: c }"
+
+non-ambiguous:
+    "a { -> b: c }"
+    "a { 3 }"
+    "a() { b: c }"
+    "a { b, c }"
+
+*/
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASTOptionallyTypedIdent {
+    pub ident: IdentStr,
+    pub ty: Option<RMValueType>,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASTTypedIdent {
+    pub ident: IdentStr,
+    pub ty: RMValueType,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASTAnonymousFunction {
+    pub params: Option<Vec<ASTOptionallyTypedIdent>>,
+    pub block: ASTBlock,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASTBlockStructInit {
+    pub properties: Vec<(IdentStr, ASTExpression)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ASTCompoundPostfixContents {
+    /// Function calls
+    /// > `target (arg_a, arg_b, arc_c, ...)`
+    /// > `target (arg_a, arg_b, arc_c, ...) { param_a, param_b, ... -> code_block }`
+    /// > `target { param_a, param_b, ... -> code_block }`
+    Call(Vec<ASTExpression>, Option<ASTAnonymousFunction>),
+    /// Tuple struct initializations.
+    /// > `target.(arg_a, arg_b, arc_c, ...)`
+    TupleStructInit(Vec<ASTExpression>),
+    /// Struct initialization
+    /// > `struct_ident.{ property_a: expr_a, property_b, ... }`
+    BlockStructInit(ASTBlockStructInit),
+    /// Indexing call
+    /// > `target [arg_a, arg_b, ...]`
+    Index(Vec<ASTExpression>),
+    /// Property access
+    /// > `target. property``
+    PropertyAccess(IdentStr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ASTExpression {
     VarDeclare {
         doc_comment: DocComment,
@@ -33,23 +99,13 @@ pub enum ASTExpression {
         initial_value: Option<Box<ASTExpression>>,
         ty: Option<RMValueType>,
     },
-    Assign { 
+    Assign {
         target: ASTVarAccessExpression,
+        op: Option<SLOperator>,
         value: Box<ASTExpression>,
     },
-    Read(IdentStr),
-    Call {
-        callable: Box<ASTExpression>,
-        arguments: Vec<ASTExpression>,
-    },
-    Index {
-        expr: Box<ASTExpression>,
-        indices: Vec<ASTExpression>,
-    },
-    PropertyAccess {
-        expr: Box<ASTExpression>,
-        property_ident: IdentStr,
-    },
+
+    Ident(IdentStr),
 
     Literal(ASTLiteral),
     Range {
@@ -58,10 +114,7 @@ pub enum ASTExpression {
         end: Option<Box<ASTExpression>>,
     },
     Array(ASTArray),
-    AnonymousFunction {
-        params: Vec<(IdentStr, Option<RMValueType>)>,
-        block: ASTBlock,
-    },
+    AnonymousFunction(ASTAnonymousFunction),
 
     BinaryOp {
         op: SLOperator,
@@ -72,6 +125,10 @@ pub enum ASTExpression {
         op: SLOperator,
         value: Box<ASTExpression>,
     },
+    CompoundPostfix {
+        target: Box<ASTExpression>,
+        contents: ASTCompoundPostfixContents,
+    },
 
     Conditional {
         condition: Box<ASTExpression>,
@@ -80,6 +137,10 @@ pub enum ASTExpression {
         else_block: Option<ASTBlock>,
     },
     Loop {
+        block: ASTBlock,
+    },
+    LoopWhile {
+        condition: Box<ASTExpression>,
         block: ASTBlock,
     },
     For {
@@ -94,15 +155,11 @@ pub enum ASTExpression {
     FunctionDefinition {
         doc_comment: DocComment,
         ident: IdentStr,
-        params: Vec<(IdentStr, RMValueType)>,
+        params: Vec<ASTTypedIdent>,
         return_ty: Option<RMType>,
         block: ASTBlock,
     },
 
-    LiteralStructInit {
-        ident: IdentStr,
-        properties: LiteralStructInit<ASTExpression>,
-    },
     StructDefinition {
         doc_comment: DocComment,
         ident: IdentStr,
@@ -111,15 +168,9 @@ pub enum ASTExpression {
     },
 }
 
-impl Default for ASTExpression {
-    fn default() -> Self {
-        ASTExpression::Literal(ASTLiteral::Int(0))
-    }
-}
-
 pub type ASTBlock = Vec<ASTExpression>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ASTLiteral {
     Int(i128),
     Float(f64),
@@ -128,7 +179,7 @@ pub enum ASTLiteral {
     String(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ASTArray {
     List(Vec<ASTExpression>),
     Matrix(Tensor<ASTExpression>),

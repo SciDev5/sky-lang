@@ -1,173 +1,47 @@
+/*
+PARSPEC
+
+
+let a = 4 + 3
+
+h { f -> }
+
+
+
+*/
+
+use std::{fmt::Debug, vec};
+
+use num::complex::Complex64;
+
 use crate::{
     common::IdentStr,
-    parse::tokenization::{BracketType, SeparatorType},
+    math::shunting_yard::{treeify_infix, ShuntingYardObj},
 };
 
-use super::{ast::ASTBlock, raw_module::RMValueType, tokenization::SLToken};
+use super::{
+    ast::{
+        ASTAnonymousFunction, ASTBlock, ASTBlockStructInit, ASTCompoundPostfixContents,
+        ASTExpression, ASTLiteral, ASTOptionallyTypedIdent, ASTTypedIdent, ASTVarAccessExpression,
+    },
+    ops::SLOperator,
+    raw_module::{RMType, RMValueType},
+    tokenization::{BracketType, Keyword, SLSymbol, SLToken, SeparatorType},
+};
 
-#[derive(Debug, Clone, Copy)]
-pub struct Tokens<'vec, 'token_content> {
-    index: usize,
-    tokens: &'vec [SLToken<'token_content>],
-}
-
-impl<'a, 'b> Tokens<'a, 'b> {
-    pub fn new(tokens: &'a [SLToken<'b>]) -> Self {
-        Self { index: 0, tokens }
-    }
-    fn peek(&self) -> Option<&'a SLToken<'b>> {
-        self.tokens.get(self.index)
-    }
-    fn peek_skip_break(&self) -> Option<&'a SLToken<'b>> {
-        self.peek_slice().iter().find(|token| !token.is_break())
-    }
-    fn peek_slice(&self) -> &'a [SLToken<'b>] {
-        if self.index < self.tokens.len() {
-            &self.tokens[self.index..]
-        } else {
-            &[]
-        }
-    }
-    fn peek_is_hard_break(&self) -> bool {
-        self.peek().map_or(false, |it| it.break_type().is_hard())
-    }
-    fn next(&mut self) -> Option<&'a SLToken<'b>> {
-        let output = self.tokens.get(self.index);
-        self.index += 1;
-        return output;
-    }
-    fn next_skip_break(&mut self) -> Option<&'a SLToken<'b>> {
-        loop {
-            match self.next()? {
-                token if token.is_break() => continue,
-                token => break Some(token),
-            }
-        }
-    }
-    fn next_skip_whitespace(&mut self) -> Option<&'a SLToken<'b>> {
-        loop {
-            match self.next()? {
-                token if token.is_whitespace() => continue,
-                token => break Some(token),
-            }
-        }
-    }
-    fn next_skip_soft_break(&mut self) -> Option<&'a SLToken<'b>> {
-        loop {
-            match self.next()? {
-                token if token.break_type().is_soft() => continue,
-                token => break Some(token),
-            }
-        }
-    }
-    fn next_skip_break_if<F: Fn(Option<&SLToken<'b>>) -> bool>(&mut self, f: F) -> bool {
-        let mut self_advanced = *self;
-        let matched = f(self_advanced.next_skip_break());
-        if matched {
-            *self = self_advanced
-        }
-        matched
-    }
-    fn next_skip_soft_break_if<F: Fn(Option<&SLToken<'b>>) -> bool>(&mut self, f: F) -> bool {
-        let mut self_advanced = *self;
-        let matched = f(self_advanced.next_skip_soft_break());
-        if matched {
-            *self = self_advanced
-        }
-        matched
-    }
-    fn step_back(&mut self) {
-        self.index = self.index.saturating_sub(1);
-    }
-    /// Run the parser function passed in and advance the token index if successful.
-    fn next_parse<T, F: Fn(Self) -> Option<(Self, T)>>(&mut self, parser: F) -> Option<T> {
-        let (tokens_out, data_out) = parser(*self)?;
-        *self = tokens_out;
-        Some(data_out)
-    }
-}
-
-/// `tokens, <pattern>`
-macro_rules! try_match {
-    ($inp: expr, $pattern:pat $(if $guard:expr)? $(,)?) => {
-        if let Some(token) = $inp {
-            match &token {
-                $pattern $(if $guard)? => Some(token),
-                _ => None,
-            }
-        } else {
-            None
-        }
-    };
-    ($inp: expr, $pattern:pat $(if $guard:expr)? => $out: expr $(,)?) => {
-        if let Some(token) = $inp {
-            match &token {
-                $pattern $(if $guard)? => Some($out),
-                _ => None,
-            }
-        } else {
-            None
-        }
-    };
-}
-
-macro_rules! parse_rule {
-    // parse_rule!(fn name<T: Default, R>(tokens) -> matched: T, _failed { T::default() })
-    (
-        // code documenting comment
-        $(#[$comments_and_attrss:meta])*
-        // generated function name and visibility modifier (ex. pub)
-        $vis: vis fn $name: ident
-        // optional additional function generic type/lifetime parameters.
-        $(<$($typ: tt),*>)?
-        // function parameter names, usually just `tokens`.
-        ($tokens: ident $(, $(($param: ident) : $param_ty: ty)+ $(,)?)?)
-        ->
-        // `matched : $ty`, creates a macro named `matched!` that takes the current value of tokens and data and returns.
-        $macro_name_return_match: ident : $ty: ty,
-        // `failed: None`, creates a macro named `failed!` that
-        $macro_name_return_fail: ident : None
-        // function contents (value is type $ty, can `return None` to abort early)
-        $code: block
-    ) => {
-        $(#[$comments_and_attrss])*
-        $vis fn $name <'tv, 'tc, $($typ),*> (
-            #[allow(unused_mut)]
-            mut $tokens : Tokens<'tv, 'tc>,
-            $($($param : $param_ty),+)?
-        ) -> Option<(Tokens<'tv, 'tc>, $ty)> {
-            macro_rules! $macro_name_return_match {
-                ($data: ident) => {
-                    return Some(($tokens, $data))
-                };
-                (tokens = $tokens_override: ident, $data: ident) => {
-                    return Some(($tokens_override, $data))
-                };
-            }
-            macro_rules! $macro_name_return_fail {
-                () => { return None };
-            }
-            let _res: $ty = $code;
-            #[allow(unreachable_code)]
-            Some(($tokens, _res))
-        }
-    }
-}
-
-/**
- * `tokens; parser_fn => |it| map(it), ...`
- */
-macro_rules! parse_match_first {
+macro_rules! parse_first {
     (ENTRY $tokens: ident; $parser: ident) => {
-        $tokens.next_parse($parser)
+        $tokens. $parser ()
     };
     (ENTRY $tokens: ident; $parser: ident; $($paramv: expr),*) => {
-        $tokens.next_parse(|tokens| $parser (tokens, $($paramv),*))
+        $tokens. $parser ($($paramv),*)
     };
     ($tokens: ident; $($parser: ident $(($($paramv: expr),* $(,)?))? => |$param: ident| $success_transform: expr ),+ $(,)?) => {
         $(
-            if let Some($param) = parse_match_first!(ENTRY $tokens; $parser $( ; $($paramv),* )?) {
-                Some($success_transform)
+            if let Some($param) = parse_first!(ENTRY $tokens; $parser $( ; $($paramv),* )?) {
+                Some({
+                    $success_transform
+                })
             } else
         )+ {
             None
@@ -175,1077 +49,1472 @@ macro_rules! parse_match_first {
     };
 }
 
-mod expr {
-    use num::complex::Complex64;
+/// The result of parsing a section of tokens.
+///
+/// The error is a bool, indicating if the error is recoverable.
+type ParseResult<T> = Result<T, bool>;
 
-    use super::{parse_list, Tokens};
-    use crate::{
-        common::IdentStr,
-        math::{
-            shunting_yard::{treeify_infix, ShuntingYardObj},
-            tensor::Tensor,
-        },
-        parse::{
-            ast::{ASTArray, ASTExpression, ASTLiteral},
-            ops::SLOperator,
-            parser::{
-                parse_block, parse_curly_block, parse_ident_optionally_typed, parse_ident_typed,
-                varaccessexpr::parse_varaccessexpr,
-            },
-            raw_module::{RMValueType, LiteralStructInit},
-            tokenization::{
-                AngleBracketShape, BracketType, Keyword, SLToken, SeparatorType, SyntacticSugarType,
-            },
-        },
-    };
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseDiagnostic {
+    UnexpectedEnd,
+    ExpectedKeyword(Keyword),
+    ExpectedSymbol(SLSymbol),
+    ExpectedSeparator(SeparatorType),
+    ExpectedExpr,
+    ExpectedIdentifier,
+    ExpectedBracketOpen(BracketType),
+    ExpectedBracketClose(BracketType),
+    ExpectedFunctionBody,
+    ExpectedTypeAnnotation,
+    UnexpectedExtraCallbackArgument,
+}
+
+#[derive(Debug)]
+pub struct Tokens<'a, 'token_content> {
+    require_soft_break: bool,
+    prev_index: usize,
+    index: usize,
+    tokens: &'a [SLToken<'token_content>],
+    diagnostics: Vec<ParseDiagnostic>,
+}
+
+impl<'a, 'token_content> Tokens<'a, 'token_content> {
+    fn new(tokens: &'a [SLToken<'token_content>]) -> Self {
+        Self {
+            require_soft_break: false,
+            prev_index: 0,
+            index: 0,
+            tokens,
+            diagnostics: vec![],
+        }
+    }
 
     /*
-    A finite state machine should be able to handle expression parsing.
 
-    ///////////////// List of possible expressions /////////////////
-    <expr> = <literal>
-    <expr> = <identifier>
-    <expr> = <expr> <infix> <expr>
-    <expr> = <prefix> <expr>
-    <expr> = <expr> (<postfix> | ("[" (<expr>)","* "]") | ("(" (<expr>)","* ")"))
-    <expr> = <block>
-    <expr> = "{" ( (<identifier> (":" <type>)? )","+ (",")? "->")? <expr> "}"
-    <expr> = "(" <expr> ")"
-    <expr> = "[" (<expr>)","* ","? "]"
-    <expr> = "#" "[" ( (<expr>)","* )";"* ";"? "]"
-    <expr> = "#" "<" [rank] ">" "[" // nested arrays to depth [rank] // "]"
-    // <expr> = <<ARRAY COMPREHENSIONS>>
+    Parser token iteration:
 
-    ///////////////// Expression parsing in smaller chunks /////////////////
+    "try_...": Attempt to parse something, else rewind.
+        Some(parsed value) -> pointer += matched length
+        None -> pointer unchanged
 
-    <expr> = <expr_infix> | <range>
-    <expr_infix> = <expr_no_infix> (<infix> <expr_no_infix>)*
-
-    <expr_no_infix> = <prefix>* (
-        | <literal>
-        | <identifier>
-        | <expr_grouping>
-        | <expr_anonfunc>
-        | <expr_sub_blocking>
-        | <expr_extras>
-    ) <postfix>*
-
-    <expr_grouping> = (
-        //// parentheses
-        | "(" <expr> ")"
-        //// normal arrays/lists/whatever
-        | "[" (<expr>)","* ","? "]"
-        //// matrices
-        | "#" [" ( (<expr>)","* )";"* ";"? "]"
-        //// tensors
-        | "#" "<" [rank] ">" "[" // nested arrays to depth [rank] // "]"
-    )
-
-    <expr_anonfunc> = "{" ( (<identifier> (":" <type>)? )","+ (",")? "->")? <expr> "}"
-
-    <prefix> = (
-        | <postfix_operator>   // ~operators_and_such
-    )
-
-    <postfix> = (
-        | <postfix_operator>   // operators_and_such'
-        | <postfix_func_call> //  function_calls(like, this, 4)
-        | <postfix_index>    //   indexing_data[i,j,k]
-    )
-    <postfix_func_call> = "(" (<expr>)","* (",")? ")"
-    <postfix_index> = "[" (<expr>)","* (",")? "]"
-
-    <range> = (
-        | (<expr>)? ":" (<expr>)? ( ":" (<expr>)? )?
-    )
-
-    <expr_extras> = (
-        // TODO
-        // ... array comprehensions and such ...
-    )
+    "..." (parse functions not starting with `try_`): Parse something or fail.
+        Ok(parsed value) -> pointer += matched length
+        Err(recoverable = true) -> pointer += successfully matched tokens, can recover if value not needed
+            generated by matching unexpected tokens without messing up the general structure
+        Err(recoverable = false) -> indicates must return and propagate this error up
+            generated by bracket mismatch or unexpected end of file which both disturb the program structure
     */
 
-    parse_rule! {
-        /// Parse all expressions.
-        ///
-        /// ```plaintext
-        /// <expr> = <expr_infix> | <range>
-        /// ```
-        pub fn parse_expr(tokens) -> _matched: ASTExpression, _failed: None {
-            parse_match_first!(tokens;
-                parse_expr_rangeto(/* allow_anon_func */ true) => |it| it,
-                parse_expr_infixed(/* allow_anon_func */ true) => |it| it,
-            )?
-        }
-    }
-    parse_rule! {
-        /// Parse all expressions.
-        ///
-        /// ```plaintext
-        /// <expr> = <expr_infix> | <range>
-        /// ```
-        pub fn parse_expr_no_anonfunc_postfix(tokens) -> _matched: ASTExpression, _failed: None {
-            parse_match_first!(tokens;
-                parse_expr_rangeto(/* allow_anon_func_postfix */ false) => |it| it,
-                parse_expr_infixed(/* allow_anon_func_postfix */ false) => |it| it,
-            )?
-        }
-    }
-    parse_rule! {
-        /// Parse expressions.
-        ///
-        /// ```plaintext
-        /// <expr_infix> = <expr_no_infix> (<infix> <expr_no_infix>)*
-        /// ```
-        pub fn parse_expr_infixed(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpression, failed: None {
-            let first_expr = tokens.next_parse(|t| parse_expr_no_infix(t, allow_anon_func_postfix))?;
+    ///////////////////////////////////////////////////////////////////////////
+    // Utility functions that match the next token.
+    //
 
-            let mut infix = vec![ShuntingYardObj::Expr(first_expr)];
+    /// Match the next token (including spaces), returning None if the end is hit.
+    fn try_next_or_whitespace(&mut self) -> Option<&'a SLToken<'token_content>> {
+        if self.take_require_soft_break() {
+            panic!("improper use of require_soft_break");
+        }
 
-            while let Some(op) = tokens.next_parse(parse_expr_infix_op) {
-                if let Some(expr) = tokens.next_parse(|t| parse_expr_no_infix(t, allow_anon_func_postfix)) {
-                    infix.push(ShuntingYardObj::Op(op));
-                    infix.push(ShuntingYardObj::Expr(expr));
-                } else {
-                    // saw infix operator follwed by something unexpected.
-                    failed!();
-                }
-            }
+        let prev_index = self.prev_index;
+        let out = if self.index < self.tokens.len() {
+            self.index += 1;
+            Some(&self.tokens[self.index - 1])
+        } else {
+            None
+        };
+        self.prev_index = prev_index;
+        out
+    }
+    #[inline(always)]
+    fn require_soft_break(&mut self) -> &mut Self {
+        self.require_soft_break = true;
+        self
+    }
+    fn take_require_soft_break(&mut self) -> bool {
+        let require_soft_break = self.require_soft_break;
+        self.require_soft_break = false;
+        require_soft_break
+    }
+    /// Match the next token (not including spaces), returning None if the end is hit.
+    fn try_next(&mut self) -> Option<&'a SLToken<'token_content>> {
+        let require_soft_break = self.take_require_soft_break();
 
-            treeify_infix(&mut infix.into_iter(), &|op, a, b| {
-                ASTExpression::BinaryOp { op, lhs: Box::new(a), rhs: Box::new(b) }
-            })
-        }
-    }
-    parse_rule! {
-        /// Parse the next infix operator token, such as `+`, `*`, `||` or the like
-        fn parse_expr_infix_op(tokens) -> matched: SLOperator, failed: None {
-            match tokens.next_skip_break()? {
-                // SLToken::Operator(op) => {
-                //     if op.is_infix() {
-                //         let result = *op;
-                //         matched!(result);
-                //     } else {
-                //         failed!();
-                //     }
-                // }
-                // SLToken::AmbiguityAngleBracket(b) => {
-                //     let op = b.to_operator();
-                //     matched!(op);
-                // }
-                _ => failed!(),
-            }
-        }
-    }
-    parse_rule! {
-        /// Parse expressions, excluding expressions with infix operators at the top level.
-        ///
-        /// ```plaintext
-        /// <expr_no_infix> = <prefix>* (
-        ///     | <literal>
-        ///     | <identifier>
-        ///     | <expr_grouping>
-        ///     | <expr_sub_blocking>
-        ///     | <expr_extras>
-        /// ) <postfix>*
-        /// ```
-        fn parse_expr_no_infix(tokens, (allow_anon_func_postfix): bool) -> _matched: ASTExpression, _failed: None {
-            // prefixes
-            let mut prefixes = vec![];
-            while let Some(prefix) = tokens.next_parse(parse_expr_prefix) {
-                prefixes.push(prefix);
-            }
-            // main data
-            let expr_main = parse_match_first!(
-                tokens;
-                parse_func_def => |it| it,
-                parse_struct => |it| it,
-                parse_struct_instance_curly => |it| it,
-                parse_var_def => |it| it,
-                parse_var_assign => |it| it,
-                parse_expr_literal => |literal| ASTExpression::Literal(literal),
-                parse_expr_identifier => |ident| ASTExpression::Read(ident),
-                parse_expr_anonfunc => |it| it,
-                parse_expr_sub_blocking => |it| it,
-                parse_expr_grouping => |it| it,
-                parse_flow_controls => |it| it,
-            )?;
-            // postfixes
-            let mut postfixes = vec![];
-            while let Some(postfix) = tokens.next_parse(|t| parse_expr_postfix(t, allow_anon_func_postfix)) {
-                postfixes.push(postfix);
-            }
-            //
-            let mut expr = expr_main;
-            for affix in postfixes.into_iter().chain(prefixes.into_iter().rev()) {
-                expr = affix.apply_to_expr(expr);
-            }
-            expr
-        }
-    }
-    enum ExprAffix {
-        Op(SLOperator),
-        Indexing(Vec<ASTExpression>),
-        FunctionCall(Vec<ASTExpression>), // TODO template types, callback block
-    }
-    impl ExprAffix {
-        fn apply_to_expr(self, expr: ASTExpression) -> ASTExpression {
-            let expr = Box::new(expr);
-            match self {
-                ExprAffix::Op(op) => ASTExpression::UnaryOp { op, value: expr },
-                ExprAffix::FunctionCall(arguments) => ASTExpression::Call {
-                    callable: expr,
-                    arguments,
-                },
-                ExprAffix::Indexing(indices) => ASTExpression::Index { expr, indices },
-            }
-        }
-    }
-    parse_rule! {
-        fn parse_expr_prefix(tokens) -> matched: ExprAffix, failed: None {
-            match tokens.next_skip_break()? {
-                // SLToken::Operator(op) => {
-                //     if op.is_prefix() {
-                //         let result = ExprAffix::Op(*op);
-                //         matched!(result);
-                //     } else {
-                //         failed!();
-                //     }
-                // }
-                _ => failed!(),
-            }
-        }
-    }
-    parse_rule! {
-        ///
-        /// Parse postfixes/suffixes/whateveryouwannacallem. This is shockingly complicated,
-        /// because there is also function calls (`...[...]`), indexing  (`...[]...]`), and others
-        /// beyond just operators like `'` (hermitian conjugate).
-        ///
-        /// ```plaintext
-        /// <postfix> = (
-        ///     | <postfix_operator>   // operators_and_such'
-        ///     | <postfix_func_call> //  function_calls(param_a * 69 + 420, 4)
-        ///     | <postfix_index>    //   indexing_data[i,j,k]
-        /// )
-        /// ```
-        fn parse_expr_postfix(tokens, (allow_anon_func_postfix): bool) -> matched: ExprAffix, failed: None {
-            // only skipping soft breaks, postfixes dangling after newlines are hard
-            // to spot or often not actually meant to be postfixes.
-            match tokens.next_skip_soft_break()? {
-                // SLToken::Operator(op) => {
-                //     if op.is_postfix() {
-                //         let result = ExprAffix::Op(*op);
-                //         matched!(result);
-                //     } else {
-                //         failed!();
-                //     }
-                // }
-                SLToken::BracketOpen(BracketType::Square) => {
-                    let indices = tokens.next_parse(|tokens| parse_list(tokens,
-                        &parse_expr,
-                        |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
-                        |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
-                    ))?;
-                    let result = ExprAffix::Indexing(indices);
-                    matched!(result);
-                }
-                SLToken::BracketOpen(BracketType::Paren) => {
-                    let mut arguments = tokens.next_parse(|tokens| parse_list(tokens,
-                        &parse_expr,
-                        |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
-                        |token| matches!(token, SLToken::BracketClose(BracketType::Paren)),
-                    ))?;
-                    if let Some(final_param_anonfunc) = tokens.next_parse(parse_expr_anonfunc) {
-                        arguments.push(final_param_anonfunc)
-                    }
-                    let result = ExprAffix::FunctionCall(arguments);
-                    matched!(result);
-                }
-                SLToken::BracketOpen(BracketType::Curly) if allow_anon_func_postfix => {
-                    tokens.step_back();
-                    let result = ExprAffix::FunctionCall(vec![tokens.next_parse(parse_expr_anonfunc)?]);
-                    matched!(result);
-                }
-                _ => failed!(),
-            }
-        }
-    }
-    parse_rule! {
-        /// Parse range expressions, like `1:4`, `-5:2:8`
-        ///
-        /// ```plaintext
-        /// <range> = (
-        ///     | (<expr>)? ":" (<expr>)? ( ":" (<expr>)? )?
-        /// )
-        /// ```
-        fn parse_expr_rangeto(tokens, (allow_anon_func): bool) -> _matched: ASTExpression, _failed: None {
-            let expr_first = tokens.next_parse(|t| parse_expr_infixed(t, allow_anon_func));
-            let has_first_colon = tokens.next_skip_soft_break_if(|it| matches!(it, Some(SLToken::Separator(SeparatorType::Colon))));
-            if has_first_colon {
-                let expr_second = if tokens.peek_is_hard_break() { None } else { tokens.next_parse(|t| parse_expr_infixed(t, allow_anon_func)) };
-
-                let has_second_colon = tokens.next_skip_soft_break_if(|it| matches!(it, Some(SLToken::Separator(SeparatorType::Colon))));
-                if has_second_colon {
-                    let expr_third = (if tokens.peek_is_hard_break() { None } else { tokens.next_parse(|t| parse_expr_infixed(t, allow_anon_func)) })?;
-
-                    // a:b:step
-                    ASTExpression::Range { start: expr_first.map(Box::new), end: Some(Box::new(expr_third)), step: expr_second.map(Box::new) }
-                } else {
-                    // a:b
-                    ASTExpression::Range { start: expr_first.map(Box::new), end: expr_second.map(Box::new), step: None }
-                }
-            } else {
-                // no range
-                _failed!();
-            }
-        }
-    }
-    parse_rule! {
-        fn parse_expr_grouping(tokens) -> _matched: ASTExpression, failed: None {
-            let had_array_symbol = true ;// tokens.next_skip_break_if(|token| matches!(token, Some(SLToken::SyntacticSugar(SyntacticSugarType::Hash))));
-            match (
-                had_array_symbol,
-                (if had_array_symbol {
-                    tokens.next_skip_soft_break()
-                } else {
-                    tokens.next_skip_break()
-                })?,
-            ) {
-                // matrix `#< $rank >[ $($( $data_expr ),* );* $(;)? ]`
-                (true, SLToken::BracketOpen(BracketType::Square)) => {
-                    let mat = {
-                        let data = tokens.next_parse(|tokens| {
-                            parse_list(
-                                tokens,
-                                &|mut tokens| { // capture one row ... , ... , ... ]
-                                    let res = tokens.next_parse(|tokens| {
-                                        parse_list(
-                                            tokens,
-                                            &parse_expr,
-                                            |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
-                                            |token| matches!(token, SLToken::Separator(SeparatorType::Semicolon) | SLToken::BracketClose(BracketType::Square)),
-                                        )
-                                    })?;
-                                    tokens.step_back(); // step back so the outer `parse_list` can read the separator that ended the row.
-                                    Some((tokens, res))
-                                },
-                                |token| matches!(token, SLToken::Separator(SeparatorType::Semicolon)),
-                                |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
-                            )
-                        })?;
-
-                        if data.len() == 0 {
-                            Tensor::new_matrix::<0,0>([])
-                        } else {
-                            let width = data[0].len();
-                            let height = data.len();
-                            if !data.iter().all(|row| row.len() == width) {
-                                failed!();
-                            }
-                            Tensor::new_matrix_iter(&mut data.into_iter().flat_map(|row|row.into_iter()), width, height)
-                        }
-                    };
-                    ASTExpression::Array(ASTArray::Matrix(mat))
-                }
-                // tensor `#< $rank >[ $... ]` something-something it's recursive.
-                (
-                    true,
-                    SLToken::BracketOpen(BracketType::Angle)
-                    // | SLToken::AmbiguityAngleBracket(AngleBracketShape::OpenOrLessThan),
-                ) => {
-                    let rank = if let Some(SLToken::Int { value, imaginary }) = tokens.next_skip_break() {
-                        if *imaginary || *value < 0 || *value > std::usize::MAX as i128 {
-                            failed!()
-                        }
-                        *value as usize
+        let prev_index = self.index;
+        let out = if self.index < self.tokens.len() {
+            loop {
+                match {
+                    if self.index < self.tokens.len() {
+                        self.index += 1;
+                        Some(&self.tokens[self.index - 1])
                     } else {
-                        failed!()
-                    };
-                    if !matches!(tokens.next_skip_break(),
-                        Some(SLToken::BracketClose(BracketType::Angle)
-                            // | SLToken::AmbiguityAngleBracket(AngleBracketShape::CloseOrGreaterThan)
-                        )
-                    ) {
-                        failed!()
+                        None
                     }
-                    let (contents, dim) = tokens.next_parse(|tokens| parse_expr_tensor_entries(tokens, rank))?;
-
-                    ASTExpression::Array(ASTArray::Tensor(Tensor::new_raw(contents, dim)))
-                }
-
-                // TODO array comprehension
-                // (also probably move it to it's own parser function)
-
-                // list/array `[ $( $data_expr ),* $(,)? ]`
-                (false, SLToken::BracketOpen(BracketType::Square)) => {
-                    ASTExpression::Array(ASTArray::List(tokens.next_parse(|tokens| {
-                        parse_list(
-                            tokens,
-                            &parse_expr,
-                            |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
-                            |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
-                        )
-                    })?))
-                }
-
-                // parentheses `( $data_expr )`
-                (false, SLToken::BracketOpen(BracketType::Paren)) => {
-                    let result = tokens.next_parse(parse_expr)?;
-                    if !matches!(
-                        tokens.next_skip_break(),
-                        Some(SLToken::BracketClose(BracketType::Paren))
-                    ) {
-                        // failed to match closing parentheses
-                        failed!()
-                    }
-                    result
-                }
-                _ => failed!(),
-            }
-        }
-    }
-    parse_rule! {
-        fn parse_expr_tensor_entries(tokens, (rank): usize) -> _matched: (Vec<ASTExpression>, Vec<usize>), failed: None {
-            if rank == 0 {
-                (vec![tokens.next_parse(parse_expr)?], vec![])
-            } else {
-                if !matches!(
-                    tokens.next_skip_break(),
-                    Some(SLToken::BracketOpen(BracketType::Square))
-                ) {
-                    // expect "["
-                    failed!();
-                }
-                let parsed = tokens
-                    .next_parse(|tokens| {
-                        parse_list(
-                            tokens,
-                            &|tokens| parse_expr_tensor_entries(tokens, rank - 1),
-                            |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
-                            |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
-                        )
-                    })?;
-                if parsed.is_empty() {
-                    (vec![], vec![0; rank])
-                } else {
-                    let mut dim = parsed[0].1.clone();
-                    if !parsed.iter().all(|(_,dim_other)| &dim == dim_other) {
-                        // ragged tensors are not allowed.
-                        failed!();
-                    }
-                    dim.push(parsed.len());
-                    (parsed.into_iter().flat_map(|(data,_)| data).collect(), dim)
-                }
-            }
-        }
-    }
-    parse_rule! {
-        /// Parse anonymous function expressions.
-        ///
-        /// ```plaintext
-        /// <expr_anonfunc> = "{" ( (<identifier> (":" <type>)? )","+ (",")? "->")? <expr> "}"
-        /// ```
-        fn parse_expr_anonfunc(tokens) -> _matched: ASTExpression, _failed: None {
-            // "{"
-            try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
-
-            let params = tokens.next_parse(parse_expr_anonfunc_parameters).unwrap_or(vec![]);
-            let block = tokens.next_parse(parse_block)?;
-
-            // "}"
-            try_match!(tokens.next_skip_break(), SLToken::BracketClose(BracketType::Curly))?;
-
-            ASTExpression::AnonymousFunction { params, block }
-        }
-    }
-    parse_rule! {
-        fn parse_expr_anonfunc_parameters(tokens) -> _matched: Vec<(IdentStr,Option<RMValueType>)>, _failed: None {
-            tokens.next_parse(|tokens| {
-                parse_list(
-                    tokens,
-                    &|mut tokens| {
-                        // TODO merge function parameter matchers
-                        let param = tokens.next_parse(parse_ident_optionally_typed)?;
-                        Some((tokens, param))
-                    },
-                    |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
-                    |token| matches!(token, SLToken::Separator(SeparatorType::ThinArrowRight)),
-                )
-            })?
-        }
-    }
-    parse_rule! {
-        /// Parse literal values in expressions, such as `133.45` and `"hello world"`
-        fn parse_expr_literal(tokens) -> _matched: ASTLiteral, failed: None {
-            match tokens.next_skip_break()? {
-                SLToken::Float { value, imaginary: false } => ASTLiteral::Float(*value),
-                SLToken::Float { value, imaginary: true } => ASTLiteral::Complex(Complex64::new(0.0, *value)),
-                SLToken::Int { value, imaginary: false } => ASTLiteral::Int(*value),
-                SLToken::Int { value, imaginary: true } => ASTLiteral::Complex(Complex64::new(0.0, *value as f64)),
-                SLToken::Bool(value) => ASTLiteral::Bool(*value),
-                // TODO strings
-                _ => failed!(),
-            }
-        }
-    }
-    parse_rule! {
-        /// Parse identifiers in expressions.
-        ///
-        /// Identifiers are named variables and funcitons.
-        fn parse_expr_identifier(tokens) -> _matched: IdentStr, failed: None {
-            match tokens.next_skip_break()? {
-                SLToken::Identifier(str) => {
-                    str.to_string()
-                }
-                _ => failed!(),
-            }
-        }
-    }
-
-    /*
-
-
-
-    <expr_sub_blocking> = (
-        | "if" <expr> <curly_block> ("elif" <expr> <curly_block>)* ("else" <curly_block>)?
-        | "loop" <curly_block>
-        | "for" <ident> in <expr> <curly_block>
-        | "" <ident> in <expr> <curly_block>
-    )
-
-    <curly_block> = "{" <block> "}"
-
-    */
-
-    parse_rule! {
-        fn parse_expr_sub_blocking(tokens) -> _matched: ASTExpression, failed: None {
-            let keyword = match tokens.next_skip_break()? {
-                SLToken::Keyword(k) => Some(*k),
-                _ => None,
-            }?;
-
-            match keyword {
-                Keyword::ConditionalIf => tokens.next_parse(parse_if)?,
-                Keyword::LoopFor => tokens.next_parse(parse_for)?,
-                Keyword::LoopForever => tokens.next_parse(parse_loop)?,
-                _ => failed!(),
-            }
-        }
-    }
-    parse_rule! {
-        /// ... starts tokenizing after the `if` keyword
-        fn parse_if(tokens) -> _matched: ASTExpression, _failed: None {
-            let condition = Box::new(tokens.next_parse(parse_expr_no_anonfunc_postfix)?);
-            let block = tokens.next_parse(parse_curly_block)?;
-
-            let mut elifs = vec![];
-            while try_match!(tokens.peek_skip_break(), SLToken::Keyword(Keyword::ConditionalIf) => panic!("REMOVED")).is_some() {
-                tokens.next_skip_break(); // actualize the peek.
-                let elif_condition = tokens.next_parse(parse_expr_no_anonfunc_postfix)?;
-                let elif_block = tokens.next_parse(parse_curly_block)?;
-                elifs.push((elif_condition, elif_block));
-            }
-            let else_block = if try_match!(tokens.peek_skip_break(), SLToken::Keyword(Keyword::ConditionalElse)).is_some() {
-                tokens.next_skip_break(); // actualize the peek.
-                Some(tokens.next_parse(parse_curly_block)?)
-            } else {
-                None
-            };
-            ASTExpression::Conditional { condition, block, elifs, else_block }
-        }
-    }
-    parse_rule! {
-        /// ... starts tokenizing after the `loop` keyword
-        fn parse_loop(tokens) -> _matched: ASTExpression, _failed: None {
-            // `$block` code to loop
-            let block = tokens.next_parse(parse_curly_block)?;
-
-            ASTExpression::Loop { block }
-        }
-    }
-    parse_rule! {
-        /// ... starts tokenizing after the `for` keyword
-        fn parse_for(tokens) -> _matched: ASTExpression, _failed: None {
-            // declaration for loop variable
-            let loop_var = tokens.next_parse(parse_ident_optionally_typed)?;
-
-            // `in` keyword
-            try_match!(tokens.next_skip_break(), SLToken::Keyword(Keyword::In))?;
-
-            // `$expr` data to source loop data from
-            let iterable = Box::new(tokens.next_parse(parse_expr)?);
-
-            // `$block` code to loop
-            let block = tokens.next_parse(parse_curly_block)?;
-
-            ASTExpression::For { loop_var, iterable, block }
-        }
-    }
-    parse_rule! {
-        fn parse_flow_control_data(tokens) -> _matched: Option<ASTExpression>, _failed: None {
-            if tokens.peek_is_hard_break() {
-                None
-            } else {
-                tokens.next_parse(parse_expr)
-            }
-        }
-    }
-    parse_rule! {
-        fn parse_flow_controls(tokens) -> _matched: ASTExpression, _failed: None {
-            match tokens.next_skip_break()? {
-                SLToken::Keyword(Keyword::Return) => ASTExpression::Return(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
-                SLToken::Keyword(Keyword::LoopBreak) => ASTExpression::Break(tokens.next_parse(parse_flow_control_data)?.map(Box::new)),
-                SLToken::Keyword(Keyword::LoopContinue) => ASTExpression::Continue,
-                _ => _failed!(),
-            }
-        }
-    }
-
-    parse_rule! {
-        fn parse_ident(tokens) -> _matched: IdentStr, _failed: None {
-            try_match!(tokens.next_skip_break(),
-                SLToken::Identifier(key) => *key
-            )?.to_string()
-        }
-    }
-
-    parse_rule! {
-        fn parse_func_def(tokens) -> _matched: ASTExpression, _failed: None {
-            let doc_comment = tokens.next_parse(parse_doc_comment);
-
-            // function keyword `fn`
-            try_match!(tokens.next_skip_break(), SLToken::Keyword(Keyword::FunctionDefinition))?;
-
-            // name `$ident`
-            let ident: IdentStr = tokens.next_parse(parse_ident)?;
-
-            // parameters `( $( $expr ),* )`
-            try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Paren))?;
-            let params = tokens.next_parse(|tokens| {
-                parse_list(
-                    tokens,
-                    &|mut tokens| {
-                        let param = tokens.next_parse(parse_ident_typed)?;
-                        Some((tokens, param))
-                    },
-                    |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
-                    |token| matches!(token, SLToken::BracketClose(BracketType::Paren)),
-                )
-            })?;
-            // TODO function return type
-            let return_ty = None;
-
-            // content block `{ $block }`
-            let block = tokens.next_parse(parse_curly_block)?;
-
-            ASTExpression::FunctionDefinition { doc_comment, ident, params, block, return_ty }
-        }
-    }
-
-    parse_rule! {
-        /// Match for the right hand side of an assignment
-        ///
-        /// `= $expr`
-        fn parse_var_assignment_rhs(tokens) -> _matched: ASTExpression, _failed: None {
-            // `=`
-            // try_match!(tokens.next_skip_break(), SLToken::Operator(SLOperator::Assign))?;
-
-            // assigned value `$expr`
-            tokens.next_parse(parse_expr)?
-        }
-    }
-
-    parse_rule! {
-        fn parse_var_def(tokens) -> _matched: ASTExpression, failed: None {
-            let doc_comment = tokens.next_parse(parse_doc_comment);
-
-            // `let` / `const` keyword
-            let writable = match tokens.next_skip_break()? {
-                SLToken::Keyword(Keyword::VarDeclare) => true,
-                SLToken::Keyword(Keyword::VarConstDeclare) => false,
-                _ => failed!(),
-            };
-
-            // name `$ident` and type
-            let (ident, ty) = tokens.next_parse(parse_ident_optionally_typed)?;
-
-            // optional initial value
-            let initial_value = tokens.next_parse(parse_var_assignment_rhs).map(Box::new);
-
-            ASTExpression::VarDeclare {
-                doc_comment,
-                ident,
-                writable,
-                initial_value,
-                ty,
-            }
-        }
-    }
-
-    parse_rule! {
-        fn parse_var_assign(tokens) -> _matched: ASTExpression, _failed: None {
-            // variable access expr (ex. `var.abc[34]`)
-            let access_expr = tokens.next_parse(parse_varaccessexpr)?;
-            // assigned value
-            let value = Box::new(tokens.next_parse(parse_var_assignment_rhs)?);
-
-            ASTExpression::Assign { target: access_expr, value }
-        }
-    }
-
-    parse_rule! {
-        pub fn parse_struct(tokens) -> _matched: ASTExpression, _failed: None {
-            let doc_comment = tokens.next_parse(parse_doc_comment);
-            
-            try_match!(tokens.next_skip_break(), SLToken::Keyword(Keyword::StructDefinition))?;
-
-            let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(ident) => ident)?.to_string();
-
-            // TODO type parameters
-
-            let mut properties = vec![];
-            if let Some(SLToken::BracketOpen(BracketType::Curly)) = tokens.peek_skip_break() {
-                tokens.next_skip_break();
-
-                while let Some(SLToken::Identifier(_)) = tokens.peek_skip_break() {
-                    let doc_comment = tokens.next_parse(parse_doc_comment);
-                    let (ident, ty) = tokens.next_parse(parse_ident_typed)?;
-                    properties.push((ident, doc_comment, ty));
-                }
-
-                try_match!(tokens.next_skip_break(), SLToken::BracketClose(BracketType::Curly))?;
-            }
-
-            ASTExpression::StructDefinition { doc_comment, ident, properties }
-        }
-    }
-
-    parse_rule! {
-        pub fn parse_struct_instance_curly(tokens) -> _matched: ASTExpression, failed: None {
-            let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(ident) => ident)?.to_string();
-
-            try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
-
-            let mut properties = vec![];
-
-            let mut next = tokens.next_skip_break();
-            while let Some(SLToken::Identifier(ident)) = next {
-                try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon))?;
-
-                
-                let expr = tokens.next_parse(parse_expr)?;
-                properties.push((ident.to_string(), expr));
-                
-                tokens.next_parse(|mut tokens| {
-                    let res = try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Comma))?;
-                    Some((tokens, res))
-                }); // optional comma
-                next = tokens.next_skip_break();
-            }
-            try_match!(next, SLToken::BracketClose(BracketType::Curly))?;
-
-            if properties.len() == 0 {
-                failed!();
-            }
-
-            ASTExpression::LiteralStructInit { ident, properties: LiteralStructInit::Struct(properties) }
-        }
-    }
-
-    parse_rule! {
-        fn parse_doc_comment(tokens) -> _matches: String, failed: None {
-            let mut x = vec![];
-            while let Some((content, is_documenting)) = tokens.next_parse(|mut tokens| {
-                let content = try_match!(tokens.next_skip_whitespace(),
-                    SLToken::Comment { content, documenting } => (*content, *documenting),
-                )?;
-                Some((tokens, content))
-            }) {
-                if !is_documenting {
-                    continue;
-                }
-                if content.starts_with(&"///") {
-                    // single line doc comment
-                    x.push(content.strip_prefix("///").unwrap().trim());
-                } else {
-                    // multiline doc comment
-                    let mut sublist = content
-                        .strip_prefix("/**").unwrap()
-                        .strip_suffix("/").unwrap() // intentionally omitting asterisk here so it has a chance to be picked up by `strip_asterisk`
-                        .split("\n");
-                    let strip_asterisk = sublist.clone().skip(1).all(|it| it.trim_start().starts_with("*"));
-
-                    if let Some(first_elt) = sublist.next() {
-                        x.push(first_elt.trim());
-                    }
-                    for elt in sublist {
-                        x.push(if strip_asterisk {
-                            elt.trim_start().strip_prefix("*").unwrap().trim()
+                } {
+                    Some(SLToken::Space { hard }) => {
+                        if require_soft_break && *hard {
+                            return None;
                         } else {
-                            elt.trim()
-                        });
+                            continue;
+                        }
+                    }
+                    Some(SLToken::Comment { documenting, .. }) => {
+                        continue;
+                    }
+                    token => {
+                        self.prev_index = prev_index;
+                        return token;
                     }
                 }
             }
-            if x.is_empty() {
-                failed!()
-            } else {
-                x.join("\n").trim().to_string()
+        } else {
+            None
+        };
+        self.prev_index = prev_index;
+        out
+    }
+
+    /// Match the next token (not including spaces), returning Err if the end is hit.
+    fn next(&mut self) -> ParseResult<&'a SLToken<'token_content>> {
+        match self.try_next() {
+            Some(v) => Ok(v),
+            None => {
+                self.diagnostics.push(ParseDiagnostic::UnexpectedEnd);
+                Err(false)
             }
         }
     }
-}
+    /// Peek the next token (not including spaces), returning None if the end is hit.
+    fn peek_next(&mut self) -> Option<&'a SLToken<'token_content>> {
+        let require_soft_break = self.take_require_soft_break();
 
-mod varaccessexpr {
-    use crate::{
-        common::IdentStr,
-        parse::{
-            ast::{ASTExpression, ASTVarAccessExpression},
-            parser::{expr::parse_expr, parse_list, Tokens},
-            tokenization::{BracketType, SLToken, SeparatorType},
-        },
-    };
+        let mut index = self.index;
 
-    parse_rule! {
-        pub fn parse_varaccessexpr(tokens) -> _matched: ASTVarAccessExpression, _failed: None {
-            let ident: IdentStr = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string();
-
-            let  access_expr = ASTVarAccessExpression::Var { ident };
-            // TODO matching more complex access expressions
-
-            access_expr
-        }
-    }
-
-    enum VarAccessExprPostfix {
-        Indexing(Vec<ASTExpression>),
-    }
-    impl VarAccessExprPostfix {
-        fn apply(self, child: ASTExpression) -> ASTVarAccessExpression {
-            match self {
-                Self::Indexing(indices) => ASTVarAccessExpression::Index {
-                    object: Box::new(child),
-                    indices,
-                },
-            }
-        }
-    }
-
-    parse_rule! {
-        fn parse_varaccessexpr_postfix(tokens) -> matched: VarAccessExprPostfix, failed: None {
-            // only skipping soft breaks, postfixes dangling after newlines are hard
-            // to spot or often not actually meant to be postfixes.
-            match tokens.next_skip_soft_break()? {
-                SLToken::BracketOpen(BracketType::Square) => {
-                    let indices = tokens.next_parse(|tokens| parse_list(tokens,
-                        &parse_expr,
-                        |token| matches!(token, SLToken::Separator(SeparatorType::Comma)),
-                        |token| matches!(token, SLToken::BracketClose(BracketType::Square)),
-                    ))?;
-                    let result = VarAccessExprPostfix::Indexing(indices);
-                    matched!(result);
+        let out = if index < self.tokens.len() {
+            loop {
+                match {
+                    if index < self.tokens.len() {
+                        index += 1;
+                        Some(&self.tokens[index - 1])
+                    } else {
+                        None
+                    }
+                } {
+                    Some(SLToken::Space { hard }) => {
+                        if require_soft_break && *hard {
+                            return None;
+                        } else {
+                            continue;
+                        }
+                    }
+                    Some(SLToken::Comment { .. }) => {
+                        continue;
+                    }
+                    token => return token,
                 }
-                _ => failed!(),
+            }
+        } else {
+            None
+        };
+        out
+    }
+    /// Peek the previous token (not including spaces), returning None if the start is hit.
+    fn peek_prev(&mut self) -> Option<&'a SLToken<'token_content>> {
+        let require_soft_break = self.take_require_soft_break();
+
+        let mut index = self.index;
+
+        let out = if index < self.tokens.len() {
+            loop {
+                match {
+                    if index > 0 {
+                        index -= 1;
+                        Some(&self.tokens[index + 1])
+                    } else {
+                        None
+                    }
+                } {
+                    Some(SLToken::Space { hard }) => {
+                        if require_soft_break && *hard {
+                            return None;
+                        } else {
+                            continue;
+                        }
+                    }
+                    Some(SLToken::Comment { .. }) => {
+                        continue;
+                    }
+                    token => return token,
+                }
+            }
+        } else {
+            None
+        };
+        out
+    }
+
+    fn rewind(&mut self) {
+        self.index = self.prev_index;
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
+    // Utility functions that match groups of tokens.
+    //
+
+    #[inline(always)]
+    fn parse_optional_result<
+        T,
+        I,
+        F1: FnOnce(&mut Self) -> Option<I>,
+        F2: FnOnce(&mut Self, I) -> ParseResult<T>,
+    >(
+        &mut self,
+        cb1: F1,
+        cb2: F2,
+    ) -> Option<ParseResult<T>> {
+        let revert = self.get_state();
+        if let Some(intermediate) = cb1(self) {
+            Some(cb2(self, intermediate))
+        } else {
+            self.revert_state(revert);
+            None
+        }
+    }
+
+    fn get_state(&mut self) -> (usize, usize) {
+        (self.prev_index, self.index)
+    }
+    fn revert_state(&mut self, (prev_index, index): (usize, usize)) {
+        self.index = index;
+        self.prev_index = prev_index;
+        self.require_soft_break = false;
+    }
+
+    #[inline(always)]
+    fn lookahead<T, F: FnOnce(&mut Self) -> Option<T>>(&mut self, cb: F) -> Option<T> {
+        let revert = self.get_state();
+        let res = cb(self);
+        self.revert_state(revert);
+        res
+    }
+
+    #[inline(always)]
+    fn parse_optional<T, F: FnOnce(&mut Self) -> Option<T>>(&mut self, cb: F) -> Option<T> {
+        let revert = self.get_state();
+        let res = cb(self);
+        if res.is_none() {
+            self.revert_state(revert);
+        }
+        res
+    }
+
+    fn try_else_discard_diagnostics<T, F: Fn(&mut Self) -> ParseResult<T>>(
+        &mut self,
+        cb: F,
+    ) -> Option<T> {
+        let revert = self.get_state();
+        let revert_diagnostic_len = self.diagnostics.len();
+        let res = cb(self);
+        if res.is_err() {
+            self.revert_state(revert);
+            self.diagnostics.drain(revert_diagnostic_len..);
+        }
+        res.ok()
+    }
+
+    fn parse_until<T: Debug, F: Fn(&mut Self) -> ParseResult<T>>(
+        &mut self,
+        parse: F,
+        separator: SLToken<'static>,
+        terminator: SLToken<'static>,
+        separator_missing_diagnostic: ParseDiagnostic,
+    ) -> ParseResult<Vec<T>> {
+        let mut output = vec![];
+        if self.peek_next() == Some(&terminator) {
+            self.next()?;
+            return Ok(output);
+        }
+        'outer: loop {
+            match parse(self) {
+                Ok(v) => {
+                    output.push(v);
+
+                    match self.next()? {
+                        token if token == &separator => {
+                            if self.peek_next() == Some(&terminator) {
+                                self.next()?;
+                                break 'outer;
+                            }
+                        }
+                        token if token == &terminator => {
+                            break 'outer;
+                        }
+                        _ => {
+                            self.diagnostics.push(separator_missing_diagnostic);
+                            // skip until we find a separator or terminator
+                            loop {
+                                let next = self.next()?;
+                                if next == &separator {
+                                    if self.peek_next() == Some(&terminator) {
+                                        self.next()?;
+                                        break 'outer;
+                                    }
+                                    continue 'outer;
+                                }
+                                if next == &terminator {
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(recoverable) => {
+                    if !recoverable {
+                        return Err(false);
+                    }
+                    loop {
+                        let next = self.next()?;
+                        if next == &separator {
+                            if self.peek_next() == Some(&terminator) {
+                                self.next()?;
+                                break 'outer;
+                            }
+                            continue 'outer;
+                        }
+                        if next == &terminator {
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
+    // Utility functions that match simple tokens.
+    //
+
+    fn try_doc_comment(&mut self) -> Option<String> {
+        self.parse_optional(|t| loop {
+            match t.try_next_or_whitespace()? {
+                SLToken::Space { .. } => continue,
+                SLToken::Comment {
+                    content,
+                    documenting,
+                } => {
+                    if *documenting {
+                        break Some(content.to_string());
+                    } else {
+                        continue;
+                    }
+                }
+                _ => break None,
+            }
+        })
+    }
+
+    fn try_keyword(&mut self, keyword: Keyword) -> Option<()> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::Keyword(matched_keyword) if *matched_keyword == keyword => Some(()),
+            _ => None,
+        })
+    }
+    fn try_any_keyword(&mut self) -> Option<Keyword> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::Keyword(keyword) => Some(*keyword),
+            _ => None,
+        })
+    }
+    fn keyword(&mut self, keyword: Keyword) -> ParseResult<()> {
+        match self.next()? {
+            SLToken::Keyword(matched_keyword) if *matched_keyword == keyword => Ok(()),
+            _ => {
+                self.rewind();
+                self.diagnostics
+                    .push(ParseDiagnostic::ExpectedKeyword(keyword));
+                Err(true)
             }
         }
     }
-}
 
-parse_rule! {
-    fn parse_value_type_ident(tokens) -> _matched: RMValueType, _failed: None {
-        let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(ident) => *ident)?;
+    fn try_symbol(&mut self, symbol: SLSymbol) -> Option<()> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::Symbol(matched_symbol) if *matched_symbol == symbol => Some(()),
+            _ => None,
+        })
+    }
+    fn try_any_symbol(&mut self) -> Option<SLSymbol> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::Symbol(symbol) => Some(*symbol),
+            _ => None,
+        })
+    }
+    fn symbol(&mut self, symbol: SLSymbol) -> ParseResult<()> {
+        match self.next()? {
+            SLToken::Symbol(matched_symbol) if *matched_symbol == symbol => Ok(()),
+            _ => {
+                self.rewind();
+                self.diagnostics
+                    .push(ParseDiagnostic::ExpectedSymbol(symbol));
+                Err(true)
+            }
+        }
+    }
 
-        match ident {
+    fn try_separator(&mut self, separator: SeparatorType) -> Option<()> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::Separator(matched_separator) if *matched_separator == separator => Some(()),
+            _ => None,
+        })
+    }
+    fn separator(&mut self, separator: SeparatorType) -> ParseResult<()> {
+        match self.next()? {
+            SLToken::Separator(matched_separator) if *matched_separator == separator => Ok(()),
+            _ => {
+                self.rewind();
+                self.diagnostics
+                    .push(ParseDiagnostic::ExpectedSeparator(separator));
+                Err(true)
+            }
+        }
+    }
+    fn try_any_separator(&mut self) -> Option<SeparatorType> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::Separator(separator) => Some(*separator),
+            _ => None,
+        })
+    }
+
+    fn try_ident(&mut self) -> Option<IdentStr> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::Identifier(ident) => Some(ident.to_string()),
+            _ => None,
+        })
+    }
+    fn ident(&mut self) -> ParseResult<IdentStr> {
+        match self.next()? {
+            SLToken::Identifier(ident) => Ok(ident.to_string()),
+            _ => {
+                self.rewind();
+                self.diagnostics.push(ParseDiagnostic::ExpectedIdentifier);
+                Err(true)
+            }
+        }
+    }
+
+    fn try_any_bracket_open(&mut self) -> Option<BracketType> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::BracketOpen(bracket_type) => Some(*bracket_type),
+            _ => None,
+        })
+    }
+    fn try_bracket_open(&mut self, bracket_type: BracketType) -> Option<()> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::BracketOpen(matched_bracket) if *matched_bracket == bracket_type => Some(()),
+            _ => None,
+        })
+    }
+    fn try_bracket_close(&mut self, bracket_type: BracketType) -> Option<()> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::BracketClose(matched_bracket) if *matched_bracket == bracket_type => Some(()),
+            _ => None,
+        })
+    }
+    fn bracket_close(&mut self, bracket_type: BracketType) -> ParseResult<()> {
+        match self.next()? {
+            SLToken::BracketClose(matched_bracket) if *matched_bracket == bracket_type => Ok(()),
+            _ => {
+                self.rewind();
+                self.diagnostics
+                    .push(ParseDiagnostic::ExpectedBracketClose(bracket_type));
+                Err(true)
+            }
+        }
+    }
+    fn bracket_open(&mut self, bracket_type: BracketType) -> ParseResult<()> {
+        match self.next()? {
+            SLToken::BracketOpen(matched_bracket) if *matched_bracket == bracket_type => Ok(()),
+            _ => {
+                self.rewind();
+                self.diagnostics
+                    .push(ParseDiagnostic::ExpectedBracketOpen(bracket_type));
+                Err(true)
+            }
+        }
+    }
+
+    fn try_literal(&mut self) -> Option<ASTLiteral> {
+        self.parse_optional(|t| match t.try_next()? {
+            SLToken::Float {
+                value,
+                imaginary: false,
+            } => Some(ASTLiteral::Float(*value)),
+            SLToken::Float {
+                value,
+                imaginary: true,
+            } => Some(ASTLiteral::Complex(Complex64::new(0.0, *value))),
+            SLToken::Int {
+                value,
+                imaginary: false,
+            } => Some(ASTLiteral::Int(*value)),
+            SLToken::Int {
+                value,
+                imaginary: true,
+            } => Some(ASTLiteral::Complex(Complex64::new(0.0, *value as f64))),
+            SLToken::Bool(value) => Some(ASTLiteral::Bool(*value)),
+            // TODO strings
+            _ => None,
+        })
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
+    // AST generation
+    //
+
+    /// parses a code block, ending at EOF or close curly brace, depending on if it's the top level.
+    ///
+    /// NOTE(TOP_LEVEL=false): **Doesn't** match initiating curly brace, but **does** match closing curly brace.
+    fn parse_block<const TOP_LEVEL: bool>(&mut self) -> ParseResult<ASTBlock> {
+        let mut out = vec![];
+
+        loop {
+            if TOP_LEVEL {
+                if self.peek_next().is_none() {
+                    break;
+                    // reached end
+                }
+            } else {
+                if self.try_bracket_close(BracketType::Curly).is_some() {
+                    break;
+                    // reached end
+                }
+                if self.peek_next().is_none() {
+                    self.diagnostics.push(ParseDiagnostic::UnexpectedEnd);
+                    return Err(false);
+                }
+            }
+            let expr = match self.parse_expr::</* disallow range literals */false, /* allow block postfixes */true>()
+            {
+                Ok(v) => v,
+                Err(recoverable) => {
+                    if recoverable {
+                        continue;
+                    } else {
+                        return Err(false);
+                    }
+                }
+            };
+            out.push(expr);
+        }
+
+        Ok(out)
+    }
+    /// Parses a code block surrounded by curly braces.
+    ///
+    /// `{ $($expr)* }`
+    fn parse_curly_block(&mut self) -> ParseResult<ASTBlock> {
+        self.bracket_open(BracketType::Curly)?;
+        let block = self.parse_block::</* not top level */false>();
+        block
+    }
+
+    fn parse_expr<const ALLOW_RANGE_LITERAL: bool, const ALLOW_BLOCK_POSTFIX: bool>(
+        &mut self,
+    ) -> ParseResult<ASTExpression> {
+        if ALLOW_RANGE_LITERAL {
+            // ranges go `start? : step : end?` or `start? : end?`
+            if self.try_separator(SeparatorType::Colon).is_some() {
+                // `: expr_0 ...`, range with no start bound
+                let expr_0 = self.parse_expr::<false, ALLOW_BLOCK_POSTFIX>()?;
+                if self.try_separator(SeparatorType::Colon).is_some() {
+                    // `: expr_0 : expr_1`, range with end bound, and stride
+                    let expr_1 = self.parse_expr::<false, ALLOW_BLOCK_POSTFIX>()?;
+                    Ok(ASTExpression::Range {
+                        start: None,
+                        step: Some(Box::new(expr_0)),
+                        end: Some(Box::new(expr_1)),
+                    })
+                } else {
+                    // `: expr_0 :`, range with stride only
+                    Ok(ASTExpression::Range {
+                        start: None,
+                        step: Some(Box::new(expr_0)),
+                        end: None,
+                    })
+                }
+            } else {
+                let expr_0 = self.parse_expr::<false, ALLOW_BLOCK_POSTFIX>()?;
+                if self.try_separator(SeparatorType::Colon).is_some() {
+                    // `expr_0 : expr_1 ...`, range with start bound
+                    let expr_1 = self.parse_expr::<false, ALLOW_BLOCK_POSTFIX>()?;
+                    if self.try_separator(SeparatorType::Colon).is_some() {
+                        // `expr_0 : expr_1 : expr_2`, range with start, end, and stride
+                        let expr_2 = self.parse_expr::<false, ALLOW_BLOCK_POSTFIX>()?;
+                        Ok(ASTExpression::Range {
+                            start: Some(Box::new(expr_0)),
+                            step: Some(Box::new(expr_1)),
+                            end: Some(Box::new(expr_2)),
+                        })
+                    } else {
+                        // `expr_0 : expr_1`, range with start and end bounds
+                        Ok(ASTExpression::Range {
+                            start: Some(Box::new(expr_0)),
+                            step: None,
+                            end: Some(Box::new(expr_1)),
+                        })
+                    }
+                } else {
+                    // simple expression
+                    Ok(expr_0)
+                }
+            }
+        } else {
+            self.parse_expr_allow_infix::<ALLOW_BLOCK_POSTFIX>()
+        }
+    }
+
+    fn parse_expr_allow_infix<const ALLOW_BLOCK_POSTFIX: bool>(
+        &mut self,
+    ) -> ParseResult<ASTExpression> {
+        let first_expr = self.parse_expr_no_infix::<ALLOW_BLOCK_POSTFIX>()?;
+
+        let mut as_infix = vec![ShuntingYardObj::Expr(first_expr)];
+        while let Some(op) = self.parse_optional(|t| {
+            let op = t.try_any_symbol()?.to_operator()?;
+            if op.is_infix() {
+                Some(op)
+            } else {
+                None
+            }
+        }) {
+            let expr = self.parse_expr_no_infix::<ALLOW_BLOCK_POSTFIX>()?;
+            as_infix.push(ShuntingYardObj::Op(op));
+            as_infix.push(ShuntingYardObj::Expr(expr));
+        }
+
+        Ok(treeify_infix(&mut as_infix.into_iter(), &|op, a, b| {
+            ASTExpression::BinaryOp {
+                op,
+                lhs: Box::new(a),
+                rhs: Box::new(b),
+            }
+        }))
+    }
+
+    fn parse_expr_no_infix<const ALLOW_BLOCK_POSTFIX: bool>(
+        &mut self,
+    ) -> ParseResult<ASTExpression> {
+        let prefixes = std::iter::from_fn(|| self.try_parse_expr_prefix()).collect::<Vec<_>>();
+
+        let mut expr = match parse_first!(self;
+
+
+
+            // -- literals -- //
+            try_parse_anonfunc => |func| ASTExpression::AnonymousFunction(func?),
+            try_literal => |literal| ASTExpression::Literal(literal),
+            // TODO array/tensor/matrix literals
+
+            // -- local variables -- //
+            try_parse_var_declare_expr => |expr| expr?,
+            try_parse_var_assign_expr => |expr| expr?,
+
+            // -- identifiers -- //
+            try_ident => |ident| ASTExpression::Ident(ident),
+
+
+            // -- control flow -- //
+            try_parse_conditional => |expr| expr?,
+            try_parse_infinite_loop => |expr| expr?,
+            try_parse_for => |expr| expr?,
+            try_parse_while => |expr| expr?,
+            try_parse_control_word => |expr| expr,
+
+            // -- grouping -- //
+            try_parse_expr_parentheses => |expr| expr?,
+
+            // -- static definitions -- //
+            try_parse_static_function_declaration => |it| it?,
+            try_parse_static_struct_declaration => |it| it?,
+
+        ) {
+            Some(v) => v,
+            None => {
+                self.diagnostics.push(ParseDiagnostic::ExpectedExpr);
+                self.try_next_or_whitespace(); // advance to restart parsing on the next token
+                return Err(true);
+            }
+        };
+
+        let postfixes = std::iter::from_fn(|| self.try_parse_expr_postfix::<ALLOW_BLOCK_POSTFIX>())
+            .collect::<Vec<_>>();
+
+        for affix in postfixes.into_iter().chain(prefixes.into_iter().rev()) {
+            expr = match affix {
+                Ok(ExprAffix::Op(op)) => ASTExpression::UnaryOp {
+                    op,
+                    value: Box::new(expr),
+                },
+                Ok(ExprAffix::Compound(contents)) => ASTExpression::CompoundPostfix {
+                    target: Box::new(expr),
+                    contents,
+                },
+                Err(recoverable) => {
+                    return Err(recoverable);
+                }
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn try_parse_expr_prefix(&mut self) -> Option<ParseResult<ExprAffix>> {
+        if let Some(op) = self.parse_optional(|t| {
+            let op = t.try_any_symbol()?.to_operator()?;
+            if op.is_prefix() {
+                Some(op)
+            } else {
+                None
+            }
+        }) {
+            Some(Ok(ExprAffix::Op(op)))
+        } else {
+            None
+        }
+    }
+    fn try_parse_expr_postfix<const ALLOW_BLOCK_POSTFIX: bool>(
+        &mut self,
+    ) -> Option<ParseResult<ExprAffix>> {
+        if let Some(op) = self.parse_optional(|t| {
+            // parsing postfix operators //
+            let op = t.try_any_symbol()?.to_operator()?;
+            if op.is_postfix() {
+                Some(op)
+            } else {
+                None
+            }
+        }) {
+            Some(Ok(ExprAffix::Op(op)))
+        } else if self.try_symbol(SLSymbol::PropertyAccess).is_some() {
+            Some(Ok(ExprAffix::Compound(
+                if self.try_bracket_open(BracketType::Curly).is_some() {
+                    // `target.{ ... }` struct data init //
+                    let contents = match self.finish_parse_block_struct_init() {
+                        Ok(v) => v,
+                        Err(recoverable) => return Some(Err(recoverable)),
+                    };
+
+                    ASTCompoundPostfixContents::BlockStructInit(contents)
+                } else if self.try_bracket_open(BracketType::Paren).is_some() {
+                    // `target.( ... )` tuple struct data init //
+                    let args = match self.parse_until(
+                        Self::parse_expr::<true, true>,
+                        SLToken::Separator(SeparatorType::Comma),
+                        SLToken::BracketClose(BracketType::Paren),
+                        ParseDiagnostic::ExpectedSeparator(SeparatorType::Comma),
+                    ) {
+                        Ok(v) => v,
+                        Err(recoverable) => return Some(Err(recoverable)),
+                    };
+                    ASTCompoundPostfixContents::TupleStructInit(args)
+                } else if let Some(ident) = self.try_ident() {
+                    // `target.property` property accesses //
+
+                    ASTCompoundPostfixContents::PropertyAccess(ident)
+                } else {
+                    // undo reading the dot
+                    self.rewind();
+                    return None;
+                },
+            )))
+        } else if let Some(bracket_type) = self.try_any_bracket_open() {
+            Some(Ok(ExprAffix::Compound(match bracket_type {
+                BracketType::Square => {
+                    // `target[index_0, ...]` indexing //
+                    let indices = match self.parse_until(
+                        Self::parse_expr::<true, true>,
+                        SLToken::Separator(SeparatorType::Comma),
+                        SLToken::BracketClose(BracketType::Square),
+                        ParseDiagnostic::ExpectedSeparator(SeparatorType::Comma),
+                    ) {
+                        Ok(v) => v,
+                        Err(recoverable) => return Some(Err(recoverable)),
+                    };
+                    ASTCompoundPostfixContents::Index(indices)
+                }
+                BracketType::Angle => unreachable!(),
+                BracketType::Paren => {
+                    // `target( ... )` function calls //
+                    let args = match self.parse_until(
+                        Self::parse_expr::<true, true>,
+                        SLToken::Separator(SeparatorType::Comma),
+                        SLToken::BracketClose(BracketType::Paren),
+                        ParseDiagnostic::ExpectedSeparator(SeparatorType::Comma),
+                    ) {
+                        Ok(v) => v,
+                        Err(recoverable) => return Some(Err(recoverable)),
+                    };
+                    let callback_block = if ALLOW_BLOCK_POSTFIX {
+                        match self.parse_optional_result(
+                            |t| t.try_bracket_open(BracketType::Curly),
+                            |t, _| t.finish_parse_anonfunc(),
+                        ) {
+                            Some(Ok(cb)) => Some(cb),
+                            Some(Err(recoverable)) => {
+                                if recoverable {
+                                    None
+                                } else {
+                                    return Some(Err(false));
+                                }
+                            }
+                            None => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Multiple consecutive callback blocks are not allowed
+                    if ALLOW_BLOCK_POSTFIX {
+                        match self.consume_illegal_postfix_blocks() {
+                            Ok(_) => {}
+                            Err(recoverable) => {
+                                if recoverable {
+                                    // pass
+                                } else {
+                                    return Some(Err(false));
+                                }
+                            }
+                        }
+                    }
+
+                    ASTCompoundPostfixContents::Call(args, callback_block)
+                }
+                BracketType::Curly => {
+                    // `target{ ... }` callback function shorthand //
+                    if !ALLOW_BLOCK_POSTFIX {
+                        self.rewind();
+                        return None;
+                    }
+                    let cb_expr = match self.finish_parse_anonfunc() {
+                        Ok(v) => v,
+                        Err(recoverable) => return Some(Err(recoverable)),
+                    };
+
+                    // Multiple consecutive callback blocks are not allowed
+                    if ALLOW_BLOCK_POSTFIX {
+                        match self.consume_illegal_postfix_blocks() {
+                            Ok(_) => {}
+                            Err(recoverable) => {
+                                if recoverable {
+                                    // pass
+                                } else {
+                                    return Some(Err(false));
+                                }
+                            }
+                        }
+                    }
+
+                    ASTCompoundPostfixContents::Call(vec![], Some(cb_expr))
+                }
+            })))
+        } else {
+            None
+        }
+    }
+
+    fn consume_illegal_postfix_blocks(&mut self) -> ParseResult<()> {
+        while let Some(k) = self.try_parse_anonfunc() {
+            self.diagnostics
+                .push(ParseDiagnostic::UnexpectedExtraCallbackArgument);
+            k?;
+        }
+        Ok(())
+    }
+
+    fn parse_condition_expr(&mut self) -> ParseResult<ASTExpression> {
+        self.parse_expr::<
+            /* allow range literal (even if it won't get used, it's not going to cause problems) */true,
+            /* disallow block postfix, those will cause problems */false,
+        >()
+    }
+    fn try_parse_conditional(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(
+            |t| {
+                // if ...
+                t.try_keyword(Keyword::ConditionalIf)
+            },
+            |t, _| {
+                // ... $condition { $block } ...
+                let condition = Box::new(t.parse_condition_expr()?);
+                let block = t.parse_curly_block()?;
+
+                let mut elifs = vec![];
+                // ... $( else if $condition { $block } )* ...
+                while let Some(elif) = t.parse_optional_result(
+                    |t| {
+                        t.try_keyword(Keyword::ConditionalElse)?;
+                        t.try_keyword(Keyword::ConditionalIf)
+                    },
+                    |t, _| {
+                        let condition = t.parse_condition_expr()?;
+                        let block = t.parse_curly_block()?;
+
+                        Ok((condition, block))
+                    },
+                ) {
+                    match elif {
+                        Ok(elif) => elifs.push(elif),
+                        Err(recoverable) => {
+                            if recoverable {
+                                let _ = t.try_keyword(Keyword::ConditionalElse); // step forward to avoid infinite looping
+                                let _ = t.try_keyword(Keyword::ConditionalIf); // step forward to avoid infinite looping
+                                break;
+                            } else {
+                                return Err(false);
+                            }
+                        }
+                    }
+                }
+
+                // ... $( else { $block} )?
+                let else_block = if let Some(else_block) = t.parse_optional_result(
+                    |t| t.try_keyword(Keyword::ConditionalElse),
+                    |t, _| t.parse_curly_block(),
+                ) {
+                    match else_block {
+                        Ok(else_block) => Some(else_block),
+                        Err(recoverable) => {
+                            if recoverable {
+                                None
+                            } else {
+                                return Err(false);
+                            }
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                Ok(ASTExpression::Conditional {
+                    condition,
+                    block,
+                    elifs,
+                    else_block,
+                })
+            },
+        )
+    }
+    fn try_parse_infinite_loop(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(
+            |t| {
+                // loop ...
+                t.try_keyword(Keyword::LoopForever)
+            },
+            |t, _| {
+                // ... { $block }
+                let block = t.parse_curly_block()?;
+
+                Ok(ASTExpression::Loop { block })
+            },
+        )
+    }
+    fn try_parse_for(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(
+            |t| t.try_keyword(Keyword::LoopFor),
+            |t, _| todo!("// TODO try_parse_for"),
+        )
+    }
+    fn try_parse_while(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(
+            |t| {
+                // while ...
+                t.try_keyword(Keyword::LoopWhile)
+            },
+            |t, _| {
+                // ... $condition { $block }
+                let condition = Box::new(t.parse_condition_expr()?);
+                let block = t.parse_curly_block()?;
+
+                Ok(ASTExpression::LoopWhile { condition, block })
+            },
+        )
+    }
+    fn try_parse_control_word(&mut self) -> Option<ASTExpression> {
+        self.parse_optional(|t| {
+            Some(match t.try_any_keyword()? {
+                Keyword::LoopContinue => ASTExpression::Continue,
+                Keyword::LoopBreak => ASTExpression::Break(t.require_soft_break().try_else_discard_diagnostics(|t| {
+                    Ok(Box::new(t.parse_expr::</* allow range literal */true, /* allow block postfix */true>()?))
+                })),
+                Keyword::Return => ASTExpression::Return(t.require_soft_break().try_else_discard_diagnostics(|t| {
+                    Ok(Box::new(t.parse_expr::</* allow range literal */true, /* allow block postfix */true>()?))
+                })),
+                _ => return None
+            })
+        })
+    }
+
+    /// Parse the rest of the block struct initialization thing, beginning after the open curly braces.
+    ///
+    /// `target.{ <call here> ... }`
+    fn finish_parse_block_struct_init(&mut self) -> ParseResult<ASTBlockStructInit> {
+        let mut properties = vec![];
+        while let Some(v) = self.parse_optional_result(
+            |t| {
+                // skip commas
+                while let Some(_) = t.try_separator(SeparatorType::Comma) {}
+
+                let ident = t.try_ident()?;
+                Some(ident)
+            },
+            |t, ident| {
+                let expr = if t.try_separator(SeparatorType::Colon).is_some() {
+                    t.parse_expr::</* no range postfix */false, /* allow block postfix */true>()?
+                } else {
+                    ASTExpression::Ident(ident.clone())
+                };
+                Ok((ident, expr))
+            },
+        ) {
+            let (ident, expr) = match v {
+                Ok(v) => v,
+                Err(recoverable) => {
+                    if recoverable {
+                        continue;
+                    } else {
+                        return Err(false);
+                    }
+                }
+            };
+
+            properties.push((ident, expr));
+        }
+
+        // skip commas
+        while let Some(_) = self.try_separator(SeparatorType::Comma) {}
+        {
+            // skip until next closing bracket
+            let needed_skips = !matches!(self.peek_next(), Some(SLToken::BracketClose(_)));
+            while !matches!(self.peek_next(), Some(SLToken::BracketClose(_))) {
+                self.next()?;
+            }
+            if needed_skips {
+                self.diagnostics
+                    .push(ParseDiagnostic::ExpectedBracketClose(BracketType::Curly));
+            }
+        }
+        // cannot recover from missing closing parentheses
+        self.bracket_close(BracketType::Curly)
+            .map_err(|_recoverable| false)?;
+
+        Ok(ASTBlockStructInit { properties })
+    }
+
+    fn try_parse_expr_parentheses(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(
+            |t| {
+                // positive match if we see open parentheses
+                t.try_bracket_open(BracketType::Paren)
+            },
+            |t, _| {
+                // `... expr )`
+                let expr = match t.parse_expr::<true, true>() {
+                    Ok(v) => v,
+                    Err(recoverable) => {
+                        if recoverable {
+                            // skip until the next closing grouping symbol
+                            while !matches!(t.peek_next(), Some(SLToken::BracketClose(_))) {
+                                t.next()?;
+                            }
+                            // recoverable only if we match a closing parentheses
+                            return Err(match t.bracket_close(BracketType::Paren) {
+                                Ok(_) => true,
+                                Err(_) => false,
+                            });
+                        } else {
+                            return Err(false);
+                        }
+                    }
+                };
+                {
+                    // skip until next closing bracket
+                    let needed_skips = !matches!(t.peek_next(), Some(SLToken::BracketClose(_)));
+                    while !matches!(t.peek_next(), Some(SLToken::BracketClose(_))) {
+                        t.next()?;
+                    }
+                    if needed_skips {
+                        t.diagnostics
+                            .push(ParseDiagnostic::ExpectedBracketClose(BracketType::Paren));
+                    }
+                }
+                // cannot recover from missing closing parentheses
+                t.bracket_close(BracketType::Paren)
+                    .map_err(|_recoverable| false)?;
+                Ok(expr)
+            },
+        )
+    }
+
+    fn try_parse_anonfunc(&mut self) -> Option<ParseResult<ASTAnonymousFunction>> {
+        self.try_bracket_open(BracketType::Curly)?;
+        Some(self.finish_parse_anonfunc())
+    }
+    /// parses anonymous functions after the initiating curly paren.
+    /// `{ <call it here> arg_1, arg_2, ... -> ... }`
+    fn finish_parse_anonfunc(&mut self) -> ParseResult<ASTAnonymousFunction> {
+        let params = if self.lookahead_looks_like_anon_func_params() {
+            Some(self.parse_until(
+                Self::parse_ident_optionally_typed,
+                SLToken::Separator(SeparatorType::Comma),
+                SLToken::Separator(SeparatorType::ThinArrowRight),
+                ParseDiagnostic::ExpectedSeparator(SeparatorType::Comma),
+            )?)
+        } else {
+            None
+        };
+
+        let block = self.parse_block::</* not top-level block */false>()?;
+
+        Ok(ASTAnonymousFunction { params, block })
+    }
+    /// Helper function that returns true if the upcoming token sequence is definitely
+    /// the parameter names for an anonymous function.
+    fn lookahead_looks_like_anon_func_params(&mut self) -> bool {
+        self.lookahead(|t| {
+            Some(loop {
+                match t.try_next()? {
+                    SLToken::Separator(SeparatorType::ThinArrowRight) => break true,
+                    SLToken::Identifier(_) => match t.try_next()? {
+                        SLToken::Separator(SeparatorType::Comma) => continue,
+                        SLToken::Separator(SeparatorType::Colon) => break true,
+                        SLToken::Separator(SeparatorType::ThinArrowRight) => break true,
+                        _ => break false,
+                    },
+                    _ => break false,
+                }
+            })
+        })
+        .unwrap_or(false)
+    }
+
+    fn try_parse_value_type_ident(&mut self) -> Option<RMValueType> {
+        let ident = self.try_ident()?;
+
+        Some(match ident.as_str() {
             "bool" => RMValueType::Bool,
             "int" => RMValueType::Int,
             "float" => RMValueType::Float,
             "complex" => RMValueType::Complex,
             "string" => RMValueType::String,
-            ident => RMValueType::Identified(ident.to_string()),
-        }
+            _ => RMValueType::Identified(ident),
+        })
     }
-}
-parse_rule! {
-    fn parse_value_type(tokens) -> _matched: RMValueType, _failed: None {
-        parse_match_first!(tokens;
-            parse_value_type_ident => |it| it,
-        ).expect("// TODO parse more complex types")
+    fn try_parse_value_type(&mut self) -> Option<ParseResult<RMValueType>> {
+        parse_first!(self;
+            try_parse_value_type_ident => |i| Ok(i),
+            // TODO more complex types
+        )
     }
-}
-
-parse_rule! {
-    fn parse_ident_typed(tokens) -> _matched: (IdentStr, RMValueType), _failed: None {
-        // TODO generalized declaration identifier parser (with destructuring, etc.)
-
-        // variable identifier
-        let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string();
-
-        try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon))?;
-        let ty = tokens.next_parse(parse_value_type)?;
-
-        (ident,ty)
+    fn try_parse_type(&mut self) -> Option<ParseResult<RMType>> {
+        // TODO parse RMType properly
+        self.try_parse_value_type()
+            .map(|v| v.map(|v| RMType::Value(v)))
     }
-}
-parse_rule! {
-    fn parse_ident_optionally_typed(tokens) -> _matched: (IdentStr,Option<RMValueType>), _failed: None {
-        // TODO generalized declaration identifier parser (with destructuring, etc.)
 
-        // variable identifier
-        let ident = try_match!(tokens.next_skip_break(), SLToken::Identifier(key) => *key)?.to_string();
+    fn parse_ident_optionally_typed(&mut self) -> ParseResult<ASTOptionallyTypedIdent> {
+        // TODO destructures
+        let ident = self.ident()?;
 
-        let ty = if tokens.next_parse(|mut tokens| {
-            try_match!(tokens.next_skip_break(), SLToken::Separator(SeparatorType::Colon))?;
-            Some((tokens, ()))
-        }).is_some() {
-            // type annotation (must not fail here or it's invalid)
-            Some(tokens.next_parse(parse_value_type)?)
-        } else {
-            // or no type annotation
-            None
+        let ty = match self.parse_optional(|t| {
+            t.try_separator(SeparatorType::Colon)?;
+            t.try_parse_value_type()
+        }) {
+            Some(v) => Some(v?),
+            None => None,
         };
 
-        (ident,ty)
+        Ok(ASTOptionallyTypedIdent { ident, ty })
+    }
+    fn parse_ident_typed(&mut self) -> ParseResult<ASTTypedIdent> {
+        // TODO destructures
+        let ident = self.ident()?;
+
+        self.separator(SeparatorType::Colon)?;
+        let ty = match self.try_parse_value_type() {
+            Some(v) => v?,
+            None => Err(true)?,
+        };
+
+        Ok(ASTTypedIdent { ident, ty })
+    }
+
+    fn try_parse_var_declare_expr(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(|t| {
+            let doc_comment = t.try_doc_comment();
+            // match let and if successful, we are confident this is an assignment expression
+            t.try_keyword(Keyword::VarDeclare)?;
+            // do the rest
+            Some(doc_comment)
+        }, |t,doc_comment| {
+
+                let ASTOptionallyTypedIdent { ident, ty } = t.parse_ident_optionally_typed()?;
+                let writable = true; // TODO add immutable vars
+
+                let initial_value = match t.parse_optional_result(|t| {
+                    t.try_symbol(SLSymbol::Assign)
+                },|t,_|{
+                    t.parse_expr::</* allow range literal */ true, /* allow block postfixes */ true>()
+                }) {
+                    Some(initial_value) => {
+                        Some(Box::new(initial_value?))
+                    }
+                    None => None
+                };
+
+                Ok(ASTExpression::VarDeclare { doc_comment, ident, writable, initial_value, ty })
+        })
+    }
+
+    fn try_parse_var_assign_expr(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(|t| {
+            let target = {
+                // TODO advanced varaccessexpression
+                let ident = t.try_ident()?;
+                ASTVarAccessExpression::Var { ident }
+            };
+            let op = t.try_any_symbol()?.to_assignment_operator()?;
+            Some((target, op))
+        }, |t,(target,op)| {
+            let value = Box::new(t.parse_expr::</* allow range literal */ true, /* allow block postfixes */ true>()?);
+            Ok(ASTExpression::Assign { target, op, value })
+        })
+    }
+
+    /// Parse a function definition.
+    ///
+    /// ```plaintext
+    /// $( $doc_comment )? fn $fn_name ( $( $param ),* ) $( -> $ret_ty )? $(
+    ///     = $fn_body
+    /// )|(
+    ///     { $fn_body }
+    /// )
+    /// ````
+    fn try_parse_static_function_declaration(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(
+            |t| {
+                let doc_comment = t.try_doc_comment();
+                t.try_keyword(Keyword::FunctionDefinition)?;
+                Some(doc_comment)
+            },
+            |t, doc_comment| {
+                let ident = t.ident()?;
+                t.try_bracket_open(BracketType::Paren);
+                let params = t.parse_until(
+                    |t| t.parse_ident_typed(),
+                    SLToken::Separator(SeparatorType::Comma),
+                    SLToken::BracketClose(BracketType::Paren),
+                    ParseDiagnostic::ExpectedSeparator(SeparatorType::Comma),
+                )?;
+
+                let return_ty = match t.parse_optional(|t| {
+                    t.try_separator(SeparatorType::ThinArrowRight);
+                    // TODO return type shorthands
+                    t.try_parse_type()
+                }) {
+                    Some(v) => Some(v?),
+                    None => None,
+                };
+
+                let block = {
+                    let next = t.try_next();
+                    if matches!(next, Some(SLToken::BracketOpen(BracketType::Curly))) {
+                        // { ...
+                        t.parse_block::</* not top-level */false>()?
+                    } else if matches!(next, Some(SLToken::Symbol(SLSymbol::Assign))) {
+                        // = ...
+                        vec![t.parse_expr::</* allow range literals */true,/* allow block postfixes */true>()?]
+                    } else {
+                        t.rewind();
+                        t.diagnostics.push(ParseDiagnostic::ExpectedFunctionBody);
+                        return Err(true);
+                    }
+                };
+
+                Ok(ASTExpression::FunctionDefinition {
+                    doc_comment,
+                    ident,
+                    params,
+                    return_ty,
+                    block,
+                })
+            },
+        )
+    }
+    fn try_parse_static_struct_declaration(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(
+            |t| {
+                let doc_comment = t.try_doc_comment();
+                t.try_keyword(Keyword::StructDefinition)?;
+                Some(doc_comment)
+            },
+            |t, doc_comment| {
+                let ident = t.ident()?;
+
+                // TODO type parameters
+
+                let mut properties = vec![];
+
+                t.bracket_open(BracketType::Curly)?;
+
+                while let Some(v) = t.parse_optional_result(
+                    |t| {
+                        let doc_comment = t.try_doc_comment();
+                        let ident = t.try_ident()?;
+                        Some((doc_comment, ident))
+                    },
+                    |t, (doc_comment, ident)| {
+                        let ty = if t.try_separator(SeparatorType::Colon).is_some() {
+                            Some(t.try_parse_value_type().unwrap_or_else(|| {
+                                t.diagnostics.push(ParseDiagnostic::ExpectedTypeAnnotation);
+                                Err(true)
+                            })?)
+                        } else {
+                            t.diagnostics.push(ParseDiagnostic::ExpectedTypeAnnotation);
+                            None
+                        };
+
+                        let initial = if t.try_symbol(SLSymbol::Assign).is_some() {
+                            Some(t.parse_expr::</* allow range literal */true,/* allow block posfix */true>()?)
+                        } else {
+                            None
+                        };
+                        // TODO deal with initial 
+
+                        let ty = ty.ok_or(true)?;
+                        Ok((ident, doc_comment, ty))
+                    },
+                ) {
+                    match v {
+                        Ok(v) => properties.push(v),
+                        Err(true) => continue,
+                        Err(false) => return Err(false),
+                    }
+                }
+
+                while !matches!(t.peek_next(), Some(SLToken::BracketClose(_))) {
+                    t.next()?;
+                }
+                t.bracket_close(BracketType::Curly)?;
+
+                Ok(ASTExpression::StructDefinition {
+                    doc_comment,
+                    ident,
+                    properties,
+                })
+            },
+        )
     }
 }
 
-parse_rule! {
-    /// Parse a block bounded by curly braces
-    fn parse_curly_block(tokens) -> _matched: ASTBlock, _failed: None {
-        try_match!(tokens.next_skip_break(), SLToken::BracketOpen(BracketType::Curly))?;
-        let block = tokens.next_parse(parse_block)?;
-        try_match!(tokens.next_skip_break(), SLToken::BracketClose(BracketType::Curly))?;
-        block
-    }
+enum ExprAffix {
+    Op(SLOperator),
+    Compound(ASTCompoundPostfixContents),
 }
+/*
 
-///
-/// Parses a list structure from tokens, by matching against a data, separator, and end pattern.
-///
-/// NOTICE: this does not capture the INITIAL token, only separator and ending tokens.
-///
-/// Ex:
-///
-/// ```plaintext
-/// let tokens = parse("1,3,4,5]6,7,8")
-/// parse_list(tokens, &parse_number, |it| matches!(it,COMMA), |it| matches!(it, CLOSE_BRACKET))
-/// ```
-/// returns `vec![1,2,3,4,5]`, tokens = `6,7,8`
-///
-fn parse_list<
-    'a,
-    'b,
-    T,
-    Match: Fn(Tokens<'a, 'b>) -> Option<(Tokens<'a, 'b>, T)>,
-    MatchSep: Fn(&SLToken<'b>) -> bool,
-    MatchEnd: Fn(&SLToken<'b>) -> bool,
->(
-    mut tokens: Tokens<'a, 'b>,
-    fn_match: &Match,
-    fn_match_sep: MatchSep,
-    fn_match_end: MatchEnd,
-) -> Option<(Tokens<'a, 'b>, Vec<T>)> {
-    if fn_match_end(tokens.peek_skip_break()?) {
-        tokens.next_skip_break();
-        return Some((tokens, vec![]));
-    }
+let a =
 
-    let mut contents = vec![];
-    loop {
-        if tokens
-            .peek_skip_break()
-            .map(|v| fn_match_end(v))
-            .unwrap_or(false)
-            && tokens.peek_is_hard_break()
-        {
-            // allow trailing separators if there's a hard break before the end token.
-            break;
-        }
-        contents.push(tokens.next_parse(fn_match)?);
-        let next = tokens.next_skip_break()?;
-        if fn_match_end(next) {
-            break;
-        } else if fn_match_sep(next) {
-            continue;
-        } else {
-            return None;
-        }
-    }
+le t
 
-    Some((tokens, contents))
-}
 
-parse_rule! {
-    fn parse_block(tokens) -> _matched: ASTBlock, _failed: None {
-        let mut exprs = vec![];
+*/
+pub fn parse(tokens: Vec<SLToken>) -> (Result<ASTBlock, ()>, Vec<ParseDiagnostic>) {
+    let mut parser = Tokens::new(&tokens);
 
-        while let Some(statement) = tokens.next_parse(expr::parse_expr)  {
-            exprs.push(statement)
-        }
-
-        exprs
-    }
-}
-
-pub fn parse<'a>(tokens: Vec<SLToken<'a>>) -> Result<ASTBlock, ()> {
-    let mut tokens = Tokens::new(&tokens);
-
-    let res = tokens.next_parse(parse_block).ok_or(());
-
-    if tokens.peek_skip_break().is_some() {
-        println!("!!!!!!!!!!!!!!!!!!!!!!!!!!!! UNUSED TOKENS !!!!!!");
-        while let Some(v) = tokens.next_skip_break() {
-            println!(" - {:?}", v);
-        }
-        Err(())
-    } else {
-        res
-    }
+    let block = parser.parse_block::<true>().map_err(|_| ());
+    (block, parser.diagnostics)
 }
 
 #[cfg(test)]
-mod d {
-    use crate::parse::{parser::Tokens, tokenization::SLToken};
+mod test {
+    use crate::parse::{
+        ast::{ASTExpression, ASTLiteral},
+        ops::SLOperator,
+        parser::ParseDiagnostic,
+        tokenization::{self, SLSymbol, SLToken, SeparatorType},
+    };
+
+    use super::{parse, Tokens};
 
     #[test]
-    fn parser_tokens_advancing_and_peeking() {
-        let a = SLToken::Unknown("a");
-        let b = SLToken::Unknown("b");
-        let c = SLToken::Unknown("c");
-        let space_soft = SLToken::Space { hard: false };
-        let space_hard = SLToken::Space { hard: true };
-        let vv = [a, space_soft, b, space_hard, c];
-        let v = Tokens::new(&vv);
+    fn test_try_next() {
+        let tokens = tokenization::SLTokenizer::new().tokenize("1+ \nabc: \n defg");
+        let mut tokens = Tokens::new(&tokens);
 
-        let mut v0 = v;
-        assert_eq!(v0.peek(), Some(&a));
-        assert_eq!(v0.next(), Some(&a));
-        assert_eq!(v0.next(), Some(&space_soft));
-        assert_eq!(v0.next(), Some(&b));
-        assert_eq!(v0.peek(), Some(&space_hard));
+        assert_eq!(
+            tokens.try_next().copied(),
+            Some(SLToken::Int {
+                value: 1,
+                imaginary: false
+            })
+        );
+        assert_eq!(
+            tokens.try_next().copied(),
+            Some(SLToken::Symbol(SLSymbol::Plus))
+        );
+        assert_eq!(tokens.try_next().copied(), Some(SLToken::Identifier("abc")));
+        assert_eq!(
+            tokens.try_next().copied(),
+            Some(SLToken::Separator(SeparatorType::Colon))
+        );
+        assert_eq!(
+            tokens.try_next().copied(),
+            Some(SLToken::Identifier("defg"))
+        );
+        assert_eq!(tokens.try_next(), None);
+    }
 
-        let mut v1 = v;
+    #[test]
+    fn test_next() {
+        let tokens = tokenization::SLTokenizer::new().tokenize("1+ \nabc: \n defg");
+        let mut tokens = Tokens::new(&tokens);
 
-        assert_eq!(v1.peek_skip_break(), Some(&a));
-        assert_eq!(v1.next_skip_break(), Some(&a));
-        //
-        assert_eq!(v1.peek(), Some(&space_soft));
-        assert_eq!(v1.peek_skip_break(), Some(&b));
-        assert_eq!(v1.next_skip_break(), Some(&b));
-        //
-        assert_eq!(v1.peek(), Some(&space_hard));
-        assert_eq!(v1.peek_skip_break(), Some(&c));
-        assert_eq!(v1.next_skip_break(), Some(&c));
-        //
-        assert_eq!(v1.peek(), None);
-        assert_eq!(v1.peek_skip_break(), None);
+        assert_eq!(
+            tokens.next().copied(),
+            Ok(SLToken::Int {
+                value: 1,
+                imaginary: false
+            })
+        );
+        assert_eq!(tokens.next().copied(), Ok(SLToken::Symbol(SLSymbol::Plus)));
+        assert_eq!(tokens.next().copied(), Ok(SLToken::Identifier("abc")));
+        assert_eq!(
+            tokens.next().copied(),
+            Ok(SLToken::Separator(SeparatorType::Colon))
+        );
+        assert_eq!(tokens.next().copied(), Ok(SLToken::Identifier("defg")));
+        assert_eq!(tokens.next(), Err(false));
 
-        let mut v2 = v;
-        assert_eq!(v2.next_skip_soft_break(), Some(&a));
-        assert_eq!(v2.peek_is_hard_break(), false);
-        assert_eq!(v2.next_skip_soft_break(), Some(&b));
-        assert_eq!(v2.peek_is_hard_break(), true);
-        assert_eq!(v2.next_skip_soft_break(), Some(&space_hard));
-        assert_eq!(v2.next_skip_soft_break(), Some(&c));
+        assert_eq!(
+            &tokens.diagnostics[..],
+            &[ParseDiagnostic::UnexpectedEnd][..]
+        );
+    }
+
+    #[test]
+    fn one_plus_one() {
+        let tokens = tokenization::SLTokenizer::new().tokenize("1 + 1");
+
+        assert_eq!(
+            parse(tokens),
+            (
+                Ok(vec![ASTExpression::BinaryOp {
+                    op: SLOperator::Plus,
+                    lhs: Box::new(ASTExpression::Literal(ASTLiteral::Int(1))),
+                    rhs: Box::new(ASTExpression::Literal(ASTLiteral::Int(1)))
+                }]),
+                vec![],
+            )
+        );
     }
 }

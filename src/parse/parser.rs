@@ -25,7 +25,7 @@ use super::{
         ASTExpression, ASTLiteral, ASTOptionallyTypedIdent, ASTTypedIdent, ASTVarAccessExpression,
     },
     ops::SLOperator,
-    raw_module::{RMType, RMValueType},
+    raw_module::RMType,
     tokenization::{BracketType, Keyword, SLSymbol, SLToken, SeparatorType},
 };
 
@@ -1197,28 +1197,23 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         .unwrap_or(false)
     }
 
-    fn try_parse_value_type_ident(&mut self) -> Option<RMValueType> {
+    fn try_parse_type_ident(&mut self) -> Option<RMType> {
         let ident = self.try_ident()?;
 
         Some(match ident.as_str() {
-            "bool" => RMValueType::Bool,
-            "int" => RMValueType::Int,
-            "float" => RMValueType::Float,
-            "complex" => RMValueType::Complex,
-            "string" => RMValueType::String,
-            _ => RMValueType::Identified(ident),
+            "bool" => RMType::Bool,
+            "int" => RMType::Int,
+            "float" => RMType::Float,
+            "complex" => RMType::Complex,
+            "string" => RMType::String,
+            _ => RMType::Identified(ident),
         })
     }
-    fn try_parse_value_type(&mut self) -> Option<ParseResult<RMValueType>> {
+    fn try_parse_type(&mut self) -> Option<ParseResult<RMType>> {
         parse_first!(self;
-            try_parse_value_type_ident => |i| Ok(i),
+            try_parse_type_ident => |i| Ok(i),
             // TODO more complex types
         )
-    }
-    fn try_parse_type(&mut self) -> Option<ParseResult<RMType>> {
-        // TODO parse RMType properly
-        self.try_parse_value_type()
-            .map(|v| v.map(|v| RMType::Value(v)))
     }
 
     fn parse_ident_optionally_typed(&mut self) -> ParseResult<ASTOptionallyTypedIdent> {
@@ -1227,7 +1222,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
 
         let ty = match self.parse_optional(|t| {
             t.try_separator(SeparatorType::Colon)?;
-            t.try_parse_value_type()
+            t.try_parse_type()
         }) {
             Some(v) => Some(v?),
             None => None,
@@ -1240,7 +1235,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         let ident = self.ident()?;
 
         self.separator(SeparatorType::Colon)?;
-        let ty = match self.try_parse_value_type() {
+        let ty = match self.try_parse_type() {
             Some(v) => v?,
             None => Err(true)?,
         };
@@ -1374,7 +1369,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                     },
                     |t, (doc_comment, ident)| {
                         let ty = if t.try_separator(SeparatorType::Colon).is_some() {
-                            Some(t.try_parse_value_type().unwrap_or_else(|| {
+                            Some(t.try_parse_type().unwrap_or_else(|| {
                                 t.diagnostics.push(ParseDiagnostic::ExpectedTypeAnnotation);
                                 Err(true)
                             })?)

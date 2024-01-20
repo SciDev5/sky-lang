@@ -9,7 +9,7 @@ use crate::{
 
 use super::{
     ops::SLOperator,
-    raw_module::{RMType, RMValueType},
+    raw_module::RMType,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,12 +50,12 @@ non-ambiguous:
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTOptionallyTypedIdent {
     pub ident: IdentStr,
-    pub ty: Option<RMValueType>,
+    pub ty: Option<RMType>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTTypedIdent {
     pub ident: IdentStr,
-    pub ty: RMValueType,
+    pub ty: RMType,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,7 +97,7 @@ pub enum ASTExpression {
         ident: IdentStr,
         writable: bool,
         initial_value: Option<Box<ASTExpression>>,
-        ty: Option<RMValueType>,
+        ty: Option<RMType>,
     },
     Assign {
         target: ASTVarAccessExpression,
@@ -144,7 +144,7 @@ pub enum ASTExpression {
         block: ASTBlock,
     },
     For {
-        loop_var: (IdentStr, Option<RMValueType>),
+        loop_var: (IdentStr, Option<RMType>),
         iterable: Box<ASTExpression>,
         block: ASTBlock,
     },
@@ -163,7 +163,7 @@ pub enum ASTExpression {
     StructDefinition {
         doc_comment: DocComment,
         ident: IdentStr,
-        properties: Vec<(IdentStr, DocComment, RMValueType)>,
+        properties: Vec<(IdentStr, DocComment, RMType)>,
         // TODO associated functionality
     },
 }

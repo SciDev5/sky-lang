@@ -1,7 +1,7 @@
 use num::traits::Pow;
 
 use crate::{
-    interpreter::interpreter::PanicGen,
+    interpreter::{interpreter::PanicGen, value::ValueComplex},
     parse::fn_lookup::{Intrinsic1FnId, Intrinsic2FnId, IntrinsicFnId},
 };
 
@@ -42,7 +42,7 @@ pub fn apply_intrinsic2(id: Intrinsic2FnId, lhs: Value, rhs: Value) -> Result<Va
             let rhs: u32 = rhs.into_int().try_into().map_err(|_| PanicGen)?;
 
             if rhs == 0 && lhs == 0 {
-                // 0 ^ 0
+                // 0 ^ 0 is undefined
                 return Err(PanicGen);
             } else {
                 lhs.pow(rhs)
@@ -57,14 +57,24 @@ pub fn apply_intrinsic2(id: Intrinsic2FnId, lhs: Value, rhs: Value) -> Result<Va
         Intrinsic2FnId::FloatMinus => Float(lhs.into_float() - rhs.into_float()),
         Intrinsic2FnId::FloatTimes => Float(lhs.into_float() * rhs.into_float()),
         Intrinsic2FnId::FloatDiv => Float(lhs.into_float() / rhs.into_float()),
-        Intrinsic2FnId::FloatPow => Float({
+        Intrinsic2FnId::FloatPowAsComplex => Complex({
             let lhs = lhs.into_float();
             let rhs = rhs.into_float();
-            if lhs < 0.0 && rhs.fract() != 0.0 || lhs == 0.0 && rhs == 0.0 {
-                // 0^0 or root of negative
+            if lhs == 0.0 && rhs == 0.0 {
+                // 0 ^ 0 is undefined
                 return Err(PanicGen);
             } else {
-                lhs.pow(rhs)
+                ValueComplex::from(lhs).pow(ValueComplex::from(rhs))
+            }
+        }),
+        Intrinsic2FnId::FloatPowInt => Float({
+            let lhs = lhs.into_float();
+            let rhs = rhs.into_int();
+            if lhs == 0.0 && rhs == 0 {
+                // 0 ^ 0 is undefined
+                return Err(PanicGen);
+            } else {
+                lhs.powi(rhs.try_into().map_err(|_| PanicGen)?)
             }
         }),
 
@@ -72,7 +82,7 @@ pub fn apply_intrinsic2(id: Intrinsic2FnId, lhs: Value, rhs: Value) -> Result<Va
         Intrinsic2FnId::ComplexMinus => Complex(lhs.into_complex() - rhs.into_complex()),
         Intrinsic2FnId::ComplexTimes => Complex(lhs.into_complex() * rhs.into_complex()),
         Intrinsic2FnId::ComplexDiv => Complex(lhs.into_complex() / rhs.into_complex()),
-        Intrinsic2FnId::ComplexPow => todo!(),
+        Intrinsic2FnId::ComplexPow => Complex(lhs.into_complex().pow(rhs.into_complex())),
 
         Intrinsic2FnId::BoolAnd => Bool(lhs.into_bool() && rhs.into_bool()),
         Intrinsic2FnId::BoolXor => Bool(lhs.into_bool() ^ rhs.into_bool()),

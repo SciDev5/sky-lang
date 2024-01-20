@@ -26,7 +26,7 @@ impl ScopedStatics {
 #[derive(Debug)]
 pub struct RMFunction {
     pub doc_comment: DocComment,
-    pub params: Vec<(IdentStr, RMValueType)>,
+    pub params: Vec<(IdentStr, RMType)>,
     pub return_ty: Option<RMType>,
     pub block: RMBlock,
     /// Contains references to all static references this function can see, including itself.
@@ -35,34 +35,30 @@ pub struct RMFunction {
 #[derive(Debug)]
 pub struct RMStruct {
     pub doc_comment: DocComment,
-    pub fields: HashMap<IdentStr, (RMValueType, DocComment)>,
+    pub fields: HashMap<IdentStr, (RMType, DocComment)>,
     pub functions: HashMap<IdentStr, Vec<IdentInt>>,
     /// Contains references to all static references this struct can see, including itself.
     pub all_scoped: ScopedStatics,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum RMValueType {
+pub enum RMType {
+    Never,
+    Void,
     Int,
     Float,
     Complex,
     Bool,
     String,
     FunctionRef {
-        params: Vec<RMValueType>,
+        params: Vec<RMType>,
         return_ty: Box<RMType>,
     },
     Identified(IdentStr),
-    Tuple(Vec<RMValueType>),
+    Tuple(Vec<RMType>),
     // List(Box<RMValueType>),
     // TODO Template types
     // TODO Units / dimensional analysis
-}
-#[derive(Debug, Clone, PartialEq)]
-pub enum RMType {
-    Void,
-    Never,
-    Value(RMValueType),
 }
 
 #[derive(Debug, Clone)]
@@ -112,7 +108,7 @@ pub enum RMExpression {
         ident: IdentStr,
         writable: bool,
         initial_value: Option<Box<RMExpression>>,
-        ty: Option<RMValueType>,
+        ty: Option<RMType>,
     },
 
     AssignIndex {
@@ -159,7 +155,7 @@ pub enum RMExpression {
     LiteralArray(RMLiteralArray),
 
     AnonymousFunction {
-        params: Vec<(IdentStr, Option<RMValueType>)>,
+        params: Vec<(IdentStr, Option<RMType>)>,
         block: RMBlock,
     },
 
@@ -183,7 +179,7 @@ pub enum RMExpression {
         block: RMBlock,
     },
     LoopFor {
-        loop_var: (IdentStr, Option<RMValueType>),
+        loop_var: (IdentStr, Option<RMType>),
         iterable: Box<RMExpression>,
         block: RMBlock,
     },

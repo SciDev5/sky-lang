@@ -20,7 +20,7 @@ pub struct CMLocalVarInfo {
 #[derive(Debug)]
 pub struct CMFunction {
     pub doc_comment: DocComment,
-    pub params: Vec<CMValueType>,
+    pub params: Vec<CMType>,
     /// local variables, including auto-generated parameter locals
     pub locals: Vec<CMLocalVarInfo>,
     pub ty_return: CMType,
@@ -28,7 +28,7 @@ pub struct CMFunction {
 }
 #[derive(Debug)]
 pub struct CMClosureFunction {
-    params: Vec<CMValueType>,
+    params: Vec<CMType>,
     captures: Vec<IdentInt>,
     /// local variables, including auto-generated parameter locals
     locals: Vec<CMLocalVarInfo>,
@@ -37,7 +37,7 @@ pub struct CMClosureFunction {
 }
 #[derive(Debug, Clone)]
 pub struct CMInlineLambda {
-    params: Vec<CMValueType>,
+    params: Vec<CMType>,
     captures: Vec<IdentInt>,
     /// local variables, including auto-generated parameter locals
     locals: Vec<CMLocalVarInfo>,
@@ -46,34 +46,35 @@ pub struct CMInlineLambda {
 #[derive(Debug)]
 pub struct CMStruct {
     pub doc_comment: DocComment,
-    pub fields: Vec<CMValueType>,
+    pub fields: Vec<CMType>,
     pub fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
     pub functions: Vec<IdentInt>,
 }
 
+fn k(k: i128) -> ! {
+    panic!("")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum CMValueType {
+pub enum CMType {
+    Unknown,
+    Never,
+    Void,
     Int,
     Float,
     Complex,
     Bool,
     String,
     FunctionRef {
-        params: Vec<CMValueType>,
+        params: Vec<CMType>,
         return_ty: Box<CMType>,
     },
     StructData(IdentInt),
     StructInstance(IdentInt),
-    Tuple(Vec<CMValueType>),
+    Tuple(Vec<CMType>),
     // List(Box<RMValueType>),
     // TODO Template types
     // TODO Units / dimensional analysis
-}
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum CMType {
-    Void,
-    Never,
-    Value(CMValueType),
 }
 impl CMType {
     pub fn is_never(&self) -> bool {
@@ -152,7 +153,7 @@ pub enum CMExpression {
         is_infinite: bool,
     },
     LoopFor {
-        loop_var: (IdentStr, CMValueType),
+        loop_var: (IdentStr, CMType),
         iterable: Box<CMExpression>,
         block: Vec<CMExpression>,
     },

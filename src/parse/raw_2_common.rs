@@ -7,7 +7,7 @@ use crate::{
     common::{
         common_module::{
             CMExpression, CMFunction, CMLiteralValue, CMLocalVarInfo, CMStruct, CMType,
-            CMValueType, CommonModule, DocComment,
+            CommonModule, DocComment,
         },
         IdentInt, IdentStr,
     },
@@ -15,17 +15,17 @@ use crate::{
 };
 
 use super::{
-    fn_lookup::{lookup_fallback, AssociatedFnLut, FnRef},
+    fn_lookup::{AssociatedFnLut, FnRef},
     raw_module::{
-        LiteralStructInit, RMBlock, RMExpression, RMLiteralValue, RMStruct, RMType, RMValueType,
-        RawModule, ScopedStatics,
+        LiteralStructInit, RMBlock, RMExpression, RMLiteralValue, RMStruct, RMType, RawModule,
+        ScopedStatics,
     },
 };
 
 #[derive(Debug, Clone)]
 struct FunctionThing {
     doc_comment: DocComment,
-    params: Vec<CMValueType>,
+    params: Vec<CMType>,
     param_idents: Vec<IdentStr>,
     body: FunctionBody,
 }
@@ -40,7 +40,7 @@ impl FunctionThing {
 #[derive(Debug, Clone)]
 enum FunctionBody {
     Untranslated {
-        ty_return: WithResolutionStatus<CMType>,
+        ty_return: CMType,
         all_scoped: ScopedStatics,
         block: RMBlock,
     },
@@ -61,7 +61,7 @@ impl FunctionBody {
             _ => panic!(),
         }
     }
-    fn unwrap_untranslated(self) -> (WithResolutionStatus<CMType>, ScopedStatics, RMBlock) {
+    fn unwrap_untranslated(self) -> (CMType, ScopedStatics, RMBlock) {
         match self {
             FunctionBody::Untranslated {
                 ty_return,
@@ -79,7 +79,7 @@ impl FunctionBody {
 #[derive(Debug, Clone)]
 struct StructThing {
     doc_comment: DocComment,
-    fields: Vec<CMValueType>,
+    fields: Vec<CMType>,
     fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
     functions: HashMap<IdentStr, Vec<IdentInt>>,
 }
@@ -96,38 +96,9 @@ impl ResolverGlobalState {
 }
 
 #[derive(Debug, Clone)]
-enum WithResolutionStatus<T: Debug + Clone> {
-    Unknown,
-    Failed,
-    Resolved(T),
-}
-impl<T: Debug + Clone> WithResolutionStatus<T> {
-    /// Translates `Some` to `Resolved` and `None` to `Unknown`
-    fn from_option_none_unknown(from: Option<T>) -> Self {
-        match from {
-            Some(v) => WithResolutionStatus::Resolved(v),
-            None => WithResolutionStatus::Unknown,
-        }
-    }
-    fn unwrap_resolved(self) -> T {
-        match self {
-            Self::Resolved(v) => v,
-            _ => panic!("unwrap_resolve failed"),
-        }
-    }
-    fn as_ref(&self) -> WithResolutionStatus<&T> {
-        match self {
-            WithResolutionStatus::Unknown => WithResolutionStatus::Unknown,
-            WithResolutionStatus::Failed => WithResolutionStatus::Failed,
-            WithResolutionStatus::Resolved(v) => WithResolutionStatus::Resolved(v),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 struct LocalVar {
     doc_comment: DocComment,
-    ty: WithResolutionStatus<CMValueType>,
+    ty: CMType,
     writable: bool,
     assigned: bool,
 }
@@ -154,16 +125,13 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                 params: func
                     .params
                     .iter()
-                    .map(|(_, ty)| static_resolve_value_type(&[func.all_scoped.clone()], ty))
+                    .map(|(_, ty)| static_resolve_type(&[func.all_scoped.clone()], ty))
                     .collect(),
                 param_idents: func.params.into_iter().map(|(ident, _)| ident).collect(),
                 body: FunctionBody::Untranslated {
                     ty_return: match &func.return_ty {
-                        Some(ty) => WithResolutionStatus::Resolved(static_resolve_type(
-                            &[func.all_scoped.clone()],
-                            ty,
-                        )),
-                        None => WithResolutionStatus::Unknown,
+                        Some(ty) => static_resolve_type(&[func.all_scoped.clone()], ty),
+                        None => CMType::Unknown,
                     },
                     all_scoped: func.all_scoped,
                     block: func.block,
@@ -185,11 +153,7 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                         .enumerate()
                         .map(|(i, (ident, (ty, doc_comment)))| {
                             (
-                                match static_resolve_type(&[all_scoped.clone()], &RMType::Value(ty))
-                                {
-                                    CMType::Value(v) => v,
-                                    _ => todo!(),
-                                },
+                                static_resolve_type(&[all_scoped.clone()], &ty),
                                 (ident, (i, doc_comment)),
                             )
                         })
@@ -242,10 +206,7 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                          ..
                      }| CMLocalVarInfo {
                         doc_comment,
-                        ty: match ty {
-                            WithResolutionStatus::Resolved(ty) => CMType::Value(ty),
-                            _ => CMType::Never,
-                        },
+                        ty,
                         writable,
                     },
                 )
@@ -300,41 +261,34 @@ fn static_resolve_type(statics_scope_stack: &[ScopedStatics], ty: &RMType) -> CM
     match ty {
         RMType::Void => CMType::Void,
         RMType::Never => CMType::Never,
-        RMType::Value(ty) => CMType::Value(static_resolve_value_type(statics_scope_stack, ty)),
-    }
-}
-fn static_resolve_value_type(
-    statics_scope_stack: &[ScopedStatics],
-    ty: &RMValueType,
-) -> CMValueType {
-    match ty {
-        RMValueType::Identified(ident) => {
+
+        RMType::Identified(ident) => {
             // ref to prioritize higher scope stack frames, which correspond to the innermost scopes.
             if let Some(id) = statics_scope_stack
                 .iter()
                 .rev()
                 .find_map(|statics_elt| statics_elt.structs.get(ident))
             {
-                CMValueType::StructInstance(*id)
+                CMType::StructInstance(*id)
             } else {
                 todo!("// TODO handle invalid types.")
             }
         }
-        RMValueType::Int => CMValueType::Int,
-        RMValueType::Float => CMValueType::Float,
-        RMValueType::Complex => CMValueType::Complex,
-        RMValueType::Bool => CMValueType::Bool,
-        RMValueType::String => CMValueType::String,
-        RMValueType::FunctionRef { params, return_ty } => CMValueType::FunctionRef {
+        RMType::Int => CMType::Int,
+        RMType::Float => CMType::Float,
+        RMType::Complex => CMType::Complex,
+        RMType::Bool => CMType::Bool,
+        RMType::String => CMType::String,
+        RMType::FunctionRef { params, return_ty } => CMType::FunctionRef {
             params: params
                 .iter()
-                .map(|ty| static_resolve_value_type(statics_scope_stack, ty))
+                .map(|ty| static_resolve_type(statics_scope_stack, ty))
                 .collect(),
             return_ty: Box::new(static_resolve_type(statics_scope_stack, return_ty)),
         },
-        RMValueType::Tuple(v) => CMValueType::Tuple(
+        RMType::Tuple(v) => CMType::Tuple(
             v.iter()
-                .map(|ty| static_resolve_value_type(statics_scope_stack, ty))
+                .map(|ty| static_resolve_type(statics_scope_stack, ty))
                 .collect(),
         ),
     }
@@ -373,7 +327,7 @@ fn resolve_fn<'a>(
         {
             locals.push(LocalVar {
                 doc_comment: None,
-                ty: WithResolutionStatus::Resolved(ty_param),
+                ty: ty_param,
                 writable: false,
                 assigned: true,
             });
@@ -399,11 +353,9 @@ fn resolve_fn<'a>(
 
         let mut translation_failed = false;
         let ty_return = match ty_return_opt.unwrap() {
-            WithResolutionStatus::Unknown => ty_eval,
-            WithResolutionStatus::Failed => {
-                todo!("i'm actually not sure if this case is even possible ¯\\_(ツ)_/¯ (if you see it then it is possible)")
-            }
-            WithResolutionStatus::Resolved(ty) => {
+            CMType::Unknown => ty_eval,
+            CMType::Never => unreachable!("// TODO check that this can't happen"),
+            ty => {
                 // if the types are mismatched and ty_eval is not never (for consistency and debugging), then fail
                 if ty_eval.is_never() {
                     // use the return statements if any to infer return type
@@ -439,12 +391,7 @@ fn resolve_fn<'a>(
                          ..
                      }| CMLocalVarInfo {
                         doc_comment,
-                        ty: match ty {
-                            WithResolutionStatus::Resolved(v) => CMType::Value(v),
-                            WithResolutionStatus::Failed | WithResolutionStatus::Unknown => {
-                                CMType::Never
-                            }
-                        },
+                        ty,
                         writable,
                     },
                 )
@@ -469,7 +416,7 @@ fn resolve_block(
 
     loop_context_stack: &mut Vec<LoopContext>,
 
-    ty_return: &mut Option<WithResolutionStatus<CMType>>,
+    ty_return: &mut Option<CMType>,
 ) -> (Vec<CMExpression>, CMType) {
     // The value that this entire block will evaluate to.
     // It's determined by the last element in the block unless
@@ -508,11 +455,11 @@ fn lookup_fn_ref_ty_return(
     state: &mut ResolverGlobalState,
     current_fn_stack: &mut Vec<IdentInt>,
     fn_ref: FnRef,
-    params: &[CMValueType],
+    params: &[CMType],
 ) -> CMType {
     match fn_ref {
         FnRef::ModuleFunction(id) => resolve_fn(state, id, current_fn_stack).ty_return.clone(),
-        FnRef::Identity => CMType::Value(params[0].clone()),
+        FnRef::Identity => params[0].clone(),
         FnRef::Intrinsic1(id) => id.ty_ret(),
         FnRef::Intrinsic2(id) => id.ty_ret(),
         FnRef::Intrinsic(id) => id.ty_ret(),
@@ -531,7 +478,7 @@ fn resolve_expr(
 
     loop_context_stack: &mut Vec<LoopContext>,
 
-    ty_return: &mut Option<WithResolutionStatus<CMType>>,
+    ty_return: &mut Option<CMType>,
 ) -> (CMExpression, CMType) {
     match expr {
         // TODO use CMType::Never to detect dead code
@@ -543,10 +490,9 @@ fn resolve_expr(
             initial_value,
             ty,
         } => {
-            let ty_var = match ty {
-                Some(ty) => Some(static_resolve_value_type(&statics_stack, &ty)),
-                None => None,
-            };
+            let ty_var = ty
+                .map(|ty| static_resolve_type(&statics_stack, &ty))
+                .unwrap_or(CMType::Unknown);
             let (initial_value, ty_value) = if let Some((initial_value, ty_iv)) =
                 initial_value.map(|expr| {
                     resolve_expr(
@@ -568,24 +514,22 @@ fn resolve_expr(
             let mut is_never = false;
             let mut error = None;
 
-            let ty = match (ty_value, ty_var) {
-                (None, ty) => WithResolutionStatus::from_option_none_unknown(ty),
-                (Some(CMType::Void), ty_var) => {
-                    error = Some(state.add_diagnostic(Raw2CommonDiagnostic { text: format!("type mismatch at variable assignment at /* TODO location */! found void, it should never be void")}));
-                    WithResolutionStatus::from_option_none_unknown(ty_var)
-                }
-                (Some(CMType::Never), ty_var) => {
+            let ty = match (ty_var, ty_value) {
+                (CMType::Never, _) => unreachable!("local variable type cannot be never"),
+
+                (ty_var, Some(CMType::Unknown) | None) => ty_var,
+                (ty_var, Some(CMType::Never)) => {
                     is_never = true;
-                    WithResolutionStatus::from_option_none_unknown(ty_var)
+                    ty_var
                 }
-                (Some(CMType::Value(ty_value)), None) => WithResolutionStatus::Resolved(ty_value),
-                (Some(CMType::Value(ty_value)), Some(ty_var)) => {
+                (CMType::Unknown, Some(ty_value)) => ty_value,
+                (ty_var, Some(ty_value)) => {
                     if ty_value != ty_var {
                         // type mismatch
                         error = Some(state.add_diagnostic(Raw2CommonDiagnostic { text: format!("type mismatch at variable assignment at /* TODO location */! expected {:?}, found {:?}", &ty_var, ty_value)}));
-                        WithResolutionStatus::Resolved(ty_var)
+                        ty_var
                     } else {
-                        WithResolutionStatus::Resolved(ty_var)
+                        ty_var
                     }
                 }
             };
@@ -646,25 +590,24 @@ fn resolve_expr(
                 let mut is_never = false;
                 let mut error = None;
                 match (&var.ty, ty_value) {
-                    (WithResolutionStatus::Failed, _) => { /* already failed, don't bother */ }
-                    (WithResolutionStatus::Unknown, CMType::Value(ty_value)) => {
-                        // take new type
-                        var.ty = WithResolutionStatus::Resolved(ty_value);
+                    (_, CMType::Never) => {
+                        is_never = true;
                     }
-                    (WithResolutionStatus::Resolved(ty_var), CMType::Value(ty_value)) => {
+                    // (_, CMType::Void) => {
+                    //     // guaranteed failure
+                    //     error = Some(state.add_diagnostic(Raw2CommonDiagnostic {
+                    //         text: format!("attempt to assign '{ident}' a void value"),
+                    //     }));
+                    // }
+                    (CMType::Unknown, ty_value) => {
+                        // take new type
+                        var.ty = ty_value;
+                    }
+                    (ty_var, ty_value) => {
                         // check type
                         if ty_var != &ty_value {
                             error = Some(state.add_diagnostic(Raw2CommonDiagnostic { text: format!("type mismatch at variable assignment at /* TODO location */! expected {:?}, found {:?}", ty_var, ty_value) }));
                         }
-                    }
-                    (_, CMType::Never) => {
-                        is_never = true;
-                    }
-                    (_, CMType::Void) => {
-                        // guaranteed failure
-                        error = Some(state.add_diagnostic(Raw2CommonDiagnostic {
-                            text: format!("attempt to assign '{ident}' a void value"),
-                        }));
                     }
                 }
                 let eval_ty = if is_never {
@@ -708,8 +651,8 @@ fn resolve_expr(
             Some(id) => {
                 let var = &locals[*id];
                 let (eval_ty, ty_ok) = match &var.ty {
-                    WithResolutionStatus::Resolved(ty) => (CMType::Value(ty.clone()), true),
-                    _ => (CMType::Void, false),
+                    ty => (ty.clone(), true),
+                    _ => (CMType::Unknown, false),
                 };
                 if !var.assigned {
                     state.add_diagnostic(Raw2CommonDiagnostic {
@@ -737,7 +680,6 @@ fn resolve_expr(
             let n_args = arguments.len();
             let mut resolved_arguments = Vec::with_capacity(n_args);
             let mut ty_arguments = Vec::with_capacity(n_args);
-            let mut args_ok = true;
             for arg in arguments {
                 let (resolved, ty) = resolve_expr(
                     arg,
@@ -750,140 +692,86 @@ fn resolve_expr(
                     ty_return,
                 );
                 resolved_arguments.push(resolved);
-                match ty {
-                    CMType::Value(ty) => {
-                        ty_arguments.push(Some(ty));
-                    }
-                    _ => {
-                        args_ok = false;
-                        ty_arguments.push(None);
-                        break;
-                    }
-                }
+                ty_arguments.push(Some(ty));
             }
 
-            if args_ok {
-                let ty_arguments = ty_arguments
-                    .into_iter()
-                    .map(Option::unwrap)
-                    .collect::<Vec<_>>();
-                match callable.as_ref() {
-                    RMExpression::Ident { ident } => {
-                        // function call
-                        let mut best_fallback = None;
-                        let mut had_semimatch = false;
-                        for function_id in statics_stack
-                            .iter()
-                            .rev()
-                            .flat_map(|frame| frame.functions.get(ident))
-                            .flatten()
-                            .copied()
-                        {
-                            let k = &state.functions[function_id];
-                            if &k.params == &ty_arguments {
-                                let ResolvedFnInfo { ty_return } =
-                                    resolve_fn(state, function_id, current_fn_stack);
-                                return (
-                                    CMExpression::Call {
-                                        function_id: FnRef::ModuleFunction(function_id),
-                                        arguments: resolved_arguments,
-                                        always_inline: false,
-                                        inlined_lambdas: None,
-                                    },
-                                    ty_return.clone(),
-                                );
-                            } else if k.params.len() == ty_arguments.len() {
-                                if had_semimatch {
-                                    best_fallback = None;
-                                } else {
-                                    best_fallback = Some(function_id)
-                                }
-                                had_semimatch = true;
-                            }
-                        }
-                        // did not find lny suitable call signatures
-                        state.add_diagnostic(Raw2CommonDiagnostic {
-                            text: format!("did not find any suitable call signatures"),
-                        });
-                        // try to salvage a return value to try to yield as much useful results to the user as possible
-                        let return_ty = if let Some(fallback_id) = best_fallback {
+            let ty_arguments = ty_arguments
+                .into_iter()
+                .map(Option::unwrap)
+                .collect::<Vec<_>>();
+            match callable.as_ref() {
+                RMExpression::Ident { ident } => {
+                    // function call
+                    let mut best_fallback = None;
+                    let mut had_semimatch = false;
+                    for function_id in statics_stack
+                        .iter()
+                        .rev()
+                        .flat_map(|frame| frame.functions.get(ident))
+                        .flatten()
+                        .copied()
+                    {
+                        let k = &state.functions[function_id];
+                        if &k.params == &ty_arguments {
                             let ResolvedFnInfo { ty_return } =
-                                resolve_fn(state, fallback_id, current_fn_stack);
-                            ty_return.clone()
-                        } else {
-                            CMType::Never
-                        };
-                        (CMExpression::FailAfter(resolved_arguments), return_ty)
-                    }
-                    RMExpression::ReadProperty {
-                        expr,
-                        property_ident,
-                    } => {
-                        todo!("named associated functions");
-                    }
-                    _ => {
-                        // fail
-                        state.add_diagnostic(Raw2CommonDiagnostic {
-                            text: format!("object is not callable"),
-                        });
-                        (CMExpression::Fail, CMType::Never)
-                    }
-                }
-            } else {
-                state.add_diagnostic(Raw2CommonDiagnostic {
-                    text: format!("illegal void parameter"),
-                });
-                match callable.as_ref() {
-                    RMExpression::Ident { ident } => {
-                        let fallback_id = lookup_fallback(
-                            &ty_arguments,
-                            statics_stack
-                                .iter()
-                                .rev()
-                                .flat_map(|frame| frame.functions.get(ident))
-                                .flatten()
-                                .map(|i| (&state.functions[*i].params, FnRef::ModuleFunction(*i))),
-                        );
-                        if let Some(FnRef::ModuleFunction(fallback_id)) = fallback_id {
-                            // we have an assumption for what real function this is, use it to fill in later type annotations.
-                            let ResolvedFnInfo { ty_return } =
-                                resolve_fn(state, fallback_id, current_fn_stack);
-
-                            (
-                                CMExpression::FailAfter(resolved_arguments),
+                                resolve_fn(state, function_id, current_fn_stack);
+                            return (
+                                CMExpression::Call {
+                                    function_id: FnRef::ModuleFunction(function_id),
+                                    arguments: resolved_arguments,
+                                    always_inline: false,
+                                    inlined_lambdas: None,
+                                },
                                 ty_return.clone(),
-                            )
-                        } else {
-                            (CMExpression::FailAfter(resolved_arguments), CMType::Void)
+                            );
+                        } else if k.params.len() == ty_arguments.len() {
+                            if had_semimatch {
+                                best_fallback = None;
+                            } else {
+                                best_fallback = Some(function_id)
+                            }
+                            had_semimatch = true;
                         }
                     }
-                    RMExpression::ReadProperty {
-                        expr,
-                        property_ident,
-                    } => {
-                        todo!("named associated functions");
-                        // (CMExpression::Fail, CMType::Void)
-                    }
-                    _ => {
-                        // fail
-                        state.add_diagnostic(Raw2CommonDiagnostic {
-                            text: format!("object is not callable"),
-                        });
-                        (CMExpression::Fail, CMType::Void)
-                    }
+                    // did not find lny suitable call signatures
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("did not find any suitable call signatures"),
+                    });
+                    // try to salvage a return value to try to yield as much useful results to the user as possible
+                    let return_ty = if let Some(fallback_id) = best_fallback {
+                        let ResolvedFnInfo { ty_return } =
+                            resolve_fn(state, fallback_id, current_fn_stack);
+                        ty_return.clone()
+                    } else {
+                        CMType::Never
+                    };
+                    (CMExpression::FailAfter(resolved_arguments), return_ty)
+                }
+                RMExpression::ReadProperty {
+                    expr,
+                    property_ident,
+                } => {
+                    todo!("named associated functions");
+                }
+                _ => {
+                    // fail
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("object is not callable"),
+                    });
+                    (CMExpression::Fail, CMType::Never)
                 }
             }
         }
 
         RMExpression::LiteralValue(literal) => {
             let (expr, ty) = match literal {
-                RMLiteralValue::Int(v) => (CMLiteralValue::Int(v), CMValueType::Int),
-                RMLiteralValue::Float(v) => (CMLiteralValue::Float(v), CMValueType::Float),
-                RMLiteralValue::Complex(v) => (CMLiteralValue::Complex(v), CMValueType::Complex),
-                RMLiteralValue::Bool(v) => (CMLiteralValue::Bool(v), CMValueType::Bool),
-                RMLiteralValue::String(v) => (CMLiteralValue::String(v), CMValueType::String),
+                RMLiteralValue::Int(v) => (CMLiteralValue::Int(v), CMType::Int),
+                RMLiteralValue::Float(v) => (CMLiteralValue::Float(v), CMType::Float),
+                RMLiteralValue::Complex(v) => (CMLiteralValue::Complex(v), CMType::Complex),
+                RMLiteralValue::Bool(v) => (CMLiteralValue::Bool(v), CMType::Bool),
+                RMLiteralValue::String(v) => (CMLiteralValue::String(v), CMType::String),
             };
-            (CMExpression::LiteralValue(expr), CMType::Value(ty))
+            (CMExpression::LiteralValue(expr), ty)
         }
         RMExpression::LiteralRange { start, step, end } => todo!("// TODO range constructor"),
         RMExpression::LiteralArray(_) => todo!(),
@@ -960,10 +848,7 @@ fn resolve_expr(
                     assign_to.iter().copied().zip(types.into_iter()).enumerate()
                 {
                     if let Some(assign_to) = assign_to {
-                        if match &eval_ty {
-                            CMType::Value(eval_ty) => eval_ty != &st.fields[assign_to],
-                            _ => true,
-                        } {
+                        if eval_ty != st.fields[assign_to] {
                             diagnostics.push(Raw2CommonDiagnostic { text: format!("type mismatch setting property '{}' in '{}', expected {:?}, found {:?}", names[i], ident_str, st.fields[assign_to], eval_ty ) });
                             fail_at = fail_at.min(i + 1)
                         }
@@ -1004,7 +889,7 @@ fn resolve_expr(
                     }
                     return (
                         CMExpression::FailAfter(data.drain(..fail_at).collect()),
-                        CMType::Value(CMValueType::StructData(ident)),
+                        CMType::StructData(ident),
                     );
                 }
 
@@ -1014,7 +899,7 @@ fn resolve_expr(
                         data,
                         assign_to: assign_to.into_iter().map(Option::unwrap).collect(),
                     },
-                    CMType::Value(CMValueType::StructData(ident)),
+                    CMType::StructData(ident),
                 )
             } else {
                 state.add_diagnostic(Raw2CommonDiagnostic {
@@ -1048,6 +933,9 @@ fn resolve_expr(
                 ty_return,
             );
             match (ty_lhs, ty_rhs) {
+                (CMType::Unknown, _) | (_, CMType::Unknown) => {
+                    (CMExpression::FailAfter(vec![lhs, rhs]), CMType::Unknown)
+                }
                 (CMType::Never, _) => {
                     // just do the first thing, it will never finish anyway so dont bother wrapping it anyway
                     state.add_diagnostic(Raw2CommonDiagnostic {
@@ -1055,25 +943,13 @@ fn resolve_expr(
                     });
                     (lhs, CMType::Never)
                 }
-                (CMType::Void | CMType::Value(_), CMType::Never) => {
+                (_, CMType::Never) => {
                     state.add_diagnostic(Raw2CommonDiagnostic {
                         text: format!("cannot operate on never"),
                     });
                     (CMExpression::FailAfter(vec![lhs, rhs]), CMType::Never)
                 }
-                (CMType::Void, CMType::Void | CMType::Value(_)) => {
-                    state.add_diagnostic(Raw2CommonDiagnostic {
-                        text: format!("cannot operate on void"),
-                    });
-                    (CMExpression::FailAfter(vec![lhs, rhs]), CMType::Never)
-                }
-                (CMType::Value(_), CMType::Void) => {
-                    state.add_diagnostic(Raw2CommonDiagnostic {
-                        text: format!("cannot operate on void"),
-                    });
-                    (CMExpression::FailAfter(vec![lhs, rhs]), CMType::Never)
-                }
-                (CMType::Value(ty_lhs), CMType::Value(ty_rhs)) => {
+                (ty_lhs, ty_rhs) => {
                     let lut_lhs = get_fn_lut(&ty_lhs);
                     let lut_rhs = get_fn_lut(&ty_rhs);
                     if let Some(function_id) = AssociatedFnLut::lookup_binary(
@@ -1111,7 +987,24 @@ fn resolve_expr(
                 ty_return,
             );
             match ty_value {
-                CMType::Value(ty) => {
+                CMType::Void => {
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("cannot operate on void"),
+                    });
+                    (CMExpression::FailAfter(vec![value]), CMType::Unknown)
+                }
+                CMType::Never => {
+                    // just do the first thing, it will never finish anyway so dont bother wrapping it anyway
+                    state.add_diagnostic(Raw2CommonDiagnostic {
+                        text: format!("cannot operate on never"),
+                    });
+                    (value, CMType::Never)
+                }
+                CMType::Unknown => {
+                    // forward the unknown
+                    (CMExpression::FailAfter(vec![value]), CMType::Unknown)
+                }
+                ty => {
                     let lut = get_fn_lut(&ty);
                     if let Some(function_id) = lut.lookup_unary(op) {
                         let ty_return =
@@ -1132,21 +1025,8 @@ fn resolve_expr(
                                 ty, op
                             ),
                         });
-                        (CMExpression::FailAfter(vec![value]), CMType::Never)
+                        (CMExpression::FailAfter(vec![value]), CMType::Unknown)
                     }
-                }
-                CMType::Void => {
-                    state.add_diagnostic(Raw2CommonDiagnostic {
-                        text: format!("cannot operate on void"),
-                    });
-                    (CMExpression::FailAfter(vec![value]), CMType::Never)
-                }
-                CMType::Never => {
-                    // just do the first thing, it will never finish anyway so dont bother wrapping it anyway
-                    state.add_diagnostic(Raw2CommonDiagnostic {
-                        text: format!("cannot operate on never"),
-                    });
-                    (value, CMType::Never)
                 }
             }
         }
@@ -1164,22 +1044,17 @@ fn resolve_expr(
             ) -> Vec<CMExpression> {
                 let is_type_mismatch = match (&ty_eval, ty_block) {
                     (_, CMType::Never) => None, /* nothing changes */
-                    (CMType::Never, ty_block) => {
+                    (CMType::Never | CMType::Unknown, ty_block) => {
                         *ty_eval = ty_block;
                         None
                     }
-                    (CMType::Void, CMType::Void) => None, /* ok */
-                    (CMType::Value(a), CMType::Value(b)) => {
+                    (a, b) => {
                         /* ok if no type mismatch */
-                        if a != &b {
-                            Some(CMType::Value(b))
+                        if *a != &b {
+                            Some(b)
                         } else {
                             None
                         }
-                    }
-                    (_, ty_block) => {
-                        /* type mismatch */
-                        Some(ty_block)
                     }
                 };
                 if let Some(ty_found_incorrect) = is_type_mismatch {
@@ -1199,7 +1074,7 @@ fn resolve_expr(
                 (condition, ty_condition): (CMExpression, CMType),
             ) -> CMExpression {
                 match ty_condition {
-                    CMType::Value(CMValueType::Bool) | CMType::Never => condition,
+                    CMType::Bool | CMType::Never => condition,
                     _ => {
                         state.add_diagnostic(Raw2CommonDiagnostic {
                             text: format!("condition was not boolean"),
@@ -1366,24 +1241,19 @@ fn resolve_expr(
                                     // though we should // TODO warn of unused code
                                     None
                                 }
-                                CMType::Void => Some(state.add_diagnostic(Raw2CommonDiagnostic {
-                                    text: format!("cannot use void as value (in break)"),
-                                })),
-                                CMType::Value(ty_value) => {
+                                ty_value => {
+                                    if ty_value == CMType::Void {
+                                        state.add_diagnostic(Raw2CommonDiagnostic {
+                                            text: format!("use of void as value (in break)"),
+                                        });
+                                    }
                                     match &loop_context.return_value {
-                                        CMType::Never => {
+                                        CMType::Never | CMType::Unknown => {
                                             // set loop return value
-                                            loop_context.return_value = CMType::Value(ty_value);
+                                            loop_context.return_value = ty_value;
                                             None
                                         }
-                                        CMType::Void => {
-                                            Some(state.add_diagnostic(Raw2CommonDiagnostic {
-                                                text: format!(
-                                                    "no value expected for break / return"
-                                                ),
-                                            }))
-                                        }
-                                        CMType::Value(ty_ret) => {
+                                        ty_ret => {
                                             if &ty_value != ty_ret {
                                                 Some(state.add_diagnostic(Raw2CommonDiagnostic {
                                                     text: format!(
@@ -1417,7 +1287,7 @@ fn resolve_expr(
                         // loop ret should be void or not have return val
                         let error = if loop_context.returnable {
                             match &loop_context.return_value {
-                                CMType::Never => {
+                                CMType::Never | CMType::Unknown => {
                                     loop_context.return_value = CMType::Void;
                                     None
                                 }
@@ -1425,11 +1295,9 @@ fn resolve_expr(
                                     // everything checks out
                                     None
                                 }
-                                CMType::Value(v) => {
-                                    Some(state.add_diagnostic(Raw2CommonDiagnostic {
-                                        text: format!("expected value in return / break statement"),
-                                    }))
-                                }
+                                v => Some(state.add_diagnostic(Raw2CommonDiagnostic {
+                                    text: format!("expected value in return / break statement"),
+                                })),
                             }
                         } else {
                             // everything checks out
@@ -1461,17 +1329,11 @@ fn resolve_expr(
                 match value {
                     Some((value, ty_value)) => {
                         let error = match ty_return {
-                            WithResolutionStatus::Failed => {
-                                // already failed, don't bother
-                                Some(state.add_diagnostic(Raw2CommonDiagnostic {
-                                    text: format!("return type inference failed"),
-                                }))
-                            }
-                            WithResolutionStatus::Unknown => {
-                                *ty_return = WithResolutionStatus::Resolved(ty_value);
+                            CMType::Never | CMType::Unknown => {
+                                *ty_return = ty_value;
                                 None
                             }
-                            WithResolutionStatus::Resolved(ty_return) => {
+                            ty_return => {
                                 if &ty_value != ty_return {
                                     // type mismatch
                                     Some(state.add_diagnostic(Raw2CommonDiagnostic {
@@ -1494,17 +1356,11 @@ fn resolve_expr(
                     }
                     None => {
                         let error = match ty_return {
-                            WithResolutionStatus::Failed => {
-                                // already failed, don't bother
-                                Some(state.add_diagnostic(Raw2CommonDiagnostic {
-                                    text: format!("return type inference failed"),
-                                }))
-                            }
-                            WithResolutionStatus::Unknown => {
-                                *ty_return = WithResolutionStatus::Resolved(CMType::Void);
+                            CMType::Never | CMType::Unknown => {
+                                *ty_return = CMType::Void;
                                 None
                             }
-                            WithResolutionStatus::Resolved(ty_return) => {
+                            ty_return => {
                                 if ty_return != &CMType::Void {
                                     // type mismatch
                                     Some(state.add_diagnostic(Raw2CommonDiagnostic {

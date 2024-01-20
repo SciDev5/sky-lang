@@ -187,7 +187,14 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
                     .expect("scope stack was drained");
                 call_stack_top.iv_stack.drain(reset_iv_stack_to_len..);
             }
-            Instr::ReadProp(_) => todo!(),
+            Instr::ReadProp(id) => {
+                let obj = call_stack_top.pop_iv();
+                let accessed = match obj {
+                    Value::Object(props) => props[*id].clone(),
+                    _ => panic!("ReadProp on non-struct Value")
+                };
+                call_stack_top.iv_stack.push(accessed);
+            }
             Instr::WriteProp(_) => todo!(),
             Instr::ReadLocal(id) => {
                 call_stack_top.iv_stack.push(

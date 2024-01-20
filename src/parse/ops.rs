@@ -112,6 +112,8 @@ impl ShuntingYardOperator for SLOperator {
             Self::Xor => 11,
             Self::And => 12,
             Self::Not => 15,
+            Self::Shl => 16,
+            Self::Shr => 16,
 
             // addition -> 20
             Self::Plus => 20,
@@ -125,17 +127,11 @@ impl ShuntingYardOperator for SLOperator {
             // exponentiation -> 40
             Self::MatExp => 40,
             Self::Exp => 45,
-            // bitmath -> 50
-            Self::Or => 50,
-            Self::Xor => 51,
-            Self::And => 52,
-            Self::Shl => 55,
-            Self::Shr => 55,
 
-            // modifiers -> 60
-            Self::HermitianConjugate => 60,
-            Self::Transpose => 60,
-            Self::Inverse => 60,
+            // postfix -> 50
+            Self::HermitianConjugate => 50,
+            Self::Transpose => 50,
+            Self::Inverse => 50,
         }
     }
     fn right_associative(self) -> bool {

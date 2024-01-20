@@ -2,7 +2,7 @@ use num::complex::Complex64;
 
 use crate::{
     common::{
-        common_module::{CMType, CMValueType},
+        common_module::CMType,
         IdentInt,
     },
     parse::fn_lookup::{Intrinsic1FnId, Intrinsic2FnId, IntrinsicFnId},
@@ -74,13 +74,13 @@ pub enum Instr {
 }
 
 pub struct BFunction {
-    pub params: Vec<CMValueType>,
+    pub params: Vec<CMType>,
     pub locals: Vec<CMType>,
 
     pub code: Vec<Instr>,
 }
 pub struct BStruct {
-    pub fields: Vec<CMValueType>,
+    pub fields: Vec<CMType>,
     pub functions: Vec<IdentInt>,
 }
 

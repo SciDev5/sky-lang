@@ -24,7 +24,10 @@ macro_rules! impl_cast {
         use Value::*;
         match $v {
             $pat => $vout,
-            _ => panic!("type conversion failed"),
+            v => {
+                dbg!(v);
+                panic!("type conversion failed")
+            },
         }
     }};
 }

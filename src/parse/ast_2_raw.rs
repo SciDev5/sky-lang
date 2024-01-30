@@ -208,14 +208,16 @@ fn transform_expr(
             ty,
         },
         ASTExpression::Assign { target, value, op } => {
-            ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
             let value = transform_expr_box(value, state, scope);
             match target {
-                ASTVarAccessExpression::Var { ident } => RMExpression::AssignVar { ident, value },
+                ASTVarAccessExpression::Var { ident } => {
+                    RMExpression::AssignVar { ident, value, op }
+                }
                 ASTVarAccessExpression::Index { object, indices } => RMExpression::AssignIndex {
                     object: transform_expr_box(object, state, scope),
                     indices: transform_expr_vec(indices, state, scope),
                     value,
+                    op,
                 },
                 ASTVarAccessExpression::PropertyAccess {
                     object,
@@ -224,6 +226,7 @@ fn transform_expr(
                     object: transform_expr_box(object, state, scope),
                     property: property_ident,
                     value,
+                    op,
                 },
             }
         }
@@ -363,14 +366,27 @@ fn transform_expr(
             loop_var,
             iterable,
             block,
+            else_block,
         } => RMExpression::LoopFor {
             loop_var,
             iterable: transform_expr_box(iterable, state, scope),
             block: transform_expr_block_inner_scoped(block, state),
+            else_block: match else_block {
+                Some(else_block) => Some(transform_expr_block_inner_scoped(else_block, state)),
+                None => None,
+            },
         },
-        ASTExpression::LoopWhile { condition, block } => RMExpression::LoopWhile {
+        ASTExpression::LoopWhile {
+            condition,
+            block,
+            else_block,
+        } => RMExpression::LoopWhile {
             condition: transform_expr_box(condition, state, scope),
             block: transform_expr_block_inner_scoped(block, state),
+            else_block: match else_block {
+                Some(else_block) => Some(transform_expr_block_inner_scoped(else_block, state)),
+                None => None,
+            },
         },
         ASTExpression::Break(value) => {
             RMExpression::LoopBreak(transform_expr_option_box(value, state, scope))

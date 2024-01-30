@@ -63,6 +63,12 @@ impl InstrList {
         self.instructions
             .push(Instr::Jump(to as isize - insert_loc))
     }
+    /// Push a `Jump` instruction, but automatically calculate relative jump index
+    /// from an absolute position.
+    fn push_jmp_absolute_isize(&mut self, to: isize) {
+        let insert_loc = self.instructions.len() as isize;
+        self.instructions.push(Instr::Jump(to - insert_loc))
+    }
     /// Push a `JumpFalse` instruction, but automatically calculate relative jump index
     /// from an absolute position.
     fn push_jmpiffalse_absolute(&mut self, to: usize) {
@@ -85,7 +91,12 @@ impl InstrList {
             .append(&mut other.continue_locations);
     }
     /// Process metadata of this to add `break` and `continue` jumps corresponding to the loop we are building.
-    fn unwrap_loop_layer(&mut self, break_jump_target: isize, continue_jump_target: isize) {
+    fn unwrap_loop_layer(
+        &mut self,
+        break_jump_target: isize,
+        continue_jump_target: isize,
+        yield_value: bool,
+    ) {
         fn get_locations_to_modify(locations: &mut Vec<(usize, u8)>) -> Vec<usize> {
             let (depth_zero, depth_nonzero): (Vec<_>, Vec<_>) =
                 locations.into_iter().partition(|(_, depth)| *depth == 0);
@@ -101,7 +112,11 @@ impl InstrList {
         let continue_locations = get_locations_to_modify(&mut self.continue_locations);
 
         for break_loc in break_locations {
-            self.instructions[break_loc] = Instr::PopScope;
+            self.instructions[break_loc] = if yield_value {
+                Instr::PopScope
+            } else {
+                Instr::DiscardScope
+            };
             self.instructions[break_loc + 1] =
                 Instr::Jump(break_jump_target - (break_loc + 1) as isize);
         }
@@ -509,7 +524,7 @@ fn compile_expr(
             loop_code.push_jmp_absolute(0);
 
             // write the loop code to the instructions list
-            loop_code.unwrap_loop_layer(loop_code.len() as isize, 0);
+            loop_code.unwrap_loop_layer(loop_code.len() as isize, 0, yield_value);
             instructions.append(&mut loop_code);
 
             if is_infinite {
@@ -522,7 +537,66 @@ fn compile_expr(
             loop_var,
             iterable,
             block,
+            else_block,
         } => todo!(),
+        CMExpression::LoopWhile {
+            condition,
+            block,
+            else_block,
+        } => {
+            let mut condition_code = InstrList::new();
+            compile_expr(*condition, &mut condition_code, true);
+            let mut loop_code = InstrList::new();
+            compile_block(block, &mut loop_code, false);
+            let mut else_code = if let Some((else_block, _)) = else_block {
+                let mut else_code = InstrList::new();
+                compile_block(else_block, &mut else_code, yield_value);
+                Some(else_code)
+            } else {
+                None
+            };
+
+            // break if the condition is false
+            condition_code.push_jmpiffalse_absolute(condition_code.len() + loop_code.len() + 2); // jump to point C
+
+            // reset the loop to the condition at the end
+            loop_code.push_jmp_absolute_isize(-(condition_code.len() as isize)); // jump to point B
+
+            // write the loop code to the instructions list
+            loop_code.unwrap_loop_layer(
+                loop_code.len() as isize
+                    + if let Some(else_code) = &else_code {
+                        else_code.len() as isize
+                    } else if yield_value {
+                        1
+                    } else {
+                        0
+                    }, // jump to point D
+                -(condition_code.len() as isize), // jump to point B
+                yield_value,
+            );
+
+            //// Arrange all the instructions into the output instruction list
+            // A
+            // pre-loop push scope to allow break/continue not to leak memory into the iv stack
+            instructions.push(Instr::PushScope);
+            // B
+            instructions.append(&mut condition_code);
+            instructions.append(&mut loop_code);
+            // C
+            // instructions.push(Instr::DiscardScope);
+
+            if let Some(mut else_code) = else_code {
+                // instructions.push(Instr::Jump((else_code.len() + 1) as isize)); // jump to point E
+                //                                                                 // D
+                instructions.append(&mut else_code);
+            } else if yield_value {
+                instructions.push(Instr::PushVoid);
+            }
+            // D
+
+            Value
+        }
         CMExpression::LoopBreak(value) => {
             let res = match value {
                 Some(value) => compile_expr(*value, instructions, true),

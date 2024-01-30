@@ -73,13 +73,29 @@ let some_result = if b > a {
 
 let a = 5
 let b = 1
-loop {
-    if a == 1 {
-        break b
-    }
+while a > 1 {
     b = b * a
     a = a - 1
-} + some_result + j // -> 5! + 4 + 420*10000 = 4200124
+}
+
+a = 5
+let c_ = 1
+let c = while a > 1 {
+    c_ = c_ * a
+    a = a - 1
+    // break 9999999
+} else {
+    c_
+}
+
+b + c + some_result + j // -> 5! + 5! + 4 + 420*10000 = 4200244
+// loop {
+//     if a == 1 {
+//         break b
+//     }
+//     b = b * a
+//     a = a - 1
+// } + some_result + j // -> 5! + 4 + 420*10000 = 4200124
 
            ", // */
     );

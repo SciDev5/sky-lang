@@ -180,6 +180,13 @@ pub fn execute(module: &BytecodeModule, gc: &mut GarbageCollector) -> Result<Val
                 call_stack_top.iv_stack.drain(reset_iv_stack_to_len..);
                 call_stack_top.iv_stack.push(top);
             }
+            Instr::DiscardScope => {
+                let reset_iv_stack_to_len = call_stack_top
+                    .scope_ivlen_stack
+                    .pop()
+                    .expect("scope stack was drained");
+                call_stack_top.iv_stack.drain(reset_iv_stack_to_len..);
+            }
             Instr::ResetScope => {
                 let reset_iv_stack_to_len = *call_stack_top
                     .scope_ivlen_stack

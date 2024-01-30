@@ -142,11 +142,13 @@ pub enum ASTExpression {
     LoopWhile {
         condition: Box<ASTExpression>,
         block: ASTBlock,
+        else_block: Option<ASTBlock>,
     },
     For {
         loop_var: (IdentStr, Option<RMType>),
         iterable: Box<ASTExpression>,
         block: ASTBlock,
+        else_block: Option<ASTBlock>,
     },
     Break(Option<Box<ASTExpression>>),
     Continue,

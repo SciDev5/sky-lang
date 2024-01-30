@@ -1035,7 +1035,19 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                 let condition = Box::new(t.parse_condition_expr()?);
                 let block = t.parse_curly_block()?;
 
-                Ok(ASTExpression::LoopWhile { condition, block })
+                let else_block = match t.parse_optional_result(
+                    |t| t.try_keyword(Keyword::ConditionalElse),
+                    |t, _| t.parse_curly_block(),
+                ) {
+                    Some(else_block) => Some(else_block?),
+                    None => None,
+                };
+
+                Ok(ASTExpression::LoopWhile {
+                    condition,
+                    block,
+                    else_block,
+                })
             },
         )
     }

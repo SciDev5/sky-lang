@@ -568,13 +568,15 @@ fn resolve_expr(
             object,
             indices,
             value,
+            op,
         } => todo!(),
         RMExpression::AssignProperty {
             object,
             property,
             value,
+            op,
         } => todo!(),
-        RMExpression::AssignVar { ident, value } => {
+        RMExpression::AssignVar { ident, value, op } => {
             if let Some(var_id) = locals_lookup.get(&ident).copied() {
                 let (value, ty_value) = resolve_expr(
                     *value,
@@ -617,20 +619,38 @@ fn resolve_expr(
                 };
                 if let Some(error) = error {
                     (CMExpression::Fail, eval_ty)
-                } else if !var.writable && var.assigned {
-                    state.add_diagnostic(Raw2CommonDiagnostic {
-                        text: format!("attempt to reassign immutable var '{ident}'"),
-                    });
-                    (CMExpression::Fail, eval_ty)
                 } else {
-                    var.assigned = true;
-                    (
-                        CMExpression::AssignVar {
-                            ident: var_id,
-                            value: Box::new(value),
-                        },
-                        eval_ty,
-                    )
+                    if let Some(op) = op {
+                        if !var.writable {
+                            state.add_diagnostic(Raw2CommonDiagnostic {
+                                text: format!("attempt to modify immutable var '{ident}'"),
+                            });
+                            (CMExpression::Fail, eval_ty)
+                        } else if !var.assigned {
+                            state.add_diagnostic(Raw2CommonDiagnostic {
+                                text: format!("attempt to modify unassigned var '{ident}'"),
+                            });
+                            (CMExpression::Fail, eval_ty)
+                        } else {
+                            todo!("// TODO this requires mutable references to exist");
+                        }
+                    } else {
+                        if !var.writable && var.assigned {
+                            state.add_diagnostic(Raw2CommonDiagnostic {
+                                text: format!("attempt to reassign immutable var '{ident}'"),
+                            });
+                            (CMExpression::Fail, eval_ty)
+                        } else {
+                            var.assigned = true;
+                            (
+                                CMExpression::AssignVar {
+                                    ident: var_id,
+                                    value: Box::new(value),
+                                },
+                                eval_ty,
+                            )
+                        }
+                    }
                 }
             } else {
                 state.add_diagnostic(Raw2CommonDiagnostic {
@@ -1200,8 +1220,86 @@ fn resolve_expr(
             loop_var,
             iterable,
             block,
+            else_block,
         } => todo!(),
-        RMExpression::LoopWhile { condition, block } => todo!(),
+        RMExpression::LoopWhile {
+            condition,
+            block,
+            else_block,
+        } => {
+            let (condition, condition_ty) = resolve_expr(
+                *condition,
+                state,
+                current_fn_stack,
+                statics_stack,
+                locals,
+                locals_lookup,
+                loop_context_stack,
+                ty_return,
+            );
+            let else_block = match else_block {
+                Some(else_block) => {
+                    let (else_block, break_ty) = resolve_block(
+                        else_block,
+                        state,
+                        current_fn_stack,
+                        statics_stack,
+                        locals,
+                        locals_lookup,
+                        loop_context_stack,
+                        ty_return,
+                    );
+                    loop_context_stack.push(LoopContext {
+                        returnable: true,
+                        return_value: break_ty,
+                    });
+                    Some(else_block)
+                }
+                None => {
+                    loop_context_stack.push(LoopContext {
+                        returnable: false,
+                        return_value: CMType::Never, // <- doesn't really matter
+                    });
+                    None
+                }
+            };
+
+            let (block, _) = resolve_block(
+                block,
+                state,
+                current_fn_stack,
+                statics_stack,
+                locals,
+                locals_lookup,
+                loop_context_stack,
+                ty_return,
+            );
+            let LoopContext {
+                return_value,
+                returnable,
+            } = loop_context_stack
+                .pop()
+                .expect("loop_context_stack somehow got drained");
+            let return_ty = if returnable {
+                return_value
+            } else {
+                CMType::Void
+            };
+            if condition_ty != CMType::Bool {
+                state.add_diagnostic(Raw2CommonDiagnostic {
+                    text: format!("while loop condition does not evalate to boolean"),
+                });
+                return (CMExpression::FailAfter(vec![condition]), return_ty);
+            }
+            (
+                CMExpression::LoopWhile {
+                    condition: Box::new(condition),
+                    block,
+                    else_block: else_block.map(|block| (block, return_ty.clone())),
+                },
+                return_ty,
+            ) // return_value defaults to never because if there are no breaks it won't ever end. it's just that shrimple, such a sofishticated solution, mantastic.
+        }
         RMExpression::LoopContinue => {
             if loop_context_stack.is_empty() {
                 state.add_diagnostic(Raw2CommonDiagnostic {

@@ -43,6 +43,8 @@ pub enum Instr {
     /// `[...<keep>], [...<discard>, value] -> [...<keep>, value]`
     PopScope,
     /// `[...<keep>], [...<discard>] -> [...<keep>]`
+    DiscardScope,
+    /// `[...<keep>], [...<discard>] -> [...<keep>]`
     ResetScope,
 
     /// `[..., obj] -> [..., value]`

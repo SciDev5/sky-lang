@@ -115,15 +115,18 @@ pub enum RMExpression {
         object: Box<RMExpression>,
         indices: Vec<RMExpression>,
         value: Box<RMExpression>,
+        op: Option<SLOperator>,
     },
     AssignProperty {
         object: Box<RMExpression>,
         property: IdentStr,
         value: Box<RMExpression>,
+        op: Option<SLOperator>,
     },
     AssignVar {
         ident: IdentStr,
         value: Box<RMExpression>,
+        op: Option<SLOperator>,
     },
     ReadIndex {
         expr: Box<RMExpression>,
@@ -182,10 +185,12 @@ pub enum RMExpression {
         loop_var: (IdentStr, Option<RMType>),
         iterable: Box<RMExpression>,
         block: RMBlock,
+        else_block: Option<RMBlock>,
     },
     LoopWhile {
         condition: Box<RMExpression>,
         block: RMBlock,
+        else_block: Option<RMBlock>,
     },
     LoopBreak(Option<Box<RMExpression>>),
     LoopContinue,

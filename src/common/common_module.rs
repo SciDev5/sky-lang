@@ -5,7 +5,7 @@ use num::complex::Complex64;
 use crate::{
     common::{IdentInt, IdentStr},
     math::tensor::Tensor,
-    parse::fn_lookup::FnRef,
+    parse::{fn_lookup::FnRef, ops::SLOperator},
 };
 
 pub type DocComment = Option<String>;
@@ -156,6 +156,12 @@ pub enum CMExpression {
         loop_var: (IdentStr, CMType),
         iterable: Box<CMExpression>,
         block: Vec<CMExpression>,
+        else_block: Option<(Vec<CMExpression>, CMType)>,
+    },
+    LoopWhile {
+        condition: Box<CMExpression>,
+        block: Vec<CMExpression>,
+        else_block: Option<(Vec<CMExpression>, CMType)>,
     },
     LoopBreak(Option<Box<CMExpression>>),
     LoopContinue,

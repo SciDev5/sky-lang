@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{collections::HashMap, fmt::Debug};
 
 use num::complex::Complex64;
 
@@ -9,7 +9,7 @@ use crate::{
 
 use super::{
     ops::SLOperator,
-    raw_module::RMType,
+    raw_module::{RMTemplateDef, RMType},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,23 +154,44 @@ pub enum ASTExpression {
     Continue,
 
     Return(Option<Box<ASTExpression>>),
-    FunctionDefinition {
-        doc_comment: DocComment,
-        ident: IdentStr,
-        params: Vec<ASTTypedIdent>,
-        return_ty: Option<RMType>,
-        block: ASTBlock,
-    },
+    FunctionDefinition(ASTFunctionDefinition),
 
     StructDefinition {
         doc_comment: DocComment,
         ident: IdentStr,
         properties: Vec<(IdentStr, DocComment, RMType)>,
         // TODO associated functionality
+        functions: HashMap<IdentStr, Vec<ASTFunctionDefinition>>,
+    },
+    TraitDefinition {
+        doc_comment: DocComment,
+        ident: IdentStr,
+        bounds: (),
+        // TODO associated types and consts
+        functions: HashMap<IdentStr, Vec<ASTTraitFunctionDefinition>>,
     },
 }
 
 pub type ASTBlock = Vec<ASTExpression>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASTFunctionDefinition {
+    pub doc_comment: DocComment,
+    pub ident: IdentStr,
+    pub params: Vec<ASTTypedIdent>,
+    pub return_ty: Option<RMType>,
+    pub block: ASTBlock,
+    pub local_template_defs: Vec<RMTemplateDef>,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASTTraitFunctionDefinition {
+    pub doc_comment: DocComment,
+    pub ident: IdentStr,
+    pub params: Vec<ASTTypedIdent>,
+    pub return_ty: Option<RMType>,
+    pub block: Option<ASTBlock>,
+    pub local_template_defs: Vec<RMTemplateDef>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ASTLiteral {

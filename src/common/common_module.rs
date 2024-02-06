@@ -17,7 +17,7 @@ pub struct CMLocalVarInfo {
     pub writable: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CMFunction {
     pub doc_comment: DocComment,
     pub params: Vec<CMType>,
@@ -26,6 +26,13 @@ pub struct CMFunction {
     pub ty_return: CMType,
     pub block: Vec<CMExpression>,
 }
+#[derive(Debug, Clone)]
+pub struct CMAbstractFunction {
+    pub doc_comment: DocComment,
+    pub params: Vec<CMType>,
+    pub ty_return: CMType,
+}
+
 #[derive(Debug)]
 pub struct CMClosureFunction {
     params: Vec<CMType>,
@@ -50,9 +57,31 @@ pub struct CMStruct {
     pub fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
     pub functions: Vec<IdentInt>,
 }
-
-fn k(k: i128) -> ! {
-    panic!("")
+struct CMTraitImpl {
+    pub target_trait: CMTrait,
+    pub functions: Vec<CMFunction>,
+}
+struct CMTrait {
+    pub doc_comment: DocComment,
+    pub function_lut: HashMap<IdentStr, IdentInt>,
+    pub functions: Vec<CMTraitFunction>,
+}
+#[derive(Debug, Clone)]
+enum CMTraitFunction {
+    Implemented(CMFunction),
+    Abstract(CMAbstractFunction),
+}
+impl CMTraitFunction {
+    fn as_abstract(&self) -> CMAbstractFunction {
+        match self {
+            Self::Implemented(f) => CMAbstractFunction {
+                doc_comment: f.doc_comment.clone(),
+                params: f.params.clone(),
+                ty_return: f.ty_return.clone(),
+            },
+            Self::Abstract(f) => f.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

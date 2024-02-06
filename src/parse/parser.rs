@@ -10,7 +10,7 @@ h { f -> }
 
 */
 
-use std::{fmt::Debug, vec};
+use std::{collections::HashMap, fmt::Debug, vec};
 
 use num::complex::Complex64;
 
@@ -22,10 +22,11 @@ use crate::{
 use super::{
     ast::{
         ASTAnonymousFunction, ASTBlock, ASTBlockStructInit, ASTCompoundPostfixContents,
-        ASTExpression, ASTLiteral, ASTOptionallyTypedIdent, ASTTypedIdent, ASTVarAccessExpression,
+        ASTExpression, ASTFunctionDefinition, ASTLiteral, ASTOptionallyTypedIdent, ASTTypedIdent,
+        ASTVarAccessExpression,
     },
     ops::SLOperator,
-    raw_module::RMType,
+    raw_module::{RMTemplateDef, RMType},
     tokenization::{BracketType, Keyword, SLSymbol, SLToken, SeparatorType},
 };
 
@@ -735,6 +736,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
 
             // -- static definitions -- //
             try_parse_static_function_declaration => |it| it?,
+            try_parse_static_trait_declaration => |it| it?,
             try_parse_static_struct_declaration => |it| it?,
 
         ) {
@@ -1297,14 +1299,30 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         })
     }
 
+    fn try_parse_trait_bounds(&mut self) -> Option<ParseResult<()>> {
+        self.parse_optional_result(
+            |t| t.try_separator(SeparatorType::Colon),
+            |t, _| todo!("// TODO parse_template_def trait bound"),
+        )
+    }
+    fn parse_template_def(&mut self) -> ParseResult<RMTemplateDef> {
+        let ident = self.ident()?;
+        let other_data = match self.try_parse_trait_bounds() {
+            Some(t) => Some(t?),
+            None => None,
+        };
+        return Ok(RMTemplateDef { ident });
+        //
+    }
+
     /// Parse a function definition.
     ///
     /// ```plaintext
-    /// $( $doc_comment )? fn $fn_name ( $( $param ),* ) $( -> $ret_ty )? $(
-    ///     = $fn_body
-    /// )|(
-    ///     { $fn_body }
-    /// )
+    /// $( $doc_comment )? fn $fn_name
+    ///     $( < $( $template_def ),+ > )?
+    ///     ( $( $param ),* )
+    ///     $( -> $ret_ty )?
+    ///     $( = $fn_body )|( { $fn_body } )
     /// ````
     fn try_parse_static_function_declaration(&mut self) -> Option<ParseResult<ASTExpression>> {
         self.parse_optional_result(
@@ -1315,6 +1333,21 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
             },
             |t, doc_comment| {
                 let ident = t.ident()?;
+
+                let local_template_defs = t
+                    .parse_optional_result(
+                        |t| t.try_symbol(SLSymbol::AngleOpen),
+                        |t, _| {
+                            t.parse_until(
+                                Self::parse_template_def,
+                                SLToken::Separator(SeparatorType::Comma),
+                                SLToken::Symbol(SLSymbol::AngleClose),
+                                ParseDiagnostic::ExpectedSeparator(SeparatorType::Comma),
+                            )
+                        },
+                    )
+                    .unwrap_or_else(|| Ok(vec![]))?;
+
                 t.try_bracket_open(BracketType::Paren);
                 let params = t.parse_until(
                     |t| t.parse_ident_typed(),
@@ -1339,21 +1372,26 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                         t.parse_block::</* not top-level */false>()?
                     } else if matches!(next, Some(SLToken::Symbol(SLSymbol::Assign))) {
                         // = ...
-                        vec![t.parse_expr::</* allow range literals */true,/* allow block postfixes */true>()?]
+                        vec![t.parse_expr::<
+                            /* allow range literals */true,
+                            /* allow block postfixes */true,
+                        >()?]
                     } else {
                         t.rewind();
                         t.diagnostics.push(ParseDiagnostic::ExpectedFunctionBody);
                         return Err(true);
                     }
                 };
+                let block = vec![];
 
-                Ok(ASTExpression::FunctionDefinition {
+                Ok(ASTExpression::FunctionDefinition(ASTFunctionDefinition {
                     doc_comment,
                     ident,
                     params,
                     return_ty,
                     block,
-                })
+                    local_template_defs,
+                }))
             },
         )
     }
@@ -1417,6 +1455,40 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                     doc_comment,
                     ident,
                     properties,
+                    functions: todo!("// TODO struct definition function parsing")
+                })
+            },
+        )
+    }
+    fn try_parse_static_trait_declaration(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(
+            |t| {
+                let doc_comment = t.try_doc_comment();
+                t.try_keyword(Keyword::TraitDefinition)?;
+                Some(doc_comment)
+            },
+            |t, doc_comment| {
+                let ident = t.ident()?;
+                // TODO template types in traits
+                let bounds = match t.try_parse_trait_bounds() {
+                    Some(v) => v?,
+                    None => (),
+                };
+
+                let mut functions = HashMap::new();
+                t.bracket_open(BracketType::Curly);
+                while !matches!(
+                    t.peek_next(),
+                    Some(SLToken::BracketClose(BracketType::Curly)) | None
+                ) {
+                    todo!("// TODO parse trait function")
+                }
+
+                Ok(ASTExpression::TraitDefinition {
+                    doc_comment,
+                    ident,
+                    bounds,
+                    functions,
                 })
             },
         )

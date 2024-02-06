@@ -1,0 +1,62 @@
+traits + templates
+
+constrain<T> {
+    // ...
+}
+// syntactic sugar
+
+fn x<T:A>(a:T)->T {
+    a.a();
+    // ...
+}
+// should probably make a semi-compilation step that resolves functions created by trait bounds.
+
+
+traits vs interfaces:
+  traits pros:
+    - flexible, covers functionality of extension functions, interfaces, and abstract (without data)
+  traits cons:
+    - nobody knows what they are except haskell and rust nerds
+    - no attatched data
+    - free floating
+  interface/abstract pros:
+    - understood
+    - concise
+  interface/abstract cons:
+    - restrictive in comparison to traits
+
+-> traits but with concise syntax
+
+new function compilation goes:
+- static reference resolution pass
+    - resolves all static references such as traits and structs
+- type resolution pass
+    - semicompilation subpass
+        for traits
+    - assigns trait bounds from `constrain` to functions
+    - includes trait usages and return types
+    - will reify trait function calls if the type is known, only exception is generics
+- template resolution pass
+    - generics are filled in with real types, remaining trait function calls are reified
+- inlining pass
+    - inlines functions if either told directly to or if the compiler feels like it, depending on the vibe of the function
+
+
+anatomy of a template type:
+    - name (obviously)
+    - trait bounds
+
+
+template for functions stored in overload variants
+
+
+TODO figure out how to track and resolve template types in vars
+
+
+TODO figure out relationship between const eval and templates, see how far i can take it
+possible macros:
+    - AST transform macros
+    - parser macros
+    - aspect macros
+    - derive macros
+    - const eval and inline functions

@@ -5,7 +5,8 @@ use crate::common::{IdentInt, IdentStr};
 use super::{
     ast::{
         ASTAnonymousFunction, ASTArray, ASTBlock, ASTCompoundPostfixContents, ASTExpression,
-        ASTLiteral, ASTOptionallyTypedIdent, ASTTypedIdent, ASTVarAccessExpression,
+        ASTFunctionDefinition, ASTLiteral, ASTOptionallyTypedIdent, ASTTypedIdent,
+        ASTVarAccessExpression,
     },
     raw_module::{
         LiteralStructInit, RMBlock, RMExpression, RMFunction, RMLiteralArray, RMLiteralValue,
@@ -134,15 +135,17 @@ fn transform_expr(
         ////////////////////////////////////////////
         // move function/struct definitions to static list
         //
-        ASTExpression::FunctionDefinition {
+        ASTExpression::FunctionDefinition(ASTFunctionDefinition {
             doc_comment,
             ident,
             params,
             return_ty,
             block,
-        } => {
+            local_template_defs,
+        }) => {
             let function = RMFunction {
                 doc_comment,
+                local_template_defs,
                 params: params
                     .into_iter()
                     .map(|ASTTypedIdent { ident, ty }| (ident, ty))
@@ -166,6 +169,7 @@ fn transform_expr(
             doc_comment,
             ident,
             properties,
+            functions,
         } => {
             let mut functions = HashMap::new();
 
@@ -187,6 +191,14 @@ fn transform_expr(
                 .or_insert(id);
 
             RMExpression::Void
+        }
+        ASTExpression::TraitDefinition {
+            doc_comment,
+            ident,
+            bounds,
+            functions,
+        } => {
+            todo!("// TODO ast_2_raw trait def")
         }
 
         // TODO enums in ast_2_raw

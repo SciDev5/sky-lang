@@ -324,6 +324,8 @@ gen_Keyword! {
     StructTuple ("tuple"),
     /// Enum definition
     EnumDefinition ("enum"),
+    /// Trait definition
+    TraitDefinition ("trait"),
 }
 
 macro_rules! gen_SLSymbol {

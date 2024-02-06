@@ -23,9 +23,16 @@ impl ScopedStatics {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RMTemplateDef {
+    pub ident: IdentStr,
+    // TODO trait bounds
+}
+
 #[derive(Debug)]
 pub struct RMFunction {
     pub doc_comment: DocComment,
+    pub local_template_defs: Vec<RMTemplateDef>,
     pub params: Vec<(IdentStr, RMType)>,
     pub return_ty: Option<RMType>,
     pub block: RMBlock,

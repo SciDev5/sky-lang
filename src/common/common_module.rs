@@ -16,21 +16,56 @@ pub struct CMLocalVarInfo {
     pub ty: CMType,
     pub writable: bool,
 }
+#[derive(Debug, Clone)]
+pub struct CMFunctionInfo {
+    pub doc_comment: DocComment,
+    pub params: Vec<CMType>,
+    pub ty_return: CMType,
+}
 
 #[derive(Debug, Clone)]
 pub struct CMFunction {
-    pub doc_comment: DocComment,
-    pub params: Vec<CMType>,
+    info: CMFunctionInfo,
     /// local variables, including auto-generated parameter locals
     pub locals: Vec<CMLocalVarInfo>,
-    pub ty_return: CMType,
     pub block: Vec<CMExpression>,
 }
 #[derive(Debug, Clone)]
-pub struct CMAbstractFunction {
-    pub doc_comment: DocComment,
-    pub params: Vec<CMType>,
-    pub ty_return: CMType,
+pub struct CMFunctionSet {
+    info: CMFunctionInfo,
+    /// local variables, including auto-generated parameter locals
+    pub locals: Vec<CMLocalVarInfo>,
+    pub dyn_block: Vec<CMExpression>,
+}
+#[derive(Debug, Clone)]
+pub enum CMTraitFunction {
+    Abstract {
+        is_member: bool,
+        info: CMFunctionInfo,
+    },
+    Defaulted {
+        is_member: bool,
+        function: CMFunction,
+    },
+}
+impl CMTraitFunction {
+    fn info(&self) -> &CMFunctionInfo {
+        match self {
+            Self::Abstract {
+                is_member: bool,
+                info,
+            } => info,
+            Self::Defaulted {
+                function: CMFunction { info, .. },
+                ..
+            } => info,
+        }
+    }
+}
+#[derive(Debug, Clone)]
+struct CMAssociatedFunction {
+    pub id: IdentInt,
+    pub is_member: bool,
 }
 
 #[derive(Debug)]
@@ -50,38 +85,24 @@ pub struct CMInlineLambda {
     locals: Vec<CMLocalVarInfo>,
     block: Vec<CMExpression>,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CMStruct {
     pub doc_comment: DocComment,
     pub fields: Vec<CMType>,
     pub fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
-    pub functions: Vec<IdentInt>,
+    pub impl_functions: Vec<CMAssociatedFunction>,
+    pub impl_traits: HashMap<IdentInt, CMTraitImpl>,
 }
+#[derive(Debug, Clone)]
 struct CMTraitImpl {
-    pub target_trait: CMTrait,
-    pub functions: Vec<CMFunction>,
+    pub trait_id: IdentInt,
+    pub functions: Vec<CMAssociatedFunction>,
 }
+#[derive(Debug, Clone)]
 struct CMTrait {
     pub doc_comment: DocComment,
     pub function_lut: HashMap<IdentStr, IdentInt>,
     pub functions: Vec<CMTraitFunction>,
-}
-#[derive(Debug, Clone)]
-enum CMTraitFunction {
-    Implemented(CMFunction),
-    Abstract(CMAbstractFunction),
-}
-impl CMTraitFunction {
-    fn as_abstract(&self) -> CMAbstractFunction {
-        match self {
-            Self::Implemented(f) => CMAbstractFunction {
-                doc_comment: f.doc_comment.clone(),
-                params: f.params.clone(),
-                ty_return: f.ty_return.clone(),
-            },
-            Self::Abstract(f) => f.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -156,6 +177,14 @@ pub enum CMExpression {
         inlined_lambdas: Option<Vec<CMInlineLambda>>,
     },
 
+    CallDyn {
+        trait_id: FnRef,
+        function_id: FnRef,
+        arguments: Vec<CMExpression>,
+        always_inline: bool,
+        inlined_lambdas: Option<Vec<CMInlineLambda>>,
+    },
+
     LiteralValue(CMLiteralValue),
     LiteralArray(CMLiteralArray),
     LiteralFunctionRef {
@@ -200,9 +229,11 @@ pub enum CMExpression {
 
 #[derive(Debug)]
 pub struct CommonModule {
-    pub functions: Vec<CMFunction>,
+    pub functions_reified: Vec<CMFunction>,
+    pub function_sets: Vec<CMFunctionSet>,
     pub closure_functions: Vec<CMClosureFunction>,
     pub structs: Vec<CMStruct>,
+    pub traits: Vec<CMTrait>,
 
     pub top_level: (Vec<CMExpression>, Vec<CMLocalVarInfo>, CMType),
 }

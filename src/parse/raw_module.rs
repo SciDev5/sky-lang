@@ -29,21 +29,54 @@ pub struct RMTemplateDef {
     // TODO trait bounds
 }
 
-#[derive(Debug)]
-pub struct RMFunction {
+#[derive(Debug, Clone)]
+pub struct RMFunctionInfo {
     pub doc_comment: DocComment,
-    pub local_template_defs: Vec<RMTemplateDef>,
     pub params: Vec<(IdentStr, RMType)>,
+    pub local_template_defs: Vec<RMTemplateDef>,
     pub return_ty: Option<RMType>,
-    pub block: RMBlock,
     /// Contains references to all static references this function can see, including itself.
     pub all_scoped: ScopedStatics,
+}
+#[derive(Debug, Clone)]
+pub struct RMFunction {
+    pub info: RMFunctionInfo,
+    pub block: RMBlock,
+}
+#[derive(Debug, Clone, Copy)]
+struct RMAssociatedFunction {
+    pub id: IdentInt,
+    pub is_member: bool,
+}
+#[derive(Debug, Clone)]
+pub enum RMTraitFunction {
+    Abstract {
+        is_member: bool,
+        info: RMFunctionInfo,
+    },
+    Defaulted {
+        is_member: bool,
+        function: RMFunction,
+    },
 }
 #[derive(Debug)]
 pub struct RMStruct {
     pub doc_comment: DocComment,
     pub fields: HashMap<IdentStr, (RMType, DocComment)>,
-    pub functions: HashMap<IdentStr, Vec<IdentInt>>,
+    pub impl_functions: HashMap<IdentStr, RMAssociatedFunction>,
+    pub impl_traits: HashMap<IdentInt, RMTraitImpl>,
+    /// Contains references to all static references this struct can see, including itself.
+    pub all_scoped: ScopedStatics,
+}
+#[derive(Debug, Clone)]
+struct RMTraitImpl {
+    pub trait_id: IdentInt,
+    pub functions: Vec<RMAssociatedFunction>,
+}
+#[derive(Debug)]
+pub struct RMTrait {
+    pub doc_comment: DocComment,
+    pub functions: HashMap<IdentStr, IdentInt>,
     /// Contains references to all static references this struct can see, including itself.
     pub all_scoped: ScopedStatics,
 }

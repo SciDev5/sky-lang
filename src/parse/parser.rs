@@ -68,6 +68,8 @@ pub enum ParseDiagnostic {
     ExpectedFunctionBody,
     ExpectedTypeAnnotation,
     UnexpectedExtraCallbackArgument,
+    DuplicateFunctions,
+    ExpectedStructFunctions,
 }
 
 #[derive(Debug)]
@@ -1328,6 +1330,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         &mut self,
         doc_comment: DocComment,
         can_be_disembodied: bool,
+        can_be_instance: bool,
     ) -> ParseResult<ASTFunctionDefinition> {
         let ident = self.ident()?;
 
@@ -1387,7 +1390,10 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
             params,
             return_ty,
             block,
-            is_member: false, // TODO is_member
+            is_member: {
+                eprintln!("// TODO is_member");
+                can_be_instance
+            },
             local_template_defs,
             can_be_disembodied,
         })
@@ -1405,6 +1411,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
     fn try_parse_function_declaration(
         &mut self,
         can_be_disembodied: bool,
+        can_be_instance: bool,
     ) -> Option<ParseResult<ASTFunctionDefinition>> {
         self.parse_optional_result(
             |t| {
@@ -1413,13 +1420,18 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                 Some(doc_comment)
             },
             |t, doc_comment| {
-                Self::finish_parse_function_declaration(t, doc_comment, can_be_disembodied)
+                Self::finish_parse_function_declaration(
+                    t,
+                    doc_comment,
+                    can_be_disembodied,
+                    can_be_instance,
+                )
             },
         )
     }
     /// Parse a function that would appear as a stand-alone declaration.
     fn try_parse_top_level_function_declaration(&mut self) -> Option<ParseResult<ASTExpression>> {
-        self.try_parse_function_declaration(false)
+        self.try_parse_function_declaration(false, false)
             .map(|v| v.map(|v| ASTExpression::FunctionDefinition(v)))
     }
 
@@ -1474,7 +1486,40 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                     }
                 }
 
+
+                let mut impl_functions = HashMap::new();
+                let mut impl_traits = HashMap::new();
+
                 while !matches!(t.peek_next(), Some(SLToken::BracketClose(_))) {
+                    // Unexpected end of input
+                    if t.peek_next().is_none() {
+                        t.diagnostics.push(ParseDiagnostic::UnexpectedEnd);
+                        return Err(false);
+                    }
+
+                    // Simple function implementation
+                    match t.try_parse_function_declaration(false, true) {
+                        Some(Ok(func)) => {
+                            impl_functions.entry(func.ident.clone()).and_modify(|_| {
+                                t.diagnostics.push(ParseDiagnostic::DuplicateFunctions);
+                            }).or_insert(func);
+                            continue;
+                        }
+                        Some(Err(recoverable)) => if recoverable {
+                            continue;
+                        } else {
+                            return Err(false);
+                        }
+                        None => {}
+                    }
+
+                    // Trait implementation
+                    if t.try_keyword(Keyword::Implementation).is_some() {
+                        todo!("// TODO struct definition trait implementation parsing")
+                    }
+
+                    // Unexpected token
+                    t.diagnostics.push(ParseDiagnostic::ExpectedStructFunctions);
                     t.next()?;
                 }
                 t.bracket_close(BracketType::Curly)?;
@@ -1483,8 +1528,8 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                     doc_comment,
                     ident,
                     properties,
-                    impl_functions: todo!("// TODO struct definition function parsing"),
-                    impl_traits: todo!("// TODO struct definition trait implementation parsing"),
+                    impl_functions,
+                    impl_traits,
                 })
             },
         )

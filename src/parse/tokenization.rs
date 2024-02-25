@@ -326,6 +326,8 @@ gen_Keyword! {
     EnumDefinition ("enum"),
     /// Trait definition
     TraitDefinition ("trait"),
+    /// Functional implementation block marker
+    Implementation ("impl"),
 }
 
 macro_rules! gen_SLSymbol {

@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use lazy_static::lazy_static;
 
 use crate::common::{
-    common_module::CMType,
+    common_module::{CMAssociatedFunction, CMType},
     IdentInt, IdentStr,
 };
 
-use super::ops::SLOperator;
+use super::{ops::SLOperator, raw_2_common::ResolverGlobalState};
 
 #[derive(Debug, Clone, Copy)]
 pub enum FnRef {
@@ -165,6 +165,7 @@ pub fn lookup_fallback<'a, I: Iterator<Item = (&'a Vec<CMType>, FnRef)>>(
     <[_; 1]>::try_from(best_match).ok().map(|[f]| f)
 }
 
+#[derive(Debug, Clone)]
 pub struct AssociatedFnLut {
     /// this <op> other
     pub op_binary: HashMap<(SLOperator, CMType), FnRef>,
@@ -173,7 +174,7 @@ pub struct AssociatedFnLut {
     pub op_unary: HashMap<SLOperator, FnRef>,
     pub op_call: Overloads,
     pub op_index: Overloads,
-    pub named: HashMap<IdentStr, Overloads>,
+    pub named: HashMap<IdentStr, usize>,
 }
 impl AssociatedFnLut {
     pub fn empty() -> Self {
@@ -343,7 +344,19 @@ lazy_static! {
     };
 }
 
-pub fn get_fn_lut<'a, 'b>(ty: &'b CMType) -> &'a AssociatedFnLut {
+pub fn gen_struct_fn_lut(
+    impl_functions: &HashMap<String, CMAssociatedFunction>,
+    is_instance_lut: bool,
+) -> AssociatedFnLut {
+    let mut lut = AssociatedFnLut::empty();
+    for (name, CMAssociatedFunction { id, is_member }) in impl_functions {
+        if *is_member || !is_instance_lut {
+            lut.named.insert(name.clone(), *id);
+        }
+    }
+    lut
+}
+pub fn get_fn_lut<'a>(ty: &CMType, state: &'a ResolverGlobalState) -> &'a AssociatedFnLut {
     match ty {
         CMType::Void => &INTRINSICS.empty_lut,
         CMType::Unknown => panic!("should not have allowed associated function lookup on unknown"),
@@ -356,7 +369,7 @@ pub fn get_fn_lut<'a, 'b>(ty: &'b CMType) -> &'a AssociatedFnLut {
         CMType::String => &INTRINSICS.string,
         CMType::Tuple(_) => &INTRINSICS.empty_lut,
         CMType::FunctionRef { params, return_ty } => todo!(),
-        CMType::StructData(_) => todo!(),
-        CMType::StructInstance(_) => todo!(),
+        CMType::StructInstance(id) => &state.structs[*id].fn_lut_inst,
+        CMType::StructData(id) => &state.structs[*id].fn_lut_clss,
     }
 }

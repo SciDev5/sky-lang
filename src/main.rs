@@ -19,85 +19,100 @@ fn main() {
 
     */
     let t = skylab::parse::tokenization::SLTokenizer::new();
+    //     let tokens = t.tokenize(
+    //         r"
+
+    // let a: int = 1 + k(1)
+    // /*{
+    //     4 + 3
+    // }*/
+    // let j = if a < 0 {
+    //     69
+    // } else if 4 < 32 {
+    //     420
+    // } else {
+    //     58913
+    // } * 10000
+
+    // // -a(2,4)[b]'
+    // struct Hello {
+    //     a: int
+    //     /// a property documenting comment
+    //     b: float
+    //     // d: Hello
+
+    //     fn a(d: int) = d * 2
+    // }
+
+    // // let x = 3 + 3
+    // let a = Hello.{
+    //     a: 4 + 4,
+    //     // c: 3.3
+    //     b: 2.4
+    // }
+    // // { it -> 3 }
+
+    // //    let x = 3 + 3
+    // a
+
+    // fn k() {
+    //     3
+    // }
+
+    // fn k(b: int) {
+    //     -b + k()
+    // }
+
+    // let a = k(k())
+    // let b = a + 1
+
+    // let some_result = if b > a {
+    //     1 + k(b * a)
+    // } else {
+    //     2
+    // } // -> 4
+
+    // let a = 5
+    // let b = 1
+    // while a > 1 {
+    //     b = b * a
+    //     a = a - 1
+    // }
+
+    // a = 5
+    // let c_ = 1
+    // let c = while a > 1 {
+    //     c_ = c_ * a
+    //     a = a - 1
+    //     // break 9999999
+    // } else {
+    //     c_
+    // }
+
+    // b + c + some_result + j // -> 5! + 5! + 4 + 420*10000 = 4200244
+    // // loop {
+    // //     if a == 1 {
+    // //         break b
+    // //     }
+    // //     b = b * a
+    // //     a = a - 1
+    // // } + some_result + j // -> 5! + 4 + 420*10000 = 4200124
+
+    //            ", // */
+    //     );
     let tokens = t.tokenize(
         r"
+struct A {
+    x: int
+    y: int
 
-let a: int = 1 + k(1)
-/*{
-    4 + 3
-}*/
-
-let j = if a < 0 {
-    69
-} else if 4 < 32 {
-    420
-} else {
-    58913
-} * 10000
-
-// -a(2,4)[b]'
-struct Hello {
-    a: int
-    /// a property documenting comment
-    b: float
-    // d: Hello
+    fn a(self: A, x: int) = x * self.x + self.y
 }
 
-// let x = 3 + 3
-let a = Hello.{
-    a: 4 + 4,
-    // c: 3.3
-    b: 2.4
-}
-// { it -> 3 }
+let b = A.{ x: 2, y: 3 }
 
-//    let x = 3 + 3
-a
-
-fn k() {
-    3
-}
-
-fn k(b: int) {
-    -b + k()
-}
-
-let a = k(k())
-let b = a + 1
-
-let some_result = if b > a {
-    1 + k(b * a)
-} else {
-    2
-} // -> 4
-
-let a = 5
-let b = 1
-while a > 1 {
-    b = b * a
-    a = a - 1
-}
-
-a = 5
-let c_ = 1
-let c = while a > 1 {
-    c_ = c_ * a
-    a = a - 1
-    // break 9999999
-} else {
-    c_
-}
-
-b + c + some_result + j // -> 5! + 5! + 4 + 420*10000 = 4200244
-// loop {
-//     if a == 1 {
-//         break b
-//     }
-//     b = b * a
-//     a = a - 1
-// } + some_result + j // -> 5! + 4 + 420*10000 = 4200124
-
-           ", // */
+b.a(100)
+",
     );
     for (i, token) in tokens.iter().enumerate() {
         println!("TOKEN[{}] | {:?}", i, &token);

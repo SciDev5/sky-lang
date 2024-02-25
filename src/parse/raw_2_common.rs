@@ -15,7 +15,7 @@ use crate::{
 };
 
 use super::{
-    fn_lookup::{AssociatedFnLut, FnRef},
+    fn_lookup::{gen_struct_fn_lut, AssociatedFnLut, FnRef},
     raw_module::{
         LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralValue,
         RMStruct, RMTrait, RMTraitImpl, RMType, RawModule, ScopedStatics,
@@ -85,24 +85,27 @@ impl PartiallyResolvedFunctionBody {
 }
 
 #[derive(Debug, Clone)]
-struct PartiallyResolvedStruct {
+pub struct PartiallyResolvedStruct {
     doc_comment: DocComment,
     fields: Vec<CMType>,
     fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
 
-    impl_functions: HashMap<IdentStr, CMAssociatedFunction>,
-    impl_traits: HashMap<IdentInt, RMTraitImpl>,
+    pub impl_functions: HashMap<IdentStr, CMAssociatedFunction>,
+    pub impl_traits: HashMap<IdentInt, RMTraitImpl>,
+
+    pub fn_lut_inst: AssociatedFnLut,
+    pub fn_lut_clss: AssociatedFnLut,
 }
 #[derive(Debug, Clone)]
-struct PartiallyResolvedTrait {
+pub struct PartiallyResolvedTrait {
     doc_comment: DocComment,
 
     functions: HashMap<String, CMAssociatedFunction>,
 }
-struct ResolverGlobalState {
+pub struct ResolverGlobalState {
     functions: Vec<PartiallyResolvedFunction>,
-    structs: Vec<PartiallyResolvedStruct>,
-    traits: Vec<PartiallyResolvedTrait>,
+    pub structs: Vec<PartiallyResolvedStruct>,
+    pub traits: Vec<PartiallyResolvedTrait>,
     diagnostics: Vec<Raw2CommonDiagnostic>,
 }
 impl ResolverGlobalState {
@@ -220,6 +223,8 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                         doc_comment,
                         fields,
                         fields_info,
+                        fn_lut_inst: gen_struct_fn_lut(&impl_functions, true),
+                        fn_lut_clss: gen_struct_fn_lut(&impl_functions, false),
                         impl_functions,
                         impl_traits: impl_traits
                             .into_iter()
@@ -329,6 +334,8 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                      fields_info,
                      impl_functions,
                      impl_traits,
+                     fn_lut_clss: _,
+                     fn_lut_inst: _,
                  }| {
                     CMStruct {
                         doc_comment,
@@ -449,7 +456,7 @@ fn resolve_fn<'a>(
 
     let mut loop_context_stack = vec![];
 
-    let mut ty_return_opt = ty_return;
+    let mut ty_return_opt = Some(ty_return.unwrap_or(CMType::Unknown));
 
     current_fn_stack.push(current_fn_id);
     let (mut translated, ty_eval) = resolve_block(
@@ -780,7 +787,37 @@ fn resolve_expr(
         RMExpression::ReadProperty {
             expr,
             property_ident,
-        } => todo!(),
+        } => {
+            let (expr, ty) = resolve_expr(
+                *expr,
+                state,
+                current_fn_stack,
+                statics_stack,
+                locals,
+                locals_lookup,
+                loop_context_stack,
+                ty_return,
+            );
+
+            match &ty {
+                CMType::StructInstance(id) => {
+                    if let Some((i, _)) = state.structs[*id].fields_info.get(&property_ident) {
+                        let ty_return = state.structs[*id].fields[*i].clone();
+
+                        (
+                            CMExpression::ReadProperty {
+                                expr: Box::new(expr),
+                                property_ident: *i,
+                            },
+                            ty_return,
+                        )
+                    } else {
+                        (CMExpression::FailAfter(vec![expr]), CMType::Unknown)
+                    }
+                }
+                _ => todo!("// TODO property resolution of non-struct things"),
+            }
+        }
         RMExpression::Ident { ident } => match locals_lookup.get(&ident) {
             Some(id) => {
                 let var = &locals[*id];
@@ -833,7 +870,7 @@ fn resolve_expr(
                 .into_iter()
                 .map(Option::unwrap)
                 .collect::<Vec<_>>();
-            match callable.as_ref() {
+            match *callable {
                 RMExpression::Ident { ident } => {
                     // function call
                     let mut best_fallback = None;
@@ -841,7 +878,7 @@ fn resolve_expr(
                     for function_id in statics_stack
                         .iter()
                         .rev()
-                        .flat_map(|frame| frame.functions.get(ident))
+                        .flat_map(|frame| frame.functions.get(&ident))
                         .flatten()
                         .copied()
                     {
@@ -885,7 +922,46 @@ fn resolve_expr(
                     expr,
                     property_ident,
                 } => {
-                    todo!("named associated functions");
+                    let (expr, ty) = resolve_expr(
+                        *expr,
+                        state,
+                        current_fn_stack,
+                        statics_stack,
+                        locals,
+                        locals_lookup,
+                        loop_context_stack,
+                        ty_return,
+                    );
+
+                    let fn_lut = get_fn_lut(&ty, state);
+                    dbg!(fn_lut);
+
+                    let base_impl_fn = fn_lut.named.get(&property_ident).and_then(|id| {
+                        let args = &state.functions[*id].params;
+                        dbg!(&args[1..], &ty_arguments, &args[0], &ty);
+                        if args[1..] == ty_arguments && &args[0] == &ty {
+                            Some(*id)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(base_impl_fn) = base_impl_fn {
+                        let ResolvedFnInfo { ty_return } =
+                            resolve_fn(state, base_impl_fn, current_fn_stack, false);
+                        (
+                            CMExpression::Call {
+                                function_id: FnRef::ModuleFunction(base_impl_fn),
+                                arguments: std::iter::once(expr)
+                                    .chain(resolved_arguments.into_iter())
+                                    .collect(),
+                                always_inline: false,
+                                inlined_lambdas: None,
+                            },
+                            ty_return.clone(),
+                        )
+                    } else {
+                        todo!("named associated functions (trait impls and such)");
+                    }
                 }
                 _ => {
                     // fail
@@ -1023,7 +1099,7 @@ fn resolve_expr(
                     }
                     return (
                         CMExpression::FailAfter(data.drain(..fail_at).collect()),
-                        CMType::StructData(ident),
+                        CMType::StructInstance(ident),
                     );
                 }
 
@@ -1033,7 +1109,7 @@ fn resolve_expr(
                         data,
                         assign_to: assign_to.into_iter().map(Option::unwrap).collect(),
                     },
-                    CMType::StructData(ident),
+                    CMType::StructInstance(ident),
                 )
             } else {
                 state.add_diagnostic(Raw2CommonDiagnostic {
@@ -1085,8 +1161,8 @@ fn resolve_expr(
                     (CMExpression::FailAfter(vec![lhs, rhs]), CMType::Never)
                 }
                 (ty_lhs, ty_rhs) => {
-                    let lut_lhs = get_fn_lut(&ty_lhs);
-                    let lut_rhs = get_fn_lut(&ty_rhs);
+                    let lut_lhs = get_fn_lut(&ty_lhs, state);
+                    let lut_rhs = get_fn_lut(&ty_rhs, state);
                     if let Some(function_id) = AssociatedFnLut::lookup_binary(
                         (lut_lhs, ty_lhs.clone()),
                         (lut_rhs, ty_rhs.clone()),
@@ -1140,7 +1216,7 @@ fn resolve_expr(
                     (CMExpression::FailAfter(vec![value]), CMType::Unknown)
                 }
                 ty => {
-                    let lut = get_fn_lut(&ty);
+                    let lut = get_fn_lut(&ty, state);
                     if let Some(function_id) = lut.lookup_unary(op) {
                         let ty_return =
                             lookup_fn_ref_ty_return(state, current_fn_stack, function_id, &[ty]);

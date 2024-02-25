@@ -15,7 +15,7 @@ use std::{collections::HashMap, fmt::Debug, vec};
 use num::complex::Complex64;
 
 use crate::{
-    common::IdentStr,
+    common::{common_module::DocComment, IdentStr},
     math::shunting_yard::{treeify_infix, ShuntingYardObj},
 };
 
@@ -735,7 +735,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
             try_parse_expr_parentheses => |expr| expr?,
 
             // -- static definitions -- //
-            try_parse_static_function_declaration => |it| it?,
+            try_parse_top_level_function_declaration => |it| it?,
             try_parse_static_trait_declaration => |it| it?,
             try_parse_static_struct_declaration => |it| it?,
 
@@ -1324,7 +1324,88 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
     ///     $( -> $ret_ty )?
     ///     $( = $fn_body )|( { $fn_body } )
     /// ````
-    fn try_parse_static_function_declaration(&mut self) -> Option<ParseResult<ASTExpression>> {
+    fn finish_parse_function_declaration(
+        &mut self,
+        doc_comment: DocComment,
+        can_be_disembodied: bool,
+    ) -> ParseResult<ASTFunctionDefinition> {
+        let ident = self.ident()?;
+
+        let local_template_defs = self
+            .parse_optional_result(
+                |t| t.try_symbol(SLSymbol::AngleOpen),
+                |t, _| {
+                    t.parse_until(
+                        Self::parse_template_def,
+                        SLToken::Separator(SeparatorType::Comma),
+                        SLToken::Symbol(SLSymbol::AngleClose),
+                        ParseDiagnostic::ExpectedSeparator(SeparatorType::Comma),
+                    )
+                },
+            )
+            .unwrap_or_else(|| Ok(vec![]))?;
+
+        self.try_bracket_open(BracketType::Paren);
+        let params = self.parse_until(
+            |t| t.parse_ident_typed(),
+            SLToken::Separator(SeparatorType::Comma),
+            SLToken::BracketClose(BracketType::Paren),
+            ParseDiagnostic::ExpectedSeparator(SeparatorType::Comma),
+        )?;
+
+        let return_ty = match self.parse_optional(|t| {
+            t.try_separator(SeparatorType::ThinArrowRight);
+            // TODO return type shorthands
+            t.try_parse_type()
+        }) {
+            Some(v) => Some(v?),
+            None => None,
+        };
+
+        let block = {
+            let next = self.try_next();
+            if matches!(next, Some(SLToken::BracketOpen(BracketType::Curly))) {
+                // { ...
+                Some(self.parse_block::</* not top-level */false>()?)
+            } else if matches!(next, Some(SLToken::Symbol(SLSymbol::Assign))) {
+                // = ...
+                Some(vec![self.parse_expr::<
+                    /* allow range literals */true,
+                    /* allow block postfixes */true,
+                >()?])
+            } else {
+                // t.rewind();
+                // t.diagnostics.push(ParseDiagnostic::ExpectedFunctionBody);
+                // return Err(true);
+                None
+            }
+        };
+
+        Ok(ASTFunctionDefinition {
+            doc_comment,
+            ident,
+            params,
+            return_ty,
+            block,
+            is_member: false, // TODO is_member
+            local_template_defs,
+            can_be_disembodied,
+        })
+    }
+
+    /// Parse a function definition (any context).
+    ///
+    /// ```plaintext
+    /// $( $doc_comment )? fn $fn_name
+    ///     $( < $( $template_def ),+ > )?
+    ///     ( $( $param ),* )
+    ///     $( -> $ret_ty )?
+    ///     $( = $fn_body )|( { $fn_body } )
+    /// ````
+    fn try_parse_function_declaration(
+        &mut self,
+        can_be_disembodied: bool,
+    ) -> Option<ParseResult<ASTFunctionDefinition>> {
         self.parse_optional_result(
             |t| {
                 let doc_comment = t.try_doc_comment();
@@ -1332,69 +1413,16 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                 Some(doc_comment)
             },
             |t, doc_comment| {
-                let ident = t.ident()?;
-
-                let local_template_defs = t
-                    .parse_optional_result(
-                        |t| t.try_symbol(SLSymbol::AngleOpen),
-                        |t, _| {
-                            t.parse_until(
-                                Self::parse_template_def,
-                                SLToken::Separator(SeparatorType::Comma),
-                                SLToken::Symbol(SLSymbol::AngleClose),
-                                ParseDiagnostic::ExpectedSeparator(SeparatorType::Comma),
-                            )
-                        },
-                    )
-                    .unwrap_or_else(|| Ok(vec![]))?;
-
-                t.try_bracket_open(BracketType::Paren);
-                let params = t.parse_until(
-                    |t| t.parse_ident_typed(),
-                    SLToken::Separator(SeparatorType::Comma),
-                    SLToken::BracketClose(BracketType::Paren),
-                    ParseDiagnostic::ExpectedSeparator(SeparatorType::Comma),
-                )?;
-
-                let return_ty = match t.parse_optional(|t| {
-                    t.try_separator(SeparatorType::ThinArrowRight);
-                    // TODO return type shorthands
-                    t.try_parse_type()
-                }) {
-                    Some(v) => Some(v?),
-                    None => None,
-                };
-
-                let block = {
-                    let next = t.try_next();
-                    if matches!(next, Some(SLToken::BracketOpen(BracketType::Curly))) {
-                        // { ...
-                        t.parse_block::</* not top-level */false>()?
-                    } else if matches!(next, Some(SLToken::Symbol(SLSymbol::Assign))) {
-                        // = ...
-                        vec![t.parse_expr::<
-                            /* allow range literals */true,
-                            /* allow block postfixes */true,
-                        >()?]
-                    } else {
-                        t.rewind();
-                        t.diagnostics.push(ParseDiagnostic::ExpectedFunctionBody);
-                        return Err(true);
-                    }
-                };
-                let block = vec![];
-
-                Ok(ASTExpression::FunctionDefinition(ASTFunctionDefinition {
-                    doc_comment,
-                    ident,
-                    params,
-                    return_ty,
-                    block,
-                    local_template_defs,
-                }))
+                Self::finish_parse_function_declaration(t, doc_comment, can_be_disembodied)
             },
         )
     }
+    /// Parse a function that would appear as a stand-alone declaration.
+    fn try_parse_top_level_function_declaration(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.try_parse_function_declaration(false)
+            .map(|v| v.map(|v| ASTExpression::FunctionDefinition(v)))
+    }
+
     fn try_parse_static_struct_declaration(&mut self) -> Option<ParseResult<ASTExpression>> {
         self.parse_optional_result(
             |t| {
@@ -1455,7 +1483,8 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                     doc_comment,
                     ident,
                     properties,
-                    functions: todo!("// TODO struct definition function parsing")
+                    impl_functions: todo!("// TODO struct definition function parsing"),
+                    impl_traits: todo!("// TODO struct definition trait implementation parsing"),
                 })
             },
         )

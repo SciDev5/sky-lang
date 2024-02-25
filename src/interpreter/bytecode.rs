@@ -1,10 +1,7 @@
 use num::complex::Complex64;
 
 use crate::{
-    common::{
-        common_module::CMType,
-        IdentInt,
-    },
+    common::{common_module::CMType, IdentInt},
     parse::fn_lookup::{Intrinsic1FnId, Intrinsic2FnId, IntrinsicFnId},
 };
 
@@ -83,7 +80,6 @@ pub struct BFunction {
 }
 pub struct BStruct {
     pub fields: Vec<CMType>,
-    pub functions: Vec<IdentInt>,
 }
 
 pub struct BytecodeModule {

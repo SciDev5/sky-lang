@@ -6,8 +6,8 @@ use std::{
 use crate::{
     common::{
         common_module::{
-            CMExpression, CMFunction, CMLiteralValue, CMLocalVarInfo, CMStruct, CMType,
-            CommonModule, DocComment,
+            CMAssociatedFunction, CMExpression, CMFunction, CMFunctionInfo, CMLiteralValue,
+            CMLocalVarInfo, CMStruct, CMType, CommonModule, DocComment,
         },
         IdentInt, IdentStr,
     },
@@ -17,30 +17,30 @@ use crate::{
 use super::{
     fn_lookup::{AssociatedFnLut, FnRef},
     raw_module::{
-        LiteralStructInit, RMBlock, RMExpression, RMLiteralValue, RMStruct, RMType, RawModule,
-        ScopedStatics,
+        LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralValue,
+        RMStruct, RMTrait, RMTraitImpl, RMType, RawModule, ScopedStatics,
     },
 };
 
 #[derive(Debug, Clone)]
-struct FunctionThing {
+struct PartiallyResolvedFunction {
     doc_comment: DocComment,
     params: Vec<CMType>,
     param_idents: Vec<IdentStr>,
-    body: FunctionBody,
+    body: PartiallyResolvedFunctionBody,
 }
-impl FunctionThing {
-    fn unwrap_translated_return_ty(&self) -> &CMType {
-        match &self.body {
-            FunctionBody::Translated { ty_return, .. } => ty_return,
-            _ => panic!(),
-        }
+impl PartiallyResolvedFunction {
+    fn return_ty(&self) -> Option<&CMType> {
+        self.body.return_ty()
     }
 }
 #[derive(Debug, Clone)]
-enum FunctionBody {
-    Untranslated {
+enum PartiallyResolvedFunctionBody {
+    Disembodied {
         ty_return: CMType,
+    },
+    Untranslated {
+        ty_return: Option<CMType>,
         all_scoped: ScopedStatics,
         block: RMBlock,
     },
@@ -50,10 +50,11 @@ enum FunctionBody {
         block: Vec<CMExpression>,
     },
 }
-impl FunctionBody {
+impl PartiallyResolvedFunctionBody {
     fn unwrap_translated(self) -> (CMType, Vec<CMExpression>, Vec<CMLocalVarInfo>) {
         match self {
-            FunctionBody::Translated {
+            PartiallyResolvedFunctionBody::Disembodied { ty_return } => (ty_return, vec![], vec![]),
+            PartiallyResolvedFunctionBody::Translated {
                 ty_return,
                 block,
                 locals,
@@ -61,31 +62,47 @@ impl FunctionBody {
             _ => panic!(),
         }
     }
-    fn unwrap_untranslated(self) -> (CMType, ScopedStatics, RMBlock) {
+    // fn unwrap_untranslated(self) -> (CMType, ScopedStatics, RMBlock) {
+    //     match self {
+    //         PartiallyResolvedFunctionBody::Untranslated {
+    //             ty_return,
+    //             all_scoped,
+    //             block,
+    //         } => (ty_return, all_scoped, block),
+    //         _ => panic!(),
+    //     }
+    // }
+    // fn is_translated(&self) -> bool {
+    //     matches!(self, PartiallyResolvedFunctionBody::Translated { .. })
+    // }
+    fn return_ty(&self) -> Option<&CMType> {
         match self {
-            FunctionBody::Untranslated {
-                ty_return,
-                all_scoped,
-                block,
-            } => (ty_return, all_scoped, block),
-            _ => panic!(),
+            Self::Disembodied { ty_return } => Some(ty_return),
+            Self::Translated { ty_return, .. } => Some(ty_return),
+            Self::Untranslated { ty_return, .. } => ty_return.as_ref(),
         }
-    }
-    fn is_translated(&self) -> bool {
-        matches!(self, FunctionBody::Translated { .. })
     }
 }
 
 #[derive(Debug, Clone)]
-struct StructThing {
+struct PartiallyResolvedStruct {
     doc_comment: DocComment,
     fields: Vec<CMType>,
     fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
-    functions: HashMap<IdentStr, Vec<IdentInt>>,
+
+    impl_functions: HashMap<IdentStr, CMAssociatedFunction>,
+    impl_traits: HashMap<IdentInt, RMTraitImpl>,
+}
+#[derive(Debug, Clone)]
+struct PartiallyResolvedTrait {
+    doc_comment: DocComment,
+
+    functions: HashMap<String, CMAssociatedFunction>,
 }
 struct ResolverGlobalState {
-    functions: Vec<FunctionThing>,
-    structs: Vec<StructThing>,
+    functions: Vec<PartiallyResolvedFunction>,
+    structs: Vec<PartiallyResolvedStruct>,
+    traits: Vec<PartiallyResolvedTrait>,
     diagnostics: Vec<Raw2CommonDiagnostic>,
 }
 impl ResolverGlobalState {
@@ -116,27 +133,67 @@ struct Raw2CommonDiagnostic {
 }
 
 pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
+    let mut diagnostics = vec![];
     let mut state = ResolverGlobalState {
         functions: raw_module
             .functions
             .into_iter()
-            .map(|func| FunctionThing {
-                doc_comment: func.doc_comment,
-                params: func
-                    .params
-                    .iter()
-                    .map(|(_, ty)| static_resolve_type(&[func.all_scoped.clone()], ty))
-                    .collect(),
-                param_idents: func.params.into_iter().map(|(ident, _)| ident).collect(),
-                body: FunctionBody::Untranslated {
-                    ty_return: match &func.return_ty {
-                        Some(ty) => static_resolve_type(&[func.all_scoped.clone()], ty),
-                        None => CMType::Unknown,
+            .map(
+                |RMFunction {
+                     info:
+                         RMFunctionInfo {
+                             doc_comment,
+                             params,
+                             local_template_defs,
+                             return_ty,
+                             all_scoped,
+                             can_be_disembodied,
+                         },
+                     block,
+                 }| PartiallyResolvedFunction {
+                    doc_comment: doc_comment,
+                    params: params
+                        .iter()
+                        .map(|(_, ty)| static_resolve_type(&[all_scoped.clone()], ty))
+                        .collect(),
+                    param_idents: params.into_iter().map(|(ident, _)| ident).collect(),
+                    body: match block {
+                        Some(block) => PartiallyResolvedFunctionBody::Untranslated {
+                            ty_return: match &return_ty {
+                                Some(ty) => Some(static_resolve_type(&[all_scoped.clone()], ty)),
+                                None => None,
+                            },
+                            all_scoped,
+                            block,
+                        },
+                        None if can_be_disembodied => PartiallyResolvedFunctionBody::Disembodied {
+                            ty_return: match &return_ty {
+                                Some(ty) => static_resolve_type(&[all_scoped.clone()], ty),
+                                None => {
+                                    diagnostics.push(Raw2CommonDiagnostic {
+                                        text: format!(
+                                            "disembodied function must have return value"
+                                        ),
+                                    });
+                                    CMType::Unknown
+                                }
+                            },
+                        },
+                        None => {
+                            diagnostics.push(Raw2CommonDiagnostic {
+                                text: format!("function must have body"),
+                            });
+                            PartiallyResolvedFunctionBody::Translated {
+                                ty_return: return_ty.map_or(CMType::Unknown, |ty| {
+                                    static_resolve_type(&[all_scoped.clone()], &ty)
+                                }),
+                                locals: vec![],
+                                block: vec![CMExpression::Fail],
+                            }
+                        }
                     },
-                    all_scoped: func.all_scoped,
-                    block: func.block,
                 },
-            })
+            )
             .collect(),
         structs: raw_module
             .structs
@@ -145,7 +202,8 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                 |RMStruct {
                      doc_comment,
                      fields,
-                     functions,
+                     impl_functions,
+                     impl_traits,
                      all_scoped,
                  }| {
                     let (fields, fields_info) = fields
@@ -158,16 +216,41 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                             )
                         })
                         .unzip();
-                    StructThing {
+                    PartiallyResolvedStruct {
                         doc_comment,
                         fields,
                         fields_info,
+                        impl_functions,
+                        impl_traits: impl_traits
+                            .into_iter()
+                            .map(|(trait_id, trait_impl)| {
+                                (
+                                    static_resolve_trait(&[all_scoped.clone()], &trait_id),
+                                    trait_impl,
+                                )
+                            })
+                            .collect(),
+                    }
+                },
+            )
+            .collect(),
+        traits: raw_module
+            .traits
+            .into_iter()
+            .map(
+                |RMTrait {
+                     doc_comment,
+                     functions,
+                     all_scoped,
+                 }| {
+                    PartiallyResolvedTrait {
+                        doc_comment,
                         functions,
                     }
                 },
             )
             .collect(),
-        diagnostics: vec![],
+        diagnostics,
     };
 
     // translate top-level block
@@ -190,7 +273,7 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
 
     // translate all functions (automatically skips reresolving functions we've already resolved)
     for current_fn_id in 0..state.functions.len() {
-        resolve_fn(&mut state, current_fn_id, &mut current_fn_stack);
+        resolve_fn(&mut state, current_fn_id, &mut current_fn_stack, true);
     }
 
     CommonModule {
@@ -217,7 +300,7 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
             .functions
             .into_iter()
             .map(
-                |FunctionThing {
+                |PartiallyResolvedFunction {
                      doc_comment,
                      params,
                      param_idents,
@@ -225,11 +308,13 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                  }| {
                     let (ty_return, block, locals) = body.unwrap_translated();
                     CMFunction {
-                        doc_comment,
+                        info: CMFunctionInfo {
+                            doc_comment,
+                            params,
+                            ty_return,
+                        },
                         locals,
-                        params,
                         block,
-                        ty_return,
                     }
                 },
             )
@@ -238,21 +323,24 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
             .structs
             .into_iter()
             .map(
-                |StructThing {
+                |PartiallyResolvedStruct {
                      doc_comment,
                      fields,
                      fields_info,
-                     functions,
+                     impl_functions,
+                     impl_traits,
                  }| {
                     CMStruct {
                         doc_comment,
                         fields,
                         fields_info,
-                        functions: functions.into_iter().flat_map(|(_, v)| v).collect(),
+                        // impl_functions,
+                        // impl_traits,
                     }
                 },
             )
             .collect(),
+        // traits: state.traits
         closure_functions: vec![], // TODO
     }
 }
@@ -293,114 +381,138 @@ fn static_resolve_type(statics_scope_stack: &[ScopedStatics], ty: &RMType) -> CM
         ),
     }
 }
+fn static_resolve_trait(statics_scope_stack: &[ScopedStatics], id: &IdentStr) -> IdentInt {
+    if let Some(id) = statics_scope_stack
+        .iter()
+        .rev()
+        .find_map(|statics_elt| statics_elt.traits.get(id))
+    {
+        *id
+    } else {
+        todo!("handle trait not found");
+    }
+}
 
 struct ResolvedFnInfo<'a> {
     ty_return: &'a CMType,
 }
+
 fn resolve_fn<'a>(
     state: &'a mut ResolverGlobalState,
     current_fn_id: IdentInt,
     current_fn_stack: &mut Vec<IdentInt>,
+    force_translate: bool,
 ) -> ResolvedFnInfo<'a> {
-    if state.functions[current_fn_id].body.is_translated() {
-        // already resolved, get return type
-        ResolvedFnInfo {
-            ty_return: state.functions[current_fn_id].unwrap_translated_return_ty(),
+    match &state.functions[current_fn_id].body {
+        PartiallyResolvedFunctionBody::Disembodied { .. }
+        | PartiallyResolvedFunctionBody::Translated { .. } => {
+            return ResolvedFnInfo {
+                ty_return: state.functions[current_fn_id].return_ty().unwrap(),
+            };
         }
-    } else {
-        if current_fn_stack.contains(&current_fn_id) {
-            todo!("// TODO find a way to deal with recursive functions");
+        PartiallyResolvedFunctionBody::Untranslated {
+            ty_return: Some(_), ..
+        } if force_translate => {
+            return ResolvedFnInfo {
+                ty_return: state.functions[current_fn_id].return_ty().unwrap(),
+            };
         }
+        _ => {}
+    }
+    if current_fn_stack.contains(&current_fn_id) {
+        todo!("// TODO find a way to deal with recursive functions");
+    }
 
-        let current_fn_ref = state.functions[current_fn_id].clone();
-        let (ty_return, all_scoped, block) = current_fn_ref.body.unwrap_untranslated();
+    let current_fn_ref = state.functions[current_fn_id].clone();
+    let PartiallyResolvedFunctionBody::Untranslated { ty_return, all_scoped, block } = current_fn_ref.body else {
+        unreachable!()
+    };
 
-        let mut statics_scope_stack = vec![all_scoped.clone()];
+    let mut statics_scope_stack = vec![all_scoped.clone()];
 
-        let mut locals = vec![];
-        let mut locals_lookup = HashMap::new();
-        for (id, (ty_param, ident)) in current_fn_ref
-            .params
-            .into_iter()
-            .zip(current_fn_ref.param_idents.into_iter())
-            .enumerate()
-        {
-            locals.push(LocalVar {
-                doc_comment: None,
-                ty: ty_param,
-                writable: false,
-                assigned: true,
-            });
-            locals_lookup.insert(ident, id);
-        }
+    let mut locals = vec![];
+    let mut locals_lookup = HashMap::new();
+    for (id, (ty_param, ident)) in current_fn_ref
+        .params
+        .into_iter()
+        .zip(current_fn_ref.param_idents.into_iter())
+        .enumerate()
+    {
+        locals.push(LocalVar {
+            doc_comment: None,
+            ty: ty_param,
+            writable: false,
+            assigned: true,
+        });
+        locals_lookup.insert(ident, id);
+    }
 
-        let mut loop_context_stack = vec![];
+    let mut loop_context_stack = vec![];
 
-        let mut ty_return_opt = Some(ty_return);
+    let mut ty_return_opt = ty_return;
 
-        current_fn_stack.push(current_fn_id);
-        let (mut translated, ty_eval) = resolve_block(
-            block.clone(),
-            state,
-            current_fn_stack,
-            &mut statics_scope_stack,
-            &mut locals,
-            &mut locals_lookup,
-            &mut loop_context_stack,
-            &mut ty_return_opt,
-        );
-        current_fn_stack.pop();
+    current_fn_stack.push(current_fn_id);
+    let (mut translated, ty_eval) = resolve_block(
+        block.clone(),
+        state,
+        current_fn_stack,
+        &mut statics_scope_stack,
+        &mut locals,
+        &mut locals_lookup,
+        &mut loop_context_stack,
+        &mut ty_return_opt,
+    );
+    current_fn_stack.pop();
 
-        let mut translation_failed = false;
-        let ty_return = match ty_return_opt.unwrap() {
-            CMType::Unknown => ty_eval,
-            CMType::Never => unreachable!("// TODO check that this can't happen"),
-            ty => {
-                // if the types are mismatched and ty_eval is not never (for consistency and debugging), then fail
-                if ty_eval.is_never() {
-                    // use the return statements if any to infer return type
-                    ty
-                } else if ty_eval != ty {
-                    // typeerror!!
-                    state.add_diagnostic(Raw2CommonDiagnostic {
-                        text: format!(
-                            "type mismatch in function return type, expected {:?}, found {:?}",
-                            &ty, &ty_eval
-                        ),
-                    });
-                    translated.push(CMExpression::Fail);
-                    // return the expected return type, before the failure
-                    ty
-                } else {
-                    // normal, no mismatches
-                    ty
-                }
+    let mut translation_failed = false;
+    let ty_return = match ty_return_opt.unwrap() {
+        CMType::Unknown => ty_eval,
+        CMType::Never => unreachable!("// TODO check that this can't happen"),
+        ty => {
+            // if the types are mismatched and ty_eval is not never (for consistency and debugging), then fail
+            if ty_eval.is_never() {
+                // use the return statements if any to infer return type
+                ty
+            } else if ty_eval != ty {
+                // typeerror!!
+                state.add_diagnostic(Raw2CommonDiagnostic {
+                    text: format!(
+                        "type mismatch in function return type, expected {:?}, found {:?}",
+                        &ty, &ty_eval
+                    ),
+                });
+                translated.push(CMExpression::Fail);
+                // return the expected return type, before the failure
+                ty
+            } else {
+                // normal, no mismatches
+                ty
             }
-        };
-        let current_fn_ref = &mut state.functions[current_fn_id];
-        current_fn_ref.body = FunctionBody::Translated {
-            block: translated,
-            ty_return,
-            locals: locals
-                .into_iter()
-                .map(
-                    |LocalVar {
-                         ty,
-                         writable,
-                         doc_comment,
-                         ..
-                     }| CMLocalVarInfo {
-                        doc_comment,
-                        ty,
-                        writable,
-                    },
-                )
-                .collect(),
-        };
-
-        ResolvedFnInfo {
-            ty_return: current_fn_ref.unwrap_translated_return_ty(),
         }
+    };
+    let current_fn_ref = &mut state.functions[current_fn_id];
+    current_fn_ref.body = PartiallyResolvedFunctionBody::Translated {
+        block: translated,
+        ty_return,
+        locals: locals
+            .into_iter()
+            .map(
+                |LocalVar {
+                     ty,
+                     writable,
+                     doc_comment,
+                     ..
+                 }| CMLocalVarInfo {
+                    doc_comment,
+                    ty,
+                    writable,
+                },
+            )
+            .collect(),
+    };
+
+    ResolvedFnInfo {
+        ty_return: current_fn_ref.return_ty().unwrap(),
     }
 }
 
@@ -458,7 +570,9 @@ fn lookup_fn_ref_ty_return(
     params: &[CMType],
 ) -> CMType {
     match fn_ref {
-        FnRef::ModuleFunction(id) => resolve_fn(state, id, current_fn_stack).ty_return.clone(),
+        FnRef::ModuleFunction(id) => resolve_fn(state, id, current_fn_stack, false)
+            .ty_return
+            .clone(),
         FnRef::Identity => params[0].clone(),
         FnRef::Intrinsic1(id) => id.ty_ret(),
         FnRef::Intrinsic2(id) => id.ty_ret(),
@@ -734,7 +848,7 @@ fn resolve_expr(
                         let k = &state.functions[function_id];
                         if &k.params == &ty_arguments {
                             let ResolvedFnInfo { ty_return } =
-                                resolve_fn(state, function_id, current_fn_stack);
+                                resolve_fn(state, function_id, current_fn_stack, false);
                             return (
                                 CMExpression::Call {
                                     function_id: FnRef::ModuleFunction(function_id),
@@ -760,7 +874,7 @@ fn resolve_expr(
                     // try to salvage a return value to try to yield as much useful results to the user as possible
                     let return_ty = if let Some(fallback_id) = best_fallback {
                         let ResolvedFnInfo { ty_return } =
-                            resolve_fn(state, fallback_id, current_fn_stack);
+                            resolve_fn(state, fallback_id, current_fn_stack, false);
                         ty_return.clone()
                     } else {
                         CMType::Never
@@ -952,6 +1066,7 @@ fn resolve_expr(
                 loop_context_stack,
                 ty_return,
             );
+            eprintln!("// TODO operator overloading as traits");
             match (ty_lhs, ty_rhs) {
                 (CMType::Unknown, _) | (_, CMType::Unknown) => {
                     (CMExpression::FailAfter(vec![lhs, rhs]), CMType::Unknown)

@@ -3,7 +3,10 @@ use std::{collections::HashMap, fmt::Debug};
 use num::complex::Complex64;
 
 use crate::{
-    common::{common_module::DocComment, IdentInt, IdentStr},
+    common::{
+        common_module::{CMAssociatedFunction, DocComment},
+        IdentInt, IdentStr,
+    },
     math::tensor::Tensor,
 };
 
@@ -13,12 +16,14 @@ use super::ops::SLOperator;
 pub struct ScopedStatics {
     pub functions: HashMap<IdentStr, Vec<IdentInt>>,
     pub structs: HashMap<IdentStr, IdentInt>,
+    pub traits: HashMap<IdentStr, IdentInt>,
 }
 impl ScopedStatics {
     pub fn empty() -> Self {
         Self {
             functions: HashMap::new(),
             structs: HashMap::new(),
+            traits: HashMap::new(),
         }
     }
 }
@@ -35,48 +40,38 @@ pub struct RMFunctionInfo {
     pub params: Vec<(IdentStr, RMType)>,
     pub local_template_defs: Vec<RMTemplateDef>,
     pub return_ty: Option<RMType>,
+    pub can_be_disembodied: bool,
     /// Contains references to all static references this function can see, including itself.
     pub all_scoped: ScopedStatics,
 }
 #[derive(Debug, Clone)]
 pub struct RMFunction {
     pub info: RMFunctionInfo,
-    pub block: RMBlock,
+    pub block: Option<RMBlock>,
 }
-#[derive(Debug, Clone, Copy)]
-struct RMAssociatedFunction {
-    pub id: IdentInt,
-    pub is_member: bool,
-}
-#[derive(Debug, Clone)]
-pub enum RMTraitFunction {
-    Abstract {
-        is_member: bool,
-        info: RMFunctionInfo,
-    },
-    Defaulted {
-        is_member: bool,
-        function: RMFunction,
-    },
-}
+// #[derive(Debug, Clone, Copy)]
+// pub struct RMAssociatedFunction {
+//     pub id: IdentInt,
+//     pub is_member: bool,
+// }
 #[derive(Debug)]
 pub struct RMStruct {
     pub doc_comment: DocComment,
     pub fields: HashMap<IdentStr, (RMType, DocComment)>,
-    pub impl_functions: HashMap<IdentStr, RMAssociatedFunction>,
-    pub impl_traits: HashMap<IdentInt, RMTraitImpl>,
+    pub impl_functions: HashMap<IdentStr, CMAssociatedFunction>,
+    pub impl_traits: HashMap<IdentStr, RMTraitImpl>,
     /// Contains references to all static references this struct can see, including itself.
     pub all_scoped: ScopedStatics,
 }
 #[derive(Debug, Clone)]
-struct RMTraitImpl {
-    pub trait_id: IdentInt,
-    pub functions: Vec<RMAssociatedFunction>,
+pub struct RMTraitImpl {
+    pub trait_id: IdentStr,
+    pub functions: HashMap<String, CMAssociatedFunction>,
 }
 #[derive(Debug)]
 pub struct RMTrait {
     pub doc_comment: DocComment,
-    pub functions: HashMap<IdentStr, IdentInt>,
+    pub functions: HashMap<IdentStr, CMAssociatedFunction>,
     /// Contains references to all static references this struct can see, including itself.
     pub all_scoped: ScopedStatics,
 }
@@ -249,6 +244,7 @@ pub struct RMBlock {
 pub struct RawModule {
     pub functions: Vec<RMFunction>,
     pub structs: Vec<RMStruct>,
+    pub traits: Vec<RMTrait>,
 
     pub top_level: RMBlock,
 }

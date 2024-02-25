@@ -161,14 +161,15 @@ pub enum ASTExpression {
         ident: IdentStr,
         properties: Vec<(IdentStr, DocComment, RMType)>,
         // TODO associated functionality
-        functions: HashMap<IdentStr, Vec<ASTFunctionDefinition>>,
+        impl_functions: HashMap<IdentStr, ASTFunctionDefinition>,
+        impl_traits: HashMap<IdentStr, ASTTraitImpl>,
     },
     TraitDefinition {
         doc_comment: DocComment,
         ident: IdentStr,
         bounds: (),
         // TODO associated types and consts
-        functions: HashMap<IdentStr, Vec<ASTTraitFunctionDefinition>>,
+        functions: HashMap<IdentStr, ASTFunctionDefinition>,
     },
 }
 
@@ -178,19 +179,19 @@ pub type ASTBlock = Vec<ASTExpression>;
 pub struct ASTFunctionDefinition {
     pub doc_comment: DocComment,
     pub ident: IdentStr,
-    pub params: Vec<ASTTypedIdent>,
-    pub return_ty: Option<RMType>,
-    pub block: ASTBlock,
-    pub local_template_defs: Vec<RMTemplateDef>,
-}
-#[derive(Debug, Clone, PartialEq)]
-pub struct ASTTraitFunctionDefinition {
-    pub doc_comment: DocComment,
-    pub ident: IdentStr,
+    pub is_member: bool,
     pub params: Vec<ASTTypedIdent>,
     pub return_ty: Option<RMType>,
     pub block: Option<ASTBlock>,
+    pub can_be_disembodied: bool,
     pub local_template_defs: Vec<RMTemplateDef>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASTTraitImpl {
+    pub trait_ident: IdentStr,
+    // TODO associated types and consts
+    pub functions: HashMap<IdentStr, ASTFunctionDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

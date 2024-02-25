@@ -60,3 +60,50 @@ possible macros:
     - aspect macros
     - derive macros
     - const eval and inline functions
+
+
+AST
+- map<str, ast_func<defined>>
+
+RM
+- 
+
+
+things people dont like about rust traits
+- tendency to be verbose
+- replaces overloading, sometimes inconvenient
+
+
+struct {
+    ...info...
+    impl: Hashmap<AssociatedFunction>
+    trait_impls: Hashmap<TraitImpl {
+        trait_id
+        impl: Hashmap<AssociatedFunction>
+    }>
+}
+
+trait {
+    ...info...
+
+}
+
+function_info {
+    ...info...
+    params: Vec<Type>
+}
+function {
+    function_info
+    code: Block
+}
+AssociatedFunction {
+    function_id
+    member_function: No | Ref
+}
+
+fn a() = 3
+fn a() { 3 }
+
+fn a() pass
+fn a() noimpl
+fn a() ;

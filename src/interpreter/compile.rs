@@ -146,16 +146,13 @@ pub fn compile_interpreter_bytecode_module(common: CommonModule) -> BytecodeModu
 
 fn compile_fn(func: CMFunction) -> BFunction {
     BFunction {
-        params: func.params,
+        params: func.info.params,
         locals: func.locals.into_iter().map(|it| it.ty).collect(),
         code: compile_block_top(func.block).unwrap_instruction_list(),
     }
 }
 fn compile_struct(st: CMStruct) -> BStruct {
-    BStruct {
-        fields: st.fields,
-        functions: st.functions,
-    }
+    BStruct { fields: st.fields }
 }
 fn compile_block_top(block: Vec<CMExpression>) -> InstrList {
     let mut out = InstrList::new();
@@ -328,6 +325,15 @@ fn compile_expr(
                 }
             }
             Value
+        }
+        CMExpression::CallDyn {
+            trait_id,
+            function_id,
+            arguments,
+            always_inline,
+            inlined_lambdas,
+        } => {
+            todo!("compile CMExpression::CallDyn");
         }
         CMExpression::LiteralValue(literal) => {
             if yield_value {

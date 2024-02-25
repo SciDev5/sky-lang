@@ -1,31 +1,34 @@
 use std::collections::HashMap;
 
-use crate::common::{IdentInt, IdentStr};
+use crate::common::{common_module::CMAssociatedFunction, IdentInt, IdentStr};
 
 use super::{
     ast::{
         ASTAnonymousFunction, ASTArray, ASTBlock, ASTCompoundPostfixContents, ASTExpression,
-        ASTFunctionDefinition, ASTLiteral, ASTOptionallyTypedIdent, ASTTypedIdent,
+        ASTFunctionDefinition, ASTLiteral, ASTOptionallyTypedIdent, ASTTraitImpl, ASTTypedIdent,
         ASTVarAccessExpression,
     },
     raw_module::{
-        LiteralStructInit, RMBlock, RMExpression, RMFunction, RMLiteralArray, RMLiteralValue,
-        RMStruct, RawModule, ScopedStatics,
+        LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralArray,
+        RMLiteralValue, RMStruct, RMTrait, RMTraitImpl, RawModule, ScopedStatics,
     },
 };
 
 struct StaticsGlobalState {
     structs: Vec<RMStruct>,
+    traits: Vec<RMTrait>,
     functions: Vec<RMFunction>,
 }
 struct StaticsCurrentScope {
     structs: HashMap<IdentStr, IdentInt>,
+    traits: HashMap<IdentStr, IdentInt>,
     functions: HashMap<IdentStr, Vec<IdentInt>>,
 }
 impl StaticsCurrentScope {
     fn new() -> Self {
         Self {
             structs: HashMap::new(),
+            traits: HashMap::new(),
             functions: HashMap::new(),
         }
     }
@@ -48,21 +51,31 @@ impl StaticsCurrentScope {
                 // no `and_modify`, because we want the innermost scope to determine
                 // which class is referenced, and inner scopes are applied first.
             }
+            for (ident, id) in &scope_to_add.traits {
+                all_scoped.traits.entry(ident.clone()).or_insert(*id);
+                // no `and_modify`, because we want the innermost scope to determine
+                // which class is referenced, and inner scopes are applied first.
+            }
         }
         // for each function, add all references
         for (fn_name, overloads) in &self.functions {
             let fns = self.functions.get(fn_name).unwrap();
             for fn_id_i in fns {
-                add_refs(&mut state.functions[*fn_id_i].all_scoped, &self);
+                add_refs(&mut state.functions[*fn_id_i].info.all_scoped, &self);
             }
         }
         // for each struct, add all references
         for (fn_name, st_id_i) in &self.structs {
             add_refs(&mut state.structs[*st_id_i].all_scoped, &self);
         }
+        // for each trait, add all references
+        for (fn_name, tr_id_i) in &self.traits {
+            add_refs(&mut state.traits[*tr_id_i].all_scoped, &self);
+        }
 
         ScopedStatics {
             structs: self.structs,
+            traits: self.traits,
             functions: self.functions,
         }
     }
@@ -71,12 +84,14 @@ impl StaticsCurrentScope {
 pub fn ast_2_raw(ast: ASTBlock) -> RawModule {
     let mut state = StaticsGlobalState {
         structs: vec![],
+        traits: vec![],
         functions: vec![],
     };
     let top_level = transform_expr_block_inner_scoped(ast, &mut state);
 
     RawModule {
         structs: state.structs,
+        traits: state.traits,
         functions: state.functions,
         top_level,
     }
@@ -126,6 +141,70 @@ fn transform_expr_block_inner_scoped(
     }
 }
 
+fn transform_function(
+    ASTFunctionDefinition {
+        doc_comment,
+        ident,
+        is_member: _,
+        can_be_disembodied,
+        params,
+        return_ty,
+        block,
+        local_template_defs,
+    }: ASTFunctionDefinition,
+    state: &mut StaticsGlobalState,
+    scope: &mut StaticsCurrentScope,
+) -> IdentInt {
+    let function = RMFunction {
+        info: RMFunctionInfo {
+            doc_comment,
+            local_template_defs,
+            params: params
+                .into_iter()
+                .map(|ASTTypedIdent { ident, ty }| (ident, ty))
+                .collect(),
+            return_ty,
+            can_be_disembodied,
+            all_scoped: ScopedStatics::empty(),
+        },
+        block: block.map(|block| transform_expr_block_inner_scoped(block, state)),
+    };
+
+    let id = state.functions.len();
+    state.functions.push(function);
+    scope
+        .functions
+        .entry(ident)
+        .or_insert_with(|| vec![])
+        .push(id);
+
+    return id;
+}
+fn transform_associated_function(
+    def: ASTFunctionDefinition,
+    state: &mut StaticsGlobalState,
+    scope: &mut StaticsCurrentScope,
+) -> CMAssociatedFunction {
+    let is_member = def.is_member;
+    let id = transform_function(def, state, scope);
+
+    CMAssociatedFunction { id, is_member }
+}
+fn transform_trait_impl(
+    def: ASTTraitImpl,
+    state: &mut StaticsGlobalState,
+    scope: &mut StaticsCurrentScope,
+) -> RMTraitImpl {
+    RMTraitImpl {
+        trait_id: def.trait_ident,
+        functions: def
+            .functions
+            .into_iter()
+            .map(|(ident, function)| (ident, transform_associated_function(function, state, scope)))
+            .collect(),
+    }
+}
+
 fn transform_expr(
     expr: ASTExpression,
     state: &mut StaticsGlobalState,
@@ -135,33 +214,8 @@ fn transform_expr(
         ////////////////////////////////////////////
         // move function/struct definitions to static list
         //
-        ASTExpression::FunctionDefinition(ASTFunctionDefinition {
-            doc_comment,
-            ident,
-            params,
-            return_ty,
-            block,
-            local_template_defs,
-        }) => {
-            let function = RMFunction {
-                doc_comment,
-                local_template_defs,
-                params: params
-                    .into_iter()
-                    .map(|ASTTypedIdent { ident, ty }| (ident, ty))
-                    .collect(),
-                return_ty,
-                block: transform_expr_block_inner_scoped(block, state),
-                all_scoped: ScopedStatics::empty(),
-            };
-
-            let id = state.functions.len();
-            state.functions.push(function);
-            scope
-                .functions
-                .entry(ident)
-                .or_insert_with(|| vec![])
-                .push(id);
+        ASTExpression::FunctionDefinition(def) => {
+            transform_function(def, state, scope);
 
             RMExpression::Void
         }
@@ -169,10 +223,9 @@ fn transform_expr(
             doc_comment,
             ident,
             properties,
-            functions,
+            impl_functions,
+            impl_traits,
         } => {
-            let mut functions = HashMap::new();
-
             let st = RMStruct {
                 doc_comment,
                 all_scoped: ScopedStatics::empty(),
@@ -180,7 +233,14 @@ fn transform_expr(
                     .into_iter()
                     .map(|(ident, doc_comment, ty)| (ident, (ty, doc_comment)))
                     .collect(), // TODO dedupe properties by name
-                functions,
+                impl_functions: impl_functions
+                    .into_iter()
+                    .map(|it| (it.0, transform_associated_function(it.1, state, scope)))
+                    .collect(),
+                impl_traits: impl_traits
+                    .into_iter()
+                    .map(|it| (it.0, transform_trait_impl(it.1, state, scope)))
+                    .collect(),
             };
             let id = state.structs.len();
             state.structs.push(st);

@@ -5,7 +5,7 @@ use num::complex::Complex64;
 use crate::{
     common::{IdentInt, IdentStr},
     math::tensor::Tensor,
-    parse::{fn_lookup::FnRef, ops::SLOperator},
+    parse::fn_lookup::FnRef,
 };
 
 pub type DocComment = Option<String>;
@@ -25,45 +25,13 @@ pub struct CMFunctionInfo {
 
 #[derive(Debug, Clone)]
 pub struct CMFunction {
-    info: CMFunctionInfo,
+    pub info: CMFunctionInfo,
     /// local variables, including auto-generated parameter locals
     pub locals: Vec<CMLocalVarInfo>,
     pub block: Vec<CMExpression>,
 }
 #[derive(Debug, Clone)]
-pub struct CMFunctionSet {
-    info: CMFunctionInfo,
-    /// local variables, including auto-generated parameter locals
-    pub locals: Vec<CMLocalVarInfo>,
-    pub dyn_block: Vec<CMExpression>,
-}
-#[derive(Debug, Clone)]
-pub enum CMTraitFunction {
-    Abstract {
-        is_member: bool,
-        info: CMFunctionInfo,
-    },
-    Defaulted {
-        is_member: bool,
-        function: CMFunction,
-    },
-}
-impl CMTraitFunction {
-    fn info(&self) -> &CMFunctionInfo {
-        match self {
-            Self::Abstract {
-                is_member: bool,
-                info,
-            } => info,
-            Self::Defaulted {
-                function: CMFunction { info, .. },
-                ..
-            } => info,
-        }
-    }
-}
-#[derive(Debug, Clone)]
-struct CMAssociatedFunction {
+pub struct CMAssociatedFunction {
     pub id: IdentInt,
     pub is_member: bool,
 }
@@ -90,19 +58,19 @@ pub struct CMStruct {
     pub doc_comment: DocComment,
     pub fields: Vec<CMType>,
     pub fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
-    pub impl_functions: Vec<CMAssociatedFunction>,
-    pub impl_traits: HashMap<IdentInt, CMTraitImpl>,
+    // pub impl_functions: Vec<CMAssociatedFunction>,
+    // pub impl_traits: HashMap<IdentInt, CMTraitImpl>,
 }
 #[derive(Debug, Clone)]
 struct CMTraitImpl {
     pub trait_id: IdentInt,
-    pub functions: Vec<CMAssociatedFunction>,
+    pub functions: Vec<Option<CMAssociatedFunction>>,
 }
 #[derive(Debug, Clone)]
 struct CMTrait {
     pub doc_comment: DocComment,
     pub function_lut: HashMap<IdentStr, IdentInt>,
-    pub functions: Vec<CMTraitFunction>,
+    pub functions: Vec<CMAssociatedFunction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -178,8 +146,8 @@ pub enum CMExpression {
     },
 
     CallDyn {
-        trait_id: FnRef,
-        function_id: FnRef,
+        trait_id: IdentInt,
+        function_id: IdentInt,
         arguments: Vec<CMExpression>,
         always_inline: bool,
         inlined_lambdas: Option<Vec<CMInlineLambda>>,
@@ -229,11 +197,9 @@ pub enum CMExpression {
 
 #[derive(Debug)]
 pub struct CommonModule {
-    pub functions_reified: Vec<CMFunction>,
-    pub function_sets: Vec<CMFunctionSet>,
+    pub functions: Vec<CMFunction>,
     pub closure_functions: Vec<CMClosureFunction>,
     pub structs: Vec<CMStruct>,
-    pub traits: Vec<CMTrait>,
-
+    // pub traits: Vec<CMTrait>,
     pub top_level: (Vec<CMExpression>, Vec<CMLocalVarInfo>, CMType),
 }

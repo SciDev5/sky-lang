@@ -107,3 +107,14 @@ fn a() { 3 }
 fn a() pass
 fn a() noimpl
 fn a() ;
+
+
+
+fn add<T: Plus<T>>(a: T, b: T): T(Plus).Output {
+    a + b
+}
+constrain <T: Linear<float>> {
+    fn x0(): T { T.zero }
+    fn x1(): Vec2<T> { /* idk lol */ }
+}
+

@@ -171,6 +171,10 @@ pub enum ASTExpression {
         // TODO associated types and consts
         functions: HashMap<IdentStr, ASTFunctionDefinition>,
     },
+
+    Import {
+        include_paths: Vec<Vec<IdentStr>>,
+    },
 }
 
 pub type ASTBlock = Vec<ASTExpression>;

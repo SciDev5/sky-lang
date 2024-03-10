@@ -4,10 +4,11 @@ use crate::common::{common_module::CMAssociatedFunction, IdentInt, IdentStr};
 
 use super::{
     ast::{
-        ASTAnonymousFunction, ASTArray, ASTBlock, ASTCompoundPostfixContents, ASTExpression,
+        ASTAnonymousFunction, ASTArray, ASTCompoundPostfixContents, ASTExpression,
         ASTFunctionDefinition, ASTLiteral, ASTOptionallyTypedIdent, ASTTraitImpl, ASTTypedIdent,
         ASTVarAccessExpression,
     },
+    ast_module::ASTModule,
     raw_module::{
         LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralArray,
         RMLiteralValue, RMStruct, RMTrait, RMTraitImpl, RawModule, ScopedStatics,
@@ -81,13 +82,16 @@ impl StaticsCurrentScope {
     }
 }
 
-pub fn ast_2_raw(ast: ASTBlock) -> RawModule {
+pub fn ast_2_raw(ast: ASTModule) -> RawModule {
     let mut state = StaticsGlobalState {
         structs: vec![],
         traits: vec![],
         functions: vec![],
     };
-    let top_level = transform_expr_block_inner_scoped(ast, &mut state);
+    let top_level = RMBlock {
+        block: vec![],
+        inner_scoped: ScopedStatics::empty(),
+    }; // transform_expr_block_inner_scoped(ast, &mut state); //////////////////// TODO !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     RawModule {
         structs: state.structs,
@@ -211,6 +215,11 @@ fn transform_expr(
     scope: &mut StaticsCurrentScope,
 ) -> RMExpression {
     match expr {
+        ASTExpression::Import { include_paths } => {
+            todo!("!!!!!!!!!!!!!!!!!!!!!!!!!!!hvgjgvgvjgvghhhghghghkbhhybihbbiuibh!!!!!!!!")
+            //////////////////////////////////////////////////////////////////////////////////////////////////////////////////// TODO !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        }
+
         ////////////////////////////////////////////
         // move function/struct definitions to static list
         //

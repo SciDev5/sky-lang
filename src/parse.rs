@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod ast_2_raw;
+pub mod ast_module;
 pub mod fn_lookup;
 pub mod ops;
 pub mod parser;

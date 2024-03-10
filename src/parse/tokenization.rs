@@ -84,7 +84,6 @@ pub enum BracketType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeparatorType {
     Comma,
-    Period,
     Semicolon,
     Colon,
     ThinArrowRight,
@@ -328,6 +327,8 @@ gen_Keyword! {
     TraitDefinition ("trait"),
     /// Functional implementation block marker
     Implementation ("impl"),
+    /// Module import
+    Import ("import"),
 }
 
 macro_rules! gen_SLSymbol {

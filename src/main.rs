@@ -3,7 +3,7 @@ use skylab::{
     interpreter::{
         compile::compile_interpreter_bytecode_module, gc::GarbageCollector, interpreter::execute,
     },
-    parse::{ast_2_raw::ast_2_raw, raw_2_common::raw_2_common},
+    parse::{ast_2_raw::ast_2_raw, ast_module::ASTModule, raw_2_common::raw_2_common},
 };
 
 fn main() {
@@ -19,6 +19,41 @@ fn main() {
 
     */
     let t = skylab::parse::tokenization::SLTokenizer::new();
+    // let tokens = t.tokenize("import a.b.c.d.e");
+    let tokens = t.tokenize("import a.b.c.[d,e] let x = d.f()");
+    //     let tokens = t.tokenize(
+    //         r#"
+    // /////////////////////////////
+
+    // fn add_0(a: int, b: int) = a + b
+    // fn add_1(a: int, b: int) {
+    //     a + b
+    // }
+    // fn add_2(a: int, b: int) {
+    //     return a + b
+    // }
+
+    // struct Vec2 {
+    //     x: int
+    //     y: int
+
+    //     fn add(self: Vec2, other: Vec2) = Vec2.{
+    //         x: self.x + other.x
+    //         y: self.y + other.y
+    //     }
+    // }
+
+    // let a = Vec2.{ x: 1, y: 2 }
+    // let b = Vec2.{ x: 3, y: 4 }
+
+    // let c = a.add(b)
+
+    // add_0(c.x, 2) == add_1(c.x, 2) &&
+    //     add_1(c.x, 2) == add_2(c.x, 2)
+
+    // /////////////////////////////
+    // "#,
+    //     );
     //     let tokens = t.tokenize(
     //         r"
 
@@ -100,20 +135,20 @@ fn main() {
 
     //            ", // */
     //     );
-    let tokens = t.tokenize(
-        r"
-struct A {
-    x: int
-    y: int
+    //     let tokens = t.tokenize(
+    //         r"
+    // struct A {
+    //     x: int
+    //     y: int
 
-    fn a(self: A, x: int) = x * self.x + self.y
-}
+    //     fn a(self: A, x: int) = x * self.x + self.y
+    // }
 
-let b = A.{ x: 2, y: 3 }
+    // let b = A.{ x: 2, y: 3 }
 
-b.a(100)
-",
-    );
+    // b.a(100)
+    // ",
+    //     );
     for (i, token) in tokens.iter().enumerate() {
         println!("TOKEN[{}] | {:?}", i, &token);
     }
@@ -136,28 +171,17 @@ b.a(100)
     let (parsed, diagnostics) = skylab::parse::parser::parse(tokens);
     dbg!(diagnostics);
     let parsed = parsed.unwrap();
-    let common = raw_2_common(ast_2_raw(parsed));
-    dbg!(&common.structs);
-    let bytecode = compile_interpreter_bytecode_module(common);
-    dbg_bytecode_module_code!(bytecode);
-
-    let mut gc = GarbageCollector::new();
-    let return_val = execute(&bytecode, &mut gc);
-
-    dbg!(return_val).unwrap();
-
-    // let serialized_code = skylab::interpreter::interpreter::serialize_program(parsed);
-
-    // for (i, cmd) in serialized_code.iter().enumerate() {
-    //     println!("{} :: {:?}", i, cmd);
-    // }
+    for (i, expr) in parsed.into_iter().enumerate() {
+        println!("[{}] {:?}", i, expr);
+    }
+    // let ast = ASTModule::new([(vec![], parsed)].into_iter());
+    // let common = raw_2_common(ast_2_raw(ast));
+    // dbg!(&common.structs);
+    // let bytecode = compile_interpreter_bytecode_module(common);
+    // dbg_bytecode_module_code!(bytecode);
 
     // let mut gc = GarbageCollector::new();
-    // dbg!(skylab::interpreter::interpreter::execute_serialized(
-    //     serialized_code,
-    //     ScopeStackFrame::base(),
-    //     &mut gc
-    // ))
-    // .unwrap();
-    // // dbg!(&gc);
+    // let return_val = execute(&bytecode, &mut gc);
+
+    // dbg!(return_val).unwrap();
 }

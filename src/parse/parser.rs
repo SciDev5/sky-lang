@@ -711,7 +711,8 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
 
         let mut expr = match parse_first!(self;
 
-
+            // -- imports/submodules -- //
+            try_parse_import => |expr| expr?,
 
             // -- literals -- //
             try_parse_anonfunc => |func| ASTExpression::AnonymousFunction(func?),
@@ -1564,6 +1565,77 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                     bounds,
                     functions,
                 })
+            },
+        )
+    }
+
+    fn parse_import_entries(
+        &mut self,
+        stack: &mut Vec<IdentStr>,
+        out: &mut Vec<Vec<IdentStr>>,
+    ) -> ParseResult<()> {
+        let stacksize_initial = stack.len();
+
+        loop {
+            if self.try_symbol(SLSymbol::PropertyAccess).is_none() {
+                out.push(stack.clone());
+                break;
+            }
+
+            if let Some(ident) = self.try_ident() {
+                stack.push(ident);
+                continue;
+            } else if self.try_bracket_open(BracketType::Square).is_some() {
+                while let Some(ident) = self.try_ident() {
+                    let mut stack = stack.clone();
+                    stack.push(ident);
+                    match self.parse_import_entries(&mut stack, out) {
+                        Ok(_) => {}
+                        Err(false) => {
+                            // irrecoverable
+                            return Err(false);
+                        }
+                        Err(true) => {
+                            continue;
+                        }
+                    }
+
+                    while let Some(_) = self.try_separator(SeparatorType::Comma) {}
+                }
+
+                match self.try_bracket_close(BracketType::Square) {
+                    Some(_) => { /* all is well */ }
+                    None => {
+                        while let Err(recoverable) = self.bracket_close(BracketType::Square) {
+                            if recoverable {
+                                continue;
+                            } else {
+                                return Err(false); // not recoverable, must abort
+                            }
+                        }
+                        // at this point we matched the closing bracket
+                    }
+                }
+                break;
+            }
+            return Err(true);
+        }
+
+        stack.drain(stacksize_initial..);
+
+        Ok(())
+    }
+    fn try_parse_import(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(
+            |t| t.try_keyword(Keyword::Import),
+            |t, _| {
+                let mut stack = vec![t.ident()?];
+                let mut out = vec![];
+                match t.parse_import_entries(&mut stack, &mut out) {
+                    Ok(_) | Err(true) => {}
+                    Err(false) => return Err(false),
+                }
+                Ok(ASTExpression::Import { include_paths: out })
             },
         )
     }

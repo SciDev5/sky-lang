@@ -266,7 +266,7 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
     let mut loop_context_stack = vec![];
     let mut ty_return = None;
     let (top_level, ty_top_level) = resolve_block(
-        raw_module.top_level,
+        todo!("// TODO raw_module.top_level"),
         &mut state,
         &mut current_fn_stack,
         &mut statics_stack,

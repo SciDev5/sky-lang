@@ -10,6 +10,7 @@ use crate::{
 use super::{
     ops::SLOperator,
     raw_module::{RMTemplateDef, RMType},
+    submoduletree::SubModuleTree,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -212,4 +213,23 @@ pub enum ASTArray {
     List(Vec<ASTExpression>),
     Matrix(Tensor<ASTExpression>),
     Tensor(Tensor<ASTExpression>),
+}
+
+pub struct ASTModule {
+    pub modules: Vec<ASTBlock>,
+    pub submodule_tree: SubModuleTree,
+}
+impl ASTModule {
+    pub fn new(iter: impl Iterator<Item = (Vec<IdentStr>, ASTBlock)>) -> Self {
+        let mut modules = vec![];
+        let mut submodule_tree = SubModuleTree::new();
+        for (i, (path, block)) in iter.enumerate() {
+            modules.push(block);
+            submodule_tree.insert_at_root(path.into_iter(), i);
+        }
+        Self {
+            modules,
+            submodule_tree,
+        }
+    }
 }

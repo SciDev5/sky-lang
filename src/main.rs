@@ -3,7 +3,7 @@ use skylab::{
     interpreter::{
         compile::compile_interpreter_bytecode_module, gc::GarbageCollector, interpreter::execute,
     },
-    parse::{ast_2_raw::ast_2_raw, ast_module::ASTModule, raw_2_common::raw_2_common},
+    parse::{ast::ASTModule, ast_2_raw::ast_2_raw, raw_2_common::raw_2_common},
 };
 
 fn main() {
@@ -20,7 +20,7 @@ fn main() {
     */
     let t = skylab::parse::tokenization::SLTokenizer::new();
     // let tokens = t.tokenize("import a.b.c.d.e");
-    let tokens = t.tokenize("import a.b.c.[d,e] let x = d.f()");
+    let tokens = t.tokenize("import a.b.c.[d,e] let a = d()");
     //     let tokens = t.tokenize(
     //         r#"
     // /////////////////////////////
@@ -171,9 +171,23 @@ fn main() {
     let (parsed, diagnostics) = skylab::parse::parser::parse(tokens);
     dbg!(diagnostics);
     let parsed = parsed.unwrap();
-    for (i, expr) in parsed.into_iter().enumerate() {
+    for (i, expr) in parsed.iter().enumerate() {
         println!("[{}] {:?}", i, expr);
     }
+    let ast = ASTModule::new(
+        [
+            (vec![], parsed),
+            (
+                ["a", "b", "c", "d"]
+                    .into_iter()
+                    .map(|it| it.to_string())
+                    .collect(),
+                vec![],
+            ),
+        ]
+        .into_iter(),
+    );
+    dbg!(ast_2_raw(ast));
     // let ast = ASTModule::new([(vec![], parsed)].into_iter());
     // let common = raw_2_common(ast_2_raw(ast));
     // dbg!(&common.structs);

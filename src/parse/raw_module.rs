@@ -10,13 +10,17 @@ use crate::{
     math::tensor::Tensor,
 };
 
-use super::ops::SLOperator;
+use super::{
+    ops::SLOperator,
+    submoduletree::{SubModuleResolution, SubModuleTree},
+};
 
 #[derive(Debug, Clone)]
 pub struct ScopedStatics {
     pub functions: HashMap<IdentStr, Vec<IdentInt>>,
     pub structs: HashMap<IdentStr, IdentInt>,
     pub traits: HashMap<IdentStr, IdentInt>,
+    pub imports: HashMap<IdentStr, SubModuleResolution>,
 }
 impl ScopedStatics {
     pub fn empty() -> Self {
@@ -24,6 +28,7 @@ impl ScopedStatics {
             functions: HashMap::new(),
             structs: HashMap::new(),
             traits: HashMap::new(),
+            imports: HashMap::new(),
         }
     }
 }
@@ -246,5 +251,6 @@ pub struct RawModule {
     pub structs: Vec<RMStruct>,
     pub traits: Vec<RMTrait>,
 
-    pub top_level: RMBlock,
+    pub top_level: Vec<RMBlock>,
+    pub submodule_tree: SubModuleTree,
 }

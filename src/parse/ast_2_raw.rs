@@ -5,25 +5,28 @@ use crate::common::{common_module::CMAssociatedFunction, IdentInt, IdentStr};
 use super::{
     ast::{
         ASTAnonymousFunction, ASTArray, ASTCompoundPostfixContents, ASTExpression,
-        ASTFunctionDefinition, ASTLiteral, ASTOptionallyTypedIdent, ASTTraitImpl, ASTTypedIdent,
-        ASTVarAccessExpression,
+        ASTFunctionDefinition, ASTLiteral, ASTModule, ASTOptionallyTypedIdent, ASTTraitImpl,
+        ASTTypedIdent, ASTVarAccessExpression,
     },
-    ast_module::ASTModule,
     raw_module::{
         LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralArray,
         RMLiteralValue, RMStruct, RMTrait, RMTraitImpl, RawModule, ScopedStatics,
     },
+    submoduletree::{SubModuleResolution, SubModuleTree},
 };
 
-struct StaticsGlobalState {
+struct StaticsGlobalState<'a> {
     structs: Vec<RMStruct>,
     traits: Vec<RMTrait>,
     functions: Vec<RMFunction>,
+    submodule_tree: &'a SubModuleTree,
 }
+
 struct StaticsCurrentScope {
     structs: HashMap<IdentStr, IdentInt>,
     traits: HashMap<IdentStr, IdentInt>,
     functions: HashMap<IdentStr, Vec<IdentInt>>,
+    imports: HashMap<IdentStr, SubModuleResolution>,
 }
 impl StaticsCurrentScope {
     fn new() -> Self {
@@ -31,6 +34,7 @@ impl StaticsCurrentScope {
             structs: HashMap::new(),
             traits: HashMap::new(),
             functions: HashMap::new(),
+            imports: HashMap::new(),
         }
     }
     fn apply(self, state: &mut StaticsGlobalState) -> ScopedStatics {
@@ -57,6 +61,15 @@ impl StaticsCurrentScope {
                 // no `and_modify`, because we want the innermost scope to determine
                 // which class is referenced, and inner scopes are applied first.
             }
+
+            for (ident, id) in &scope_to_add.imports {
+                all_scoped
+                    .imports
+                    .entry(ident.clone())
+                    .or_insert(id.clone());
+                // no `and_modify`, because we want the innermost scope to determine
+                // which class is referenced, and inner scopes are applied first.
+            }
         }
         // for each function, add all references
         for (fn_name, overloads) in &self.functions {
@@ -78,6 +91,7 @@ impl StaticsCurrentScope {
             structs: self.structs,
             traits: self.traits,
             functions: self.functions,
+            imports: self.imports,
         }
     }
 }
@@ -87,17 +101,20 @@ pub fn ast_2_raw(ast: ASTModule) -> RawModule {
         structs: vec![],
         traits: vec![],
         functions: vec![],
+        submodule_tree: &ast.submodule_tree,
     };
-    let top_level = RMBlock {
-        block: vec![],
-        inner_scoped: ScopedStatics::empty(),
-    }; // transform_expr_block_inner_scoped(ast, &mut state); //////////////////// TODO !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    let top_level = ast
+        .modules
+        .into_iter()
+        .map(|ast_submodule| transform_expr_block_inner_scoped(ast_submodule, &mut state))
+        .collect::<Vec<_>>();
 
     RawModule {
         structs: state.structs,
         traits: state.traits,
         functions: state.functions,
         top_level,
+        submodule_tree: ast.submodule_tree,
     }
 }
 
@@ -216,8 +233,22 @@ fn transform_expr(
 ) -> RMExpression {
     match expr {
         ASTExpression::Import { include_paths } => {
-            todo!("!!!!!!!!!!!!!!!!!!!!!!!!!!!hvgjgvgvjgvghhhghghghkbhhybihbbiuibh!!!!!!!!")
-            //////////////////////////////////////////////////////////////////////////////////////////////////////////////////// TODO !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            for path in include_paths {
+                let local_name = path.last().unwrap();
+                let mod_resolution = state.submodule_tree.resolve_at_root(&path);
+                if let Some(mod_resolution) = mod_resolution {
+                    scope
+                        .imports
+                        .entry(local_name.clone())
+                        .and_modify(|_| {
+                            todo!("// TODO report imports with the same name in local scopes");
+                        })
+                        .or_insert(mod_resolution);
+                } else {
+                    todo!("// TODO report unresolved import in import statement");
+                }
+            }
+            RMExpression::Void
         }
 
         ////////////////////////////////////////////

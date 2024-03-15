@@ -48,3 +48,54 @@ fn b_func() {
 
 fn c_func() {}
 fn other_c_func() {}
+
+
+
+
+
+
+
+/////////////////////////////////////////////////////////////////
+
+
+
+two types of things:
+- packages
+- modules
+
+
+when ast_2_raw
+    only follow imports that are certain
+when raw_2_common
+    resolve all imports and if they miss, report error
+
+
+raw_module
+    - local public module lookup tree
+    - external public module lookup tree
+    - intra-module references only
+    ! does not resolve any imports, import strings are left untouched !
+    NEEDS:
+        no external data
+common_module
+    - external public module lookup tree
+    - full references
+    NEEDS:
+        external public module lookup trees for dependencies
+
+    > during conversion, transform scope stack frames upon insertion to resolve imports as far as possible
+    
+
+reexports? -> shadow dependencies, virtual dependencies created by direct reexports
+
+function/struct/trait references
+    local:
+        - id
+    dependency:
+        - relative_package_id [this module has a list of dependencies]
+        - id
+
+
+need new thing: project builder
+    - ??? calculates dependency trees, sorts compilation order by dependencies 
+    - handles (incremental) compilation

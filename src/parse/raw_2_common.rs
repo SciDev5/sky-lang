@@ -349,6 +349,7 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
             .collect(),
         // traits: state.traits
         closure_functions: vec![], // TODO
+        submodule_tree: todo!("// TODO CommonModule.submodule_tree"),
     }
 }
 

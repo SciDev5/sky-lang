@@ -1,5 +1,9 @@
 use super::ops::SLOperator;
 
+pub const IDENT_SELF: &str = "self";
+pub const IDENT_ROOT_MODULE: &str = "root";
+pub const IDENT_PARENT_MODULE: &str = "super";
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SLToken<'a> {
     Space { hard: bool },
@@ -329,6 +333,8 @@ gen_Keyword! {
     Implementation ("impl"),
     /// Module import
     Import ("import"),
+    /// Module public / export
+    Export ("pub"),
 }
 
 macro_rules! gen_SLSymbol {

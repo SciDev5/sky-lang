@@ -20,7 +20,7 @@ fn main() {
     */
     let t = skylab::parse::tokenization::SLTokenizer::new();
     // let tokens = t.tokenize("import a.b.c.d.e");
-    let tokens = t.tokenize("import a.b.c.[d,e] let a = d()");
+    let tokens = t.tokenize("import a.b.c.[d,e] pub fn hello() = 0");
     //     let tokens = t.tokenize(
     //         r#"
     // /////////////////////////////

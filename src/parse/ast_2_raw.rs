@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::common::{common_module::CMAssociatedFunction, IdentInt, IdentStr};
+use crate::{
+    build::module_tree::{FullId, ModuleTreeSubModuleHandle, PreliminaryModuleTreeLookupId},
+    common::{common_module::CMAssociatedFunction, IdentInt, IdentStr},
+};
 
 use super::{
     ast::{
@@ -12,21 +15,20 @@ use super::{
         LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralArray,
         RMLiteralValue, RMStruct, RMTrait, RMTraitImpl, RawModule, ScopedStatics,
     },
-    submoduletree::{SubModuleResolution, SubModuleTree},
 };
 
 struct StaticsGlobalState<'a> {
     structs: Vec<RMStruct>,
     traits: Vec<RMTrait>,
     functions: Vec<RMFunction>,
-    submodule_tree: &'a SubModuleTree,
+    module_tree: ModuleTreeSubModuleHandle<'a>,
 }
 
 struct StaticsCurrentScope {
     structs: HashMap<IdentStr, IdentInt>,
     traits: HashMap<IdentStr, IdentInt>,
     functions: HashMap<IdentStr, Vec<IdentInt>>,
-    imports: HashMap<IdentStr, SubModuleResolution>,
+    imports: HashMap<IdentStr, PreliminaryModuleTreeLookupId>,
 }
 impl StaticsCurrentScope {
     fn new() -> Self {
@@ -96,17 +98,25 @@ impl StaticsCurrentScope {
     }
 }
 
-pub fn ast_2_raw(ast: ASTModule) -> RawModule {
+pub fn ast_2_raw(
+    ASTModule {
+        modules,
+        mut submodule_tree,
+    }: ASTModule,
+) -> RawModule {
     let mut state = StaticsGlobalState {
         structs: vec![],
         traits: vec![],
         functions: vec![],
-        submodule_tree: &ast.submodule_tree,
+        module_tree: submodule_tree.edit_submodule_data(0),
     };
-    let top_level = ast
-        .modules
+    let top_level = modules
         .into_iter()
-        .map(|ast_submodule| transform_expr_block_inner_scoped(ast_submodule, &mut state))
+        .enumerate()
+        .map(|(submodule_id, ast_submodule)| {
+            state.module_tree.switch_submodule(submodule_id);
+            transform_expr_block_inner_scoped(ast_submodule, &mut state, true)
+        })
         .collect::<Vec<_>>();
 
     RawModule {
@@ -114,7 +124,7 @@ pub fn ast_2_raw(ast: ASTModule) -> RawModule {
         traits: state.traits,
         functions: state.functions,
         top_level,
-        submodule_tree: ast.submodule_tree,
+        submodule_tree,
     }
 }
 
@@ -124,7 +134,7 @@ fn transform_expr_option_box<'a, 'b>(
     state: &mut StaticsGlobalState,
     scope: &mut StaticsCurrentScope,
 ) -> Option<Box<RMExpression>> {
-    Some(Box::new(transform_expr(*expr?, state, scope)))
+    Some(Box::new(transform_expr(*expr?, state, scope, false)))
 }
 /// `transform_expr`, but deals with the `Box<...>`
 fn transform_expr_box(
@@ -132,7 +142,7 @@ fn transform_expr_box(
     state: &mut StaticsGlobalState,
     scope: &mut StaticsCurrentScope,
 ) -> Box<RMExpression> {
-    Box::new(transform_expr(*expr, state, scope))
+    Box::new(transform_expr(*expr, state, scope, false))
 }
 /// Transform a list of expressions. Distinct from `transform_expr_block_inner_scoped`, which is for code blocks.
 fn transform_expr_vec(
@@ -142,7 +152,7 @@ fn transform_expr_vec(
 ) -> Vec<RMExpression> {
     let mut out = vec![];
     for expr in exprs {
-        out.push(transform_expr(expr, state, scope));
+        out.push(transform_expr(expr, state, scope, false));
     }
     out
 }
@@ -150,11 +160,12 @@ fn transform_expr_vec(
 fn transform_expr_block_inner_scoped(
     exprs: Vec<ASTExpression>,
     state: &mut StaticsGlobalState,
+    top_level: bool,
 ) -> RMBlock {
     let mut scope = StaticsCurrentScope::new();
     let mut block = vec![];
     for expr in exprs {
-        block.push(transform_expr(expr, state, &mut scope));
+        block.push(transform_expr(expr, state, &mut scope, top_level));
     }
     RMBlock {
         block,
@@ -165,6 +176,7 @@ fn transform_expr_block_inner_scoped(
 fn transform_function(
     ASTFunctionDefinition {
         doc_comment,
+        is_exported,
         ident,
         is_member: _,
         can_be_disembodied,
@@ -175,7 +187,8 @@ fn transform_function(
     }: ASTFunctionDefinition,
     state: &mut StaticsGlobalState,
     scope: &mut StaticsCurrentScope,
-) -> IdentInt {
+    top_level: bool,
+) -> (IdentInt, bool) {
     let function = RMFunction {
         info: RMFunctionInfo {
             doc_comment,
@@ -188,18 +201,25 @@ fn transform_function(
             can_be_disembodied,
             all_scoped: ScopedStatics::empty(),
         },
-        block: block.map(|block| transform_expr_block_inner_scoped(block, state)),
+        block: block.map(|block| transform_expr_block_inner_scoped(block, state, false)),
     };
 
     let id = state.functions.len();
     state.functions.push(function);
+    if top_level && is_exported {
+        state
+            .module_tree
+            .public_exports_mut()
+            .functions
+            .insert(ident.clone(), FullId::Local(id));
+    }
     scope
         .functions
         .entry(ident)
         .or_insert_with(|| vec![])
         .push(id);
 
-    return id;
+    return (id, is_exported);
 }
 fn transform_associated_function(
     def: ASTFunctionDefinition,
@@ -207,7 +227,7 @@ fn transform_associated_function(
     scope: &mut StaticsCurrentScope,
 ) -> CMAssociatedFunction {
     let is_member = def.is_member;
-    let id = transform_function(def, state, scope);
+    let (id, is_exported) = transform_function(def, state, scope, false);
 
     CMAssociatedFunction { id, is_member }
 }
@@ -230,23 +250,23 @@ fn transform_expr(
     expr: ASTExpression,
     state: &mut StaticsGlobalState,
     scope: &mut StaticsCurrentScope,
+    top_level: bool,
 ) -> RMExpression {
     match expr {
         ASTExpression::Import { include_paths } => {
             for path in include_paths {
                 let local_name = path.last().unwrap();
-                let mod_resolution = state.submodule_tree.resolve_at_root(&path);
-                if let Some(mod_resolution) = mod_resolution {
-                    scope
-                        .imports
-                        .entry(local_name.clone())
-                        .and_modify(|_| {
-                            todo!("// TODO report imports with the same name in local scopes");
-                        })
-                        .or_insert(mod_resolution);
-                } else {
-                    todo!("// TODO report unresolved import in import statement");
-                }
+                scope
+                    .imports
+                    .entry(local_name.clone())
+                    .and_modify(|_| {
+                        todo!("// TODO report imports with the same name in local scopes");
+                    })
+                    .or_insert_with(|| {
+                        // ------------------
+                        state.module_tree.preliminary_get(path)
+                        // ------------------
+                    });
             }
             RMExpression::Void
         }
@@ -255,12 +275,13 @@ fn transform_expr(
         // move function/struct definitions to static list
         //
         ASTExpression::FunctionDefinition(def) => {
-            transform_function(def, state, scope);
+            transform_function(def, state, scope, top_level);
 
             RMExpression::Void
         }
         ASTExpression::StructDefinition {
             doc_comment,
+            is_exported,
             ident,
             properties,
             impl_functions,
@@ -284,6 +305,13 @@ fn transform_expr(
             };
             let id = state.structs.len();
             state.structs.push(st);
+            if top_level && is_exported {
+                &mut state
+                    .module_tree
+                    .public_exports_mut()
+                    .structs
+                    .insert(ident.clone(), FullId::Local(id));
+            }
             scope
                 .structs
                 .entry(ident)
@@ -294,6 +322,7 @@ fn transform_expr(
         }
         ASTExpression::TraitDefinition {
             doc_comment,
+            is_exported,
             ident,
             bounds,
             functions,
@@ -360,7 +389,7 @@ fn transform_expr(
                                     .into_iter()
                                     .map(|ASTOptionallyTypedIdent { ident, ty }| (ident, ty))
                                     .collect(),
-                                block: transform_expr_block_inner_scoped(block, state),
+                                block: transform_expr_block_inner_scoped(block, state, false),
                             }
                         }),
                 )
@@ -409,7 +438,7 @@ fn transform_expr(
                 properties
                     .properties
                     .into_iter()
-                    .map(|(ident, expr)| (ident, transform_expr(expr, state, scope)))
+                    .map(|(ident, expr)| (ident, transform_expr(expr, state, scope, false)))
                     .collect(),
             ),
         },
@@ -424,7 +453,7 @@ fn transform_expr(
             properties: LiteralStructInit::Tuple(
                 properties
                     .into_iter()
-                    .map(|expr| transform_expr(expr, state, scope))
+                    .map(|expr| transform_expr(expr, state, scope, false))
                     .collect(),
             ),
         },
@@ -435,7 +464,7 @@ fn transform_expr(
                     .into_iter()
                     .map(|ASTOptionallyTypedIdent { ident, ty }| (ident, ty))
                     .collect(),
-                block: transform_expr_block_inner_scoped(block, state),
+                block: transform_expr_block_inner_scoped(block, state, false),
             }
         }
         ASTExpression::BinaryOp { op, lhs, rhs } => RMExpression::OpBinary {
@@ -454,25 +483,25 @@ fn transform_expr(
             else_block,
         } => RMExpression::Conditional {
             condition: transform_expr_box(condition, state, scope),
-            block: transform_expr_block_inner_scoped(block, state),
+            block: transform_expr_block_inner_scoped(block, state, false),
             elifs: {
                 let mut elifs_out = vec![];
                 for (condition, block) in elifs {
                     elifs_out.push((
-                        transform_expr(condition, state, scope),
-                        transform_expr_block_inner_scoped(block, state),
+                        transform_expr(condition, state, scope, false),
+                        transform_expr_block_inner_scoped(block, state, false),
                     ));
                 }
                 elifs_out
             },
             else_block: if let Some(block) = else_block {
-                Some(transform_expr_block_inner_scoped(block, state))
+                Some(transform_expr_block_inner_scoped(block, state, false))
             } else {
                 None
             },
         },
         ASTExpression::Loop { block } => RMExpression::Loop {
-            block: transform_expr_block_inner_scoped(block, state),
+            block: transform_expr_block_inner_scoped(block, state, false),
         },
         ASTExpression::For {
             loop_var,
@@ -482,9 +511,11 @@ fn transform_expr(
         } => RMExpression::LoopFor {
             loop_var,
             iterable: transform_expr_box(iterable, state, scope),
-            block: transform_expr_block_inner_scoped(block, state),
+            block: transform_expr_block_inner_scoped(block, state, false),
             else_block: match else_block {
-                Some(else_block) => Some(transform_expr_block_inner_scoped(else_block, state)),
+                Some(else_block) => {
+                    Some(transform_expr_block_inner_scoped(else_block, state, false))
+                }
                 None => None,
             },
         },
@@ -494,9 +525,11 @@ fn transform_expr(
             else_block,
         } => RMExpression::LoopWhile {
             condition: transform_expr_box(condition, state, scope),
-            block: transform_expr_block_inner_scoped(block, state),
+            block: transform_expr_block_inner_scoped(block, state, false),
             else_block: match else_block {
-                Some(else_block) => Some(transform_expr_block_inner_scoped(else_block, state)),
+                Some(else_block) => {
+                    Some(transform_expr_block_inner_scoped(else_block, state, false))
+                }
                 None => None,
             },
         },

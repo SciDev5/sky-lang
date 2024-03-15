@@ -1330,6 +1330,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
     fn finish_parse_function_declaration(
         &mut self,
         doc_comment: DocComment,
+        is_exported: bool,
         can_be_disembodied: bool,
         can_be_instance: bool,
     ) -> ParseResult<ASTFunctionDefinition> {
@@ -1387,6 +1388,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
 
         Ok(ASTFunctionDefinition {
             doc_comment,
+            is_exported,
             ident,
             params,
             return_ty,
@@ -1417,13 +1419,15 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         self.parse_optional_result(
             |t| {
                 let doc_comment = t.try_doc_comment();
+                let is_exported = t.try_keyword(Keyword::Export).is_some();
                 t.try_keyword(Keyword::FunctionDefinition)?;
-                Some(doc_comment)
+                Some((doc_comment, is_exported))
             },
-            |t, doc_comment| {
+            |t, (doc_comment, is_exported)| {
                 Self::finish_parse_function_declaration(
                     t,
                     doc_comment,
+                    is_exported,
                     can_be_disembodied,
                     can_be_instance,
                 )
@@ -1440,10 +1444,11 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         self.parse_optional_result(
             |t| {
                 let doc_comment = t.try_doc_comment();
+                let is_exported = t.try_keyword(Keyword::Export).is_some();
                 t.try_keyword(Keyword::StructDefinition)?;
-                Some(doc_comment)
+                Some((doc_comment, is_exported))
             },
-            |t, doc_comment| {
+            |t, (doc_comment, is_exported)| {
                 let ident = t.ident()?;
 
                 // TODO type parameters
@@ -1527,6 +1532,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
 
                 Ok(ASTExpression::StructDefinition {
                     doc_comment,
+                    is_exported,
                     ident,
                     properties,
                     impl_functions,
@@ -1539,10 +1545,11 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         self.parse_optional_result(
             |t| {
                 let doc_comment = t.try_doc_comment();
+                let is_exported = t.try_keyword(Keyword::Export).is_some();
                 t.try_keyword(Keyword::TraitDefinition)?;
-                Some(doc_comment)
+                Some((doc_comment, is_exported))
             },
-            |t, doc_comment| {
+            |t, (doc_comment, is_exported)| {
                 let ident = t.ident()?;
                 // TODO template types in traits
                 let bounds = match t.try_parse_trait_bounds() {
@@ -1561,6 +1568,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
 
                 Ok(ASTExpression::TraitDefinition {
                     doc_comment,
+                    is_exported,
                     ident,
                     bounds,
                     functions,

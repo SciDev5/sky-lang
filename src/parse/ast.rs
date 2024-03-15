@@ -3,6 +3,7 @@ use std::{collections::HashMap, fmt::Debug};
 use num::complex::Complex64;
 
 use crate::{
+    build::module_tree::ModuleTree,
     common::{common_module::DocComment, IdentStr},
     math::tensor::Tensor,
 };
@@ -10,7 +11,6 @@ use crate::{
 use super::{
     ops::SLOperator,
     raw_module::{RMTemplateDef, RMType},
-    submoduletree::SubModuleTree,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,6 +159,7 @@ pub enum ASTExpression {
 
     StructDefinition {
         doc_comment: DocComment,
+        is_exported: bool,
         ident: IdentStr,
         properties: Vec<(IdentStr, DocComment, RMType)>,
         // TODO associated functionality
@@ -167,6 +168,7 @@ pub enum ASTExpression {
     },
     TraitDefinition {
         doc_comment: DocComment,
+        is_exported: bool,
         ident: IdentStr,
         bounds: (),
         // TODO associated types and consts
@@ -183,6 +185,7 @@ pub type ASTBlock = Vec<ASTExpression>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTFunctionDefinition {
     pub doc_comment: DocComment,
+    pub is_exported: bool,
     pub ident: IdentStr,
     pub is_member: bool,
     pub params: Vec<ASTTypedIdent>,
@@ -217,15 +220,15 @@ pub enum ASTArray {
 
 pub struct ASTModule {
     pub modules: Vec<ASTBlock>,
-    pub submodule_tree: SubModuleTree,
+    pub submodule_tree: ModuleTree,
 }
 impl ASTModule {
     pub fn new(iter: impl Iterator<Item = (Vec<IdentStr>, ASTBlock)>) -> Self {
         let mut modules = vec![];
-        let mut submodule_tree = SubModuleTree::new();
+        let mut submodule_tree = ModuleTree::new();
         for (i, (path, block)) in iter.enumerate() {
             modules.push(block);
-            submodule_tree.insert_at_root(path.into_iter(), i);
+            submodule_tree.insert_at_root(&path, i);
         }
         Self {
             modules,

@@ -3,6 +3,7 @@ use std::{collections::HashMap, fmt::Debug};
 use num::complex::Complex64;
 
 use crate::{
+    build::module_tree::{ModuleTree, PreliminaryModuleTreeLookupId},
     common::{
         common_module::{CMAssociatedFunction, DocComment},
         IdentInt, IdentStr,
@@ -10,17 +11,14 @@ use crate::{
     math::tensor::Tensor,
 };
 
-use super::{
-    ops::SLOperator,
-    submoduletree::{SubModuleResolution, SubModuleTree},
-};
+use super::ops::SLOperator;
 
 #[derive(Debug, Clone)]
 pub struct ScopedStatics {
     pub functions: HashMap<IdentStr, Vec<IdentInt>>,
     pub structs: HashMap<IdentStr, IdentInt>,
     pub traits: HashMap<IdentStr, IdentInt>,
-    pub imports: HashMap<IdentStr, SubModuleResolution>,
+    pub imports: HashMap<IdentStr, PreliminaryModuleTreeLookupId>,
 }
 impl ScopedStatics {
     pub fn empty() -> Self {
@@ -252,5 +250,5 @@ pub struct RawModule {
     pub traits: Vec<RMTrait>,
 
     pub top_level: Vec<RMBlock>,
-    pub submodule_tree: SubModuleTree,
+    pub submodule_tree: ModuleTree,
 }

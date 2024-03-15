@@ -1,8 +1,9 @@
-use std::{collections::HashMap, fmt::Debug};
+use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use num::complex::Complex64;
 
 use crate::{
+    build::module_tree::ModuleTree,
     common::{IdentInt, IdentStr},
     math::tensor::Tensor,
     parse::fn_lookup::FnRef,
@@ -202,4 +203,5 @@ pub struct CommonModule {
     pub structs: Vec<CMStruct>,
     // pub traits: Vec<CMTrait>,
     pub top_level: (Vec<CMExpression>, Vec<CMLocalVarInfo>, CMType),
+    pub submodule_tree: ModuleTree,
 }

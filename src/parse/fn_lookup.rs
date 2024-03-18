@@ -2,12 +2,91 @@ use std::collections::HashMap;
 
 use lazy_static::lazy_static;
 
-use crate::common::{
-    common_module::{CMAssociatedFunction, CMType},
-    IdentInt, IdentStr,
+use crate::{
+    build::module_tree::FullId,
+    common::{
+        common_module::{CMAssociatedFunction, CMType},
+        IdentInt, IdentStr,
+    },
 };
 
 use super::{ops::SLOperator, raw_2_common::ResolverGlobalState};
+
+#[derive(Debug, Clone, Copy)]
+pub enum IntrinsicFnId {
+    // a 1 parameter function that does nothing
+    Identity,
+    // intrinsic function with 1 parameter
+    Intrinsic1(Intrinsic1FnId),
+    // intrinsic function with 2 parameters
+    Intrinsic2(Intrinsic2FnId),
+    // intrinsic function with some other number of parameters
+    Intrinsic(IntrinsicNFnId),
+}
+impl IntrinsicFnId {
+    pub fn lookup(ident: &IdentStr) -> Option<Self> {
+        match ident.as_str() {
+            "IntMinus" => Some(Self::Intrinsic1(Intrinsic1FnId::IntMinus)),
+            "IntBitNot" => Some(Self::Intrinsic1(Intrinsic1FnId::IntBitNot)),
+            "FloatMinus" => Some(Self::Intrinsic1(Intrinsic1FnId::FloatMinus)),
+            "ComplexMinus" => Some(Self::Intrinsic1(Intrinsic1FnId::ComplexMinus)),
+            "ComplexConj" => Some(Self::Intrinsic1(Intrinsic1FnId::ComplexConj)),
+            "BoolNot" => Some(Self::Intrinsic1(Intrinsic1FnId::BoolNot)),
+
+            "PrimitiveEquals" => Some(Self::Intrinsic2(Intrinsic2FnId::PrimitiveEquals)),
+            "PrimitiveNotEquals" => Some(Self::Intrinsic2(Intrinsic2FnId::PrimitiveNotEquals)),
+            "IntPlus" => Some(Self::Intrinsic2(Intrinsic2FnId::IntPlus)),
+            "IntMinus" => Some(Self::Intrinsic2(Intrinsic2FnId::IntMinus)),
+            "IntTimes" => Some(Self::Intrinsic2(Intrinsic2FnId::IntTimes)),
+            "IntDiv" => Some(Self::Intrinsic2(Intrinsic2FnId::IntDiv)),
+            "IntPow" => Some(Self::Intrinsic2(Intrinsic2FnId::IntPow)),
+            "IntBitXor" => Some(Self::Intrinsic2(Intrinsic2FnId::IntBitXor)),
+            "IntBitAnd" => Some(Self::Intrinsic2(Intrinsic2FnId::IntBitAnd)),
+            "IntBitOr" => Some(Self::Intrinsic2(Intrinsic2FnId::IntBitOr)),
+            "IntLessEqual" => Some(Self::Intrinsic2(Intrinsic2FnId::IntLessEqual)),
+            "IntLessThan" => Some(Self::Intrinsic2(Intrinsic2FnId::IntLessThan)),
+            "IntGreaterEqual" => Some(Self::Intrinsic2(Intrinsic2FnId::IntGreaterEqual)),
+            "IntGreaterThan" => Some(Self::Intrinsic2(Intrinsic2FnId::IntGreaterThan)),
+            "FloatPlus" => Some(Self::Intrinsic2(Intrinsic2FnId::FloatPlus)),
+            "FloatMinus" => Some(Self::Intrinsic2(Intrinsic2FnId::FloatMinus)),
+            "FloatTimes" => Some(Self::Intrinsic2(Intrinsic2FnId::FloatTimes)),
+            "FloatDiv" => Some(Self::Intrinsic2(Intrinsic2FnId::FloatDiv)),
+            "FloatPowAsComplex" => Some(Self::Intrinsic2(Intrinsic2FnId::FloatPowAsComplex)),
+            "FloatPowInt" => Some(Self::Intrinsic2(Intrinsic2FnId::FloatPowInt)),
+            "FloatLessEqual" => Some(Self::Intrinsic2(Intrinsic2FnId::FloatLessEqual)),
+            "FloatLessThan" => Some(Self::Intrinsic2(Intrinsic2FnId::FloatLessThan)),
+            "FloatGreaterEqual" => Some(Self::Intrinsic2(Intrinsic2FnId::FloatGreaterEqual)),
+            "FloatGreaterThan" => Some(Self::Intrinsic2(Intrinsic2FnId::FloatGreaterThan)),
+            "ComplexPlus" => Some(Self::Intrinsic2(Intrinsic2FnId::ComplexPlus)),
+            "ComplexMinus" => Some(Self::Intrinsic2(Intrinsic2FnId::ComplexMinus)),
+            "ComplexTimes" => Some(Self::Intrinsic2(Intrinsic2FnId::ComplexTimes)),
+            "ComplexDiv" => Some(Self::Intrinsic2(Intrinsic2FnId::ComplexDiv)),
+            "ComplexPow" => Some(Self::Intrinsic2(Intrinsic2FnId::ComplexPow)),
+            "BoolAnd" => Some(Self::Intrinsic2(Intrinsic2FnId::BoolAnd)),
+            "BoolXor" => Some(Self::Intrinsic2(Intrinsic2FnId::BoolXor)),
+            "BoolOr" => Some(Self::Intrinsic2(Intrinsic2FnId::BoolOr)),
+
+            "Identity" => Some(Self::Identity),
+
+            _ => None,
+        }
+    }
+    pub fn ty_ret(&self, args: Vec<CMType>) -> Option<CMType> {
+        match (self, args.len()) {
+            (Self::Identity, 1) => Some(args[0].clone()),
+            (Self::Intrinsic1(id), 1) => Some(id.ty_ret()),
+            (Self::Intrinsic2(id), 2) => Some(id.ty_ret()),
+            (Self::Intrinsic(id), _) => {
+                if id.n_args() == args.len() {
+                    Some(id.ty_ret())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum FnRef {
@@ -19,7 +98,7 @@ pub enum FnRef {
     // intrinsic function with 2 parameters
     Intrinsic2(Intrinsic2FnId),
     // intrinsic function with some other number of parameters
-    Intrinsic(IntrinsicFnId),
+    Intrinsic(IntrinsicNFnId),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -74,7 +153,7 @@ pub enum Intrinsic2FnId {
     BoolOr,
 }
 #[derive(Debug, Clone, Copy)]
-pub enum IntrinsicFnId {}
+pub enum IntrinsicNFnId {}
 
 impl Intrinsic1FnId {
     pub fn ty_ret(self) -> CMType {
@@ -128,7 +207,7 @@ impl Intrinsic2FnId {
         }
     }
 }
-impl IntrinsicFnId {
+impl IntrinsicNFnId {
     pub fn ty_ret(self) -> CMType {
         match self {}
     }
@@ -174,7 +253,7 @@ pub struct AssociatedFnLut {
     pub op_unary: HashMap<SLOperator, FnRef>,
     pub op_call: Overloads,
     pub op_index: Overloads,
-    pub named: HashMap<IdentStr, usize>,
+    pub named: HashMap<IdentStr, FullId>,
 }
 impl AssociatedFnLut {
     pub fn empty() -> Self {
@@ -351,7 +430,7 @@ pub fn gen_struct_fn_lut(
     let mut lut = AssociatedFnLut::empty();
     for (name, CMAssociatedFunction { id, is_member }) in impl_functions {
         if *is_member || !is_instance_lut {
-            lut.named.insert(name.clone(), *id);
+            lut.named.insert(name.clone(), FullId::Local(*id));
         }
     }
     lut

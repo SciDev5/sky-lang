@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Debug};
 use num::complex::Complex64;
 
 use crate::{
-    build::module_tree::{ModuleTree, PreliminaryModuleTreeLookupId},
+    build::module_tree::{ModuleTree, ModuleTreeLookup, ModuleTreeLookupPreliminary},
     common::{
         common_module::{CMAssociatedFunction, DocComment},
         IdentInt, IdentStr,
@@ -11,16 +11,16 @@ use crate::{
     math::tensor::Tensor,
 };
 
-use super::ops::SLOperator;
+use super::{fn_lookup::IntrinsicFnId, ops::SLOperator};
 
 #[derive(Debug, Clone)]
-pub struct ScopedStatics {
+pub struct RMScopedStatics {
     pub functions: HashMap<IdentStr, Vec<IdentInt>>,
     pub structs: HashMap<IdentStr, IdentInt>,
     pub traits: HashMap<IdentStr, IdentInt>,
-    pub imports: HashMap<IdentStr, PreliminaryModuleTreeLookupId>,
+    pub imports: HashMap<IdentStr, ModuleTreeLookupPreliminary>,
 }
-impl ScopedStatics {
+impl RMScopedStatics {
     pub fn empty() -> Self {
         Self {
             functions: HashMap::new(),
@@ -29,6 +29,33 @@ impl ScopedStatics {
             imports: HashMap::new(),
         }
     }
+    pub fn finish_imports(self, submodule_tree: &ModuleTree) -> ScopedStatics {
+        ScopedStatics {
+            functions: self.functions,
+            structs: self.structs,
+            traits: self.traits,
+            imports: self
+                .imports
+                .into_iter()
+                .map(|(ident, import_lookup_preliminary)| {
+                    (
+                        ident,
+                        submodule_tree
+                            .finish_get(import_lookup_preliminary)
+                            .expect("// TODO handle errors finishing import lookups"),
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ScopedStatics {
+    pub functions: HashMap<IdentStr, Vec<IdentInt>>,
+    pub structs: HashMap<IdentStr, IdentInt>,
+    pub traits: HashMap<IdentStr, IdentInt>,
+    pub imports: HashMap<IdentStr, ModuleTreeLookup>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +72,7 @@ pub struct RMFunctionInfo {
     pub return_ty: Option<RMType>,
     pub can_be_disembodied: bool,
     /// Contains references to all static references this function can see, including itself.
-    pub all_scoped: ScopedStatics,
+    pub all_scoped: RMScopedStatics,
 }
 #[derive(Debug, Clone)]
 pub struct RMFunction {
@@ -64,7 +91,7 @@ pub struct RMStruct {
     pub impl_functions: HashMap<IdentStr, CMAssociatedFunction>,
     pub impl_traits: HashMap<IdentStr, RMTraitImpl>,
     /// Contains references to all static references this struct can see, including itself.
-    pub all_scoped: ScopedStatics,
+    pub all_scoped: RMScopedStatics,
 }
 #[derive(Debug, Clone)]
 pub struct RMTraitImpl {
@@ -76,7 +103,7 @@ pub struct RMTrait {
     pub doc_comment: DocComment,
     pub functions: HashMap<IdentStr, CMAssociatedFunction>,
     /// Contains references to all static references this struct can see, including itself.
-    pub all_scoped: ScopedStatics,
+    pub all_scoped: RMScopedStatics,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -178,6 +205,10 @@ pub enum RMExpression {
         ident: IdentStr,
     },
 
+    CallIntrinsic {
+        id: IntrinsicFnId,
+        arguments: Vec<RMExpression>,
+    },
     Call {
         callable: Box<RMExpression>,
         arguments: Vec<RMExpression>,
@@ -241,7 +272,7 @@ pub struct RMBlock {
     pub block: Vec<RMExpression>,
     /// Contains a list of references to the functions contianed in this scope,
     /// excluding outer scopes.
-    pub inner_scoped: ScopedStatics,
+    pub inner_scoped: RMScopedStatics,
 }
 #[derive(Debug)]
 pub struct RawModule {

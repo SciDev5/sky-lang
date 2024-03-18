@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    build::module_tree::{FullId, ModuleTreeSubModuleHandle, PreliminaryModuleTreeLookupId},
+    build::module_tree::{FullId, ModuleTreeLookupPreliminary, ModuleTreeSubModuleHandle},
     common::{common_module::CMAssociatedFunction, IdentInt, IdentStr},
 };
 
@@ -11,9 +11,10 @@ use super::{
         ASTFunctionDefinition, ASTLiteral, ASTModule, ASTOptionallyTypedIdent, ASTTraitImpl,
         ASTTypedIdent, ASTVarAccessExpression,
     },
+    fn_lookup::IntrinsicFnId,
     raw_module::{
         LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralArray,
-        RMLiteralValue, RMStruct, RMTrait, RMTraitImpl, RawModule, ScopedStatics,
+        RMLiteralValue, RMScopedStatics, RMStruct, RMTrait, RMTraitImpl, RawModule,
     },
 };
 
@@ -28,7 +29,7 @@ struct StaticsCurrentScope {
     structs: HashMap<IdentStr, IdentInt>,
     traits: HashMap<IdentStr, IdentInt>,
     functions: HashMap<IdentStr, Vec<IdentInt>>,
-    imports: HashMap<IdentStr, PreliminaryModuleTreeLookupId>,
+    imports: HashMap<IdentStr, ModuleTreeLookupPreliminary>,
 }
 impl StaticsCurrentScope {
     fn new() -> Self {
@@ -39,8 +40,8 @@ impl StaticsCurrentScope {
             imports: HashMap::new(),
         }
     }
-    fn apply(self, state: &mut StaticsGlobalState) -> ScopedStatics {
-        fn add_refs(all_scoped: &mut ScopedStatics, scope_to_add: &StaticsCurrentScope) {
+    fn apply(self, state: &mut StaticsGlobalState) -> RMScopedStatics {
+        fn add_refs(all_scoped: &mut RMScopedStatics, scope_to_add: &StaticsCurrentScope) {
             for (ident, overloads) in &scope_to_add.functions {
                 let fns = all_scoped
                     .functions
@@ -89,7 +90,7 @@ impl StaticsCurrentScope {
             add_refs(&mut state.traits[*tr_id_i].all_scoped, &self);
         }
 
-        ScopedStatics {
+        RMScopedStatics {
             structs: self.structs,
             traits: self.traits,
             functions: self.functions,
@@ -119,10 +120,17 @@ pub fn ast_2_raw(
         })
         .collect::<Vec<_>>();
 
+    let StaticsGlobalState {
+        structs,
+        traits,
+        functions,
+        ..
+    } = state;
+
     RawModule {
-        structs: state.structs,
-        traits: state.traits,
-        functions: state.functions,
+        structs,
+        traits,
+        functions,
         top_level,
         submodule_tree,
     }
@@ -199,7 +207,7 @@ fn transform_function(
                 .collect(),
             return_ty,
             can_be_disembodied,
-            all_scoped: ScopedStatics::empty(),
+            all_scoped: RMScopedStatics::empty(),
         },
         block: block.map(|block| transform_expr_block_inner_scoped(block, state, false)),
     };
@@ -253,6 +261,15 @@ fn transform_expr(
     top_level: bool,
 ) -> RMExpression {
     match expr {
+        ASTExpression::TEMPIntrinsicInvoke { ident, mut args } => {
+            let Some(id) = IntrinsicFnId::lookup(&ident) else {
+                panic!("invalid intrinsic function id");
+            };
+            RMExpression::CallIntrinsic {
+                id,
+                arguments: transform_expr_vec(args, state, scope),
+            }
+        }
         ASTExpression::Import { include_paths } => {
             for path in include_paths {
                 let local_name = path.last().unwrap();
@@ -264,7 +281,10 @@ fn transform_expr(
                     })
                     .or_insert_with(|| {
                         // ------------------
-                        state.module_tree.preliminary_get(path)
+                        state
+                            .module_tree
+                            .preliminary_get(path)
+                            .expect("// TODO handle failed preliminary get")
                         // ------------------
                     });
             }
@@ -289,7 +309,7 @@ fn transform_expr(
         } => {
             let st = RMStruct {
                 doc_comment,
-                all_scoped: ScopedStatics::empty(),
+                all_scoped: RMScopedStatics::empty(),
                 fields: properties
                     .into_iter()
                     .map(|(ident, doc_comment, ty)| (ident, (ty, doc_comment)))

@@ -2,7 +2,7 @@ use num::traits::Pow;
 
 use crate::{
     interpreter::{interpreter::PanicGen, value::ValueComplex},
-    parse::fn_lookup::{Intrinsic1FnId, Intrinsic2FnId, IntrinsicFnId},
+    parse::fn_lookup::{Intrinsic1FnId, Intrinsic2FnId, IntrinsicNFnId},
 };
 
 use super::value::Value;
@@ -89,6 +89,6 @@ pub fn apply_intrinsic2(id: Intrinsic2FnId, lhs: Value, rhs: Value) -> Result<Va
         Intrinsic2FnId::BoolOr => Bool(lhs.into_bool() || rhs.into_bool()),
     })
 }
-pub fn apply_intrinsic(id: IntrinsicFnId, _values: Vec<Value>) -> Result<Value, PanicGen> {
+pub fn apply_intrinsic(id: IntrinsicNFnId, _values: Vec<Value>) -> Result<Value, PanicGen> {
     match id {}
 }

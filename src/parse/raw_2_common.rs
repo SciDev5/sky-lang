@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    build::module_tree::{FullId, ModuleTree, ModuleTreeLookup, ModuleTreeLookupError},
     common::{
         common_module::{
             CMAssociatedFunction, CMExpression, CMFunction, CMFunctionInfo, CMLiteralValue,
@@ -103,6 +104,7 @@ pub struct PartiallyResolvedTrait {
     functions: HashMap<String, CMAssociatedFunction>,
 }
 pub struct ResolverGlobalState {
+    submodule_tree: ModuleTree,
     functions: Vec<PartiallyResolvedFunction>,
     pub structs: Vec<PartiallyResolvedStruct>,
     pub traits: Vec<PartiallyResolvedTrait>,
@@ -135,11 +137,18 @@ struct Raw2CommonDiagnostic {
     // TODO pointing out location
 }
 
-pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
+pub fn raw_2_common(
+    RawModule {
+        functions,
+        structs,
+        traits,
+        top_level,
+        mut submodule_tree,
+    }: RawModule,
+) -> CommonModule {
     let mut diagnostics = vec![];
     let mut state = ResolverGlobalState {
-        functions: raw_module
-            .functions
+        functions: functions
             .into_iter()
             .map(
                 |RMFunction {
@@ -153,53 +162,59 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                              can_be_disembodied,
                          },
                      block,
-                 }| PartiallyResolvedFunction {
-                    doc_comment: doc_comment,
-                    params: params
-                        .iter()
-                        .map(|(_, ty)| static_resolve_type(&[all_scoped.clone()], ty))
-                        .collect(),
-                    param_idents: params.into_iter().map(|(ident, _)| ident).collect(),
-                    body: match block {
-                        Some(block) => PartiallyResolvedFunctionBody::Untranslated {
-                            ty_return: match &return_ty {
-                                Some(ty) => Some(static_resolve_type(&[all_scoped.clone()], ty)),
-                                None => None,
+                 }| {
+                    let all_scoped = all_scoped.finish_imports(&submodule_tree);
+                    PartiallyResolvedFunction {
+                        doc_comment: doc_comment,
+                        params: params
+                            .iter()
+                            .map(|(_, ty)| static_resolve_type(&[all_scoped.clone()], ty))
+                            .collect(),
+                        param_idents: params.into_iter().map(|(ident, _)| ident).collect(),
+                        body: match block {
+                            Some(block) => PartiallyResolvedFunctionBody::Untranslated {
+                                ty_return: match &return_ty {
+                                    Some(ty) => {
+                                        Some(static_resolve_type(&[all_scoped.clone()], ty))
+                                    }
+                                    None => None,
+                                },
+                                all_scoped,
+                                block,
                             },
-                            all_scoped,
-                            block,
-                        },
-                        None if can_be_disembodied => PartiallyResolvedFunctionBody::Disembodied {
-                            ty_return: match &return_ty {
-                                Some(ty) => static_resolve_type(&[all_scoped.clone()], ty),
-                                None => {
-                                    diagnostics.push(Raw2CommonDiagnostic {
-                                        text: format!(
-                                            "disembodied function must have return value"
-                                        ),
-                                    });
-                                    CMType::Unknown
+                            None if can_be_disembodied => {
+                                PartiallyResolvedFunctionBody::Disembodied {
+                                    ty_return: match &return_ty {
+                                        Some(ty) => static_resolve_type(&[all_scoped.clone()], ty),
+                                        None => {
+                                            diagnostics.push(Raw2CommonDiagnostic {
+                                                text: format!(
+                                                    "disembodied function must have return value"
+                                                ),
+                                            });
+                                            CMType::Unknown
+                                        }
+                                    },
                                 }
-                            },
-                        },
-                        None => {
-                            diagnostics.push(Raw2CommonDiagnostic {
-                                text: format!("function must have body"),
-                            });
-                            PartiallyResolvedFunctionBody::Translated {
-                                ty_return: return_ty.map_or(CMType::Unknown, |ty| {
-                                    static_resolve_type(&[all_scoped.clone()], &ty)
-                                }),
-                                locals: vec![],
-                                block: vec![CMExpression::Fail],
                             }
-                        }
-                    },
+                            None => {
+                                diagnostics.push(Raw2CommonDiagnostic {
+                                    text: format!("function must have body"),
+                                });
+                                PartiallyResolvedFunctionBody::Translated {
+                                    ty_return: return_ty.map_or(CMType::Unknown, |ty| {
+                                        static_resolve_type(&[all_scoped.clone()], &ty)
+                                    }),
+                                    locals: vec![],
+                                    block: vec![CMExpression::Fail],
+                                }
+                            }
+                        },
+                    }
                 },
             )
             .collect(),
-        structs: raw_module
-            .structs
+        structs: structs
             .into_iter()
             .map(
                 |RMStruct {
@@ -209,6 +224,7 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                      impl_traits,
                      all_scoped,
                  }| {
+                    let all_scoped = all_scoped.finish_imports(&submodule_tree);
                     let (fields, fields_info) = fields
                         .into_iter()
                         .enumerate()
@@ -239,8 +255,7 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                 },
             )
             .collect(),
-        traits: raw_module
-            .traits
+        traits: traits
             .into_iter()
             .map(
                 |RMTrait {
@@ -255,6 +270,7 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
                 },
             )
             .collect(),
+        submodule_tree,
         diagnostics,
     };
 
@@ -353,13 +369,121 @@ pub fn raw_2_common(raw_module: RawModule) -> CommonModule {
     }
 }
 
+enum StaticLookup<'a> {
+    Fail { resolved_part: &'a [IdentStr] },
+    Module(FullId),
+    Struct(FullId),
+    Trait(FullId),
+}
+fn static_lookup_helper_lookup(
+    submodule_tree: &ModuleTree,
+    scoped_statics: &ScopedStatics,
+    ident: &IdentStr,
+) -> Option<ModuleTreeLookup> {
+    Some(
+        if let Some(id) = scoped_statics.structs.get(ident).copied() {
+            ModuleTreeLookup::Struct(FullId::Local(id))
+        } else if let Some(id) = scoped_statics.traits.get(ident).copied() {
+            ModuleTreeLookup::Trait(FullId::Local(id))
+        } else if let Some(lookup) = scoped_statics.imports.get(ident) {
+            *lookup
+        } else {
+            return None;
+        },
+    )
+}
+fn static_lookup_no_fn<'a>(
+    submodule_tree: &ModuleTree,
+    statics_scope_stack: &[ScopedStatics],
+    resolution_chain: &'a [IdentStr],
+) -> StaticLookup<'a> {
+    assert!(resolution_chain.len() >= 1);
+    // reverse to prioritize higher scope stack frames, which correspond to the innermost scopes.
+    for scoped_statics in statics_scope_stack.iter().rev() {
+        if let Some(lookup) =
+            static_lookup_helper_lookup(submodule_tree, scoped_statics, &resolution_chain[0])
+        {
+            return match submodule_tree
+                .get(lookup, &resolution_chain[1..])
+                .map_err(|ok_count| ok_count + 1)
+            {
+                Ok(ModuleTreeLookup::Module(id)) => StaticLookup::Module(id),
+                Ok(ModuleTreeLookup::Trait(id)) => StaticLookup::Trait(id),
+                Ok(ModuleTreeLookup::Struct(id)) => StaticLookup::Struct(id),
+                Ok(ModuleTreeLookup::Function(id)) => StaticLookup::Fail {
+                    resolved_part: &resolution_chain[..resolution_chain.len() - 1],
+                },
+                Err(ModuleTreeLookupError {
+                    n_matched_before_fail,
+                }) => StaticLookup::Fail {
+                    resolved_part: &resolution_chain[..n_matched_before_fail],
+                },
+            };
+        }
+    }
+    StaticLookup::Fail { resolved_part: &[] }
+}
+enum StaticLookupFn<'a> {
+    Fail { resolved_part: &'a [IdentStr] },
+    Function(FullId),
+}
+fn static_lookup_fn<'a>(
+    submodule_tree: &ModuleTree,
+    statics_scope_stack: &[ScopedStatics],
+    resolution_chain: &'a [IdentStr],
+) -> StaticLookupFn<'a> {
+    if resolution_chain.len() == 1 {
+        let ident = &resolution_chain[0];
+        // reverse to prioritize higher scope stack frames, which correspond to the innermost scopes.
+        for scoped_statics in statics_scope_stack.iter().rev() {
+            if let Some(id) = scoped_statics.functions.get(ident) {
+                eprintln!("// TODO handle overloads or disallow them");
+                return StaticLookupFn::Function(FullId::Local(id[0]));
+            }
+        }
+        StaticLookupFn::Fail {
+            resolved_part: &resolution_chain[..0],
+        }
+    } else {
+        // reverse to prioritize higher scope stack frames, which correspond to the innermost scopes.
+        for scoped_statics in statics_scope_stack.iter().rev() {
+            if let Some(lookup) =
+                static_lookup_helper_lookup(submodule_tree, scoped_statics, &resolution_chain[0])
+            {
+                return match submodule_tree
+                    .get(lookup, &resolution_chain[1..])
+                    .map_err(|ok_count| ok_count + 1)
+                {
+                    Ok(ModuleTreeLookup::Function(id)) => StaticLookupFn::Function(id),
+                    Ok(
+                        ModuleTreeLookup::Struct(id)
+                        | ModuleTreeLookup::Trait(id)
+                        | ModuleTreeLookup::Module(id),
+                    ) => StaticLookupFn::Fail {
+                        resolved_part: &resolution_chain[..resolution_chain.len() - 1],
+                    },
+                    Err(ModuleTreeLookupError {
+                        n_matched_before_fail,
+                    }) => StaticLookupFn::Fail {
+                        resolved_part: &resolution_chain[..n_matched_before_fail],
+                    },
+                };
+            }
+        }
+
+        StaticLookupFn::Fail {
+            resolved_part: &resolution_chain[..0],
+        }
+    }
+}
+
 fn static_resolve_type(statics_scope_stack: &[ScopedStatics], ty: &RMType) -> CMType {
     match ty {
         RMType::Void => CMType::Void,
         RMType::Never => CMType::Never,
 
         RMType::Identified(ident) => {
-            // ref to prioritize higher scope stack frames, which correspond to the innermost scopes.
+            // reverse to prioritize higher scope stack frames, which correspond to the innermost scopes.
             if let Some(id) = statics_scope_stack
                 .iter()
                 .rev()
@@ -403,8 +527,25 @@ fn static_resolve_trait(statics_scope_stack: &[ScopedStatics], id: &IdentStr) ->
 
 struct ResolvedFnInfo<'a> {
     ty_return: &'a CMType,
+    ty_args: &'a [CMType],
 }
 
+fn resolve_fn_full_id<'a>(
+    state: &'a mut ResolverGlobalState,
+    function_id: FullId,
+    current_fn_stack: &mut Vec<IdentInt>,
+) -> ResolvedFnInfo<'a> {
+    match function_id {
+        FullId::Local(id) => resolve_fn(state, id, current_fn_stack, false),
+        FullId::NonLocal { dependency_id, id } => {
+            let func = &state.submodule_tree.get_dependency(dependency_id).functions[id];
+            ResolvedFnInfo {
+                ty_return: &func.info.ty_return,
+                ty_args: &func.info.params,
+            }
+        }
+    }
+}
 fn resolve_fn<'a>(
     state: &'a mut ResolverGlobalState,
     current_fn_id: IdentInt,
@@ -414,15 +555,19 @@ fn resolve_fn<'a>(
     match &state.functions[current_fn_id].body {
         PartiallyResolvedFunctionBody::Disembodied { .. }
         | PartiallyResolvedFunctionBody::Translated { .. } => {
+            let func = &state.functions[current_fn_id];
             return ResolvedFnInfo {
-                ty_return: state.functions[current_fn_id].return_ty().unwrap(),
+                ty_return: func.return_ty().unwrap(),
+                ty_args: &func.params,
             };
         }
         PartiallyResolvedFunctionBody::Untranslated {
             ty_return: Some(_), ..
         } if force_translate => {
+            let func = &state.functions[current_fn_id];
             return ResolvedFnInfo {
-                ty_return: state.functions[current_fn_id].return_ty().unwrap(),
+                ty_return: func.return_ty().unwrap(),
+                ty_args: &func.params,
             };
         }
         _ => {}
@@ -521,6 +666,7 @@ fn resolve_fn<'a>(
 
     ResolvedFnInfo {
         ty_return: current_fn_ref.return_ty().unwrap(),
+        ty_args: &current_fn_ref.params,
     }
 }
 
@@ -545,7 +691,7 @@ fn resolve_block(
     let mut ty_eval = CMType::Void;
     let mut exprs_out = Vec::with_capacity(block.block.len());
 
-    statics_stack.push(block.inner_scoped);
+    statics_stack.push(block.inner_scoped.finish_imports(&state.submodule_tree));
     let mut locals_lookup_inner = locals_lookup.clone();
     for expr in block.block {
         let (expr, ty_eval_) = resolve_expr(
@@ -588,6 +734,33 @@ fn lookup_fn_ref_ty_return(
     }
 }
 
+/// Attempt to match expressions of the form `a.b.c.d`
+fn trace_ident_chain(mut expr: &RMExpression) -> Option<Vec<&IdentStr>> {
+    let mut path = vec![];
+    loop {
+        expr = match expr {
+            RMExpression::Ident { ident } => {
+                path.push(ident);
+                break;
+            }
+            RMExpression::ReadProperty {
+                expr,
+                property_ident,
+            } => {
+                path.push(property_ident);
+                expr.as_ref()
+            }
+            _ => return None,
+        }
+    }
+    path.reverse();
+    if path.len() > 0 {
+        Some(path)
+    } else {
+        None
+    }
+}
+
 fn resolve_expr(
     expr: RMExpression,
 
@@ -603,6 +776,29 @@ fn resolve_expr(
     ty_return: &mut Option<CMType>,
 ) -> (CMExpression, CMType) {
     match expr {
+        RMExpression::CallIntrinsic { id, arguments } => {
+            let (arguments, ty_args): (Vec<_>, Vec<_>) = arguments
+                .into_iter()
+                .map(|expr| {
+                    resolve_expr(
+                        expr,
+                        state,
+                        current_fn_stack,
+                        statics_stack,
+                        locals,
+                        locals_lookup,
+                        loop_context_stack,
+                        ty_return,
+                    )
+                })
+                .unzip();
+            let Some(ty_ret) = id.ty_ret(ty_args) else {
+                state.add_diagnostic(Raw2CommonDiagnostic { text: format!("intrinsic funciton call received wrong number of arguments") });
+                return (CMExpression::FailAfter(arguments), CMType::Unknown)
+            };
+            (CMExpression::CallIntrinsic { id, arguments }, ty_ret)
+        }
+
         // TODO use CMType::Never to detect dead code
         RMExpression::Void => (CMExpression::Void, CMType::Void),
         RMExpression::DeclareVar {
@@ -864,66 +1060,60 @@ fn resolve_expr(
                     ty_return,
                 );
                 resolved_arguments.push(resolved);
-                ty_arguments.push(Some(ty));
+                ty_arguments.push(ty);
             }
 
-            let ty_arguments = ty_arguments
-                .into_iter()
-                .map(Option::unwrap)
-                .collect::<Vec<_>>();
-            match *callable {
-                RMExpression::Ident { ident } => {
-                    // function call
-                    let mut best_fallback = None;
-                    let mut had_semimatch = false;
-                    for function_id in statics_stack
-                        .iter()
-                        .rev()
-                        .flat_map(|frame| frame.functions.get(&ident))
-                        .flatten()
-                        .copied()
-                    {
-                        let k = &state.functions[function_id];
-                        if &k.params == &ty_arguments {
-                            let ResolvedFnInfo { ty_return } =
-                                resolve_fn(state, function_id, current_fn_stack, false);
-                            return (
-                                CMExpression::Call {
-                                    function_id: FnRef::ModuleFunction(function_id),
-                                    arguments: resolved_arguments,
-                                    always_inline: false,
-                                    inlined_lambdas: None,
-                                },
-                                ty_return.clone(),
-                            );
-                        } else if k.params.len() == ty_arguments.len() {
-                            if had_semimatch {
-                                best_fallback = None;
-                            } else {
-                                best_fallback = Some(function_id)
-                            }
-                            had_semimatch = true;
-                        }
+            macro_rules! fails {
+                ($message: expr) => {{
+                    // > fail
+                    state.add_diagnostic(Raw2CommonDiagnostic { text: $message });
+                    return (CMExpression::FailAfter(resolved_arguments), CMType::Unknown);
+                }};
+            }
+
+            if let Some(path) = trace_ident_chain(&callable) {
+                let path = path.into_iter().cloned().collect::<Vec<_>>();
+                if !locals_lookup.contains_key(&path[0]) {
+                    // calling a function by name `do_something( ... )` and `module_a.module_b.do_something( ... )`
+                    let function_id =
+                        match static_lookup_fn(&state.submodule_tree, &statics_stack, &path[..]) {
+                            StaticLookupFn::Function(id) => id,
+                            StaticLookupFn::Fail { resolved_part } => fails!(format!(
+                                "could not resolve lookup [{} !! {} !!]",
+                                resolved_part.iter().cloned().collect::<Vec<_>>().join("."),
+                                path[resolved_part.len()..]
+                                    .iter()
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join("."),
+                            )),
+                        };
+
+                    let info = resolve_fn_full_id(state, function_id, current_fn_stack);
+
+                    if info.ty_args != ty_arguments {
+                        fails!(format!("argument types mismatched // TODO template args"));
                     }
-                    // did not find lny suitable call signatures
-                    state.add_diagnostic(Raw2CommonDiagnostic {
-                        text: format!("did not find any suitable call signatures"),
-                    });
-                    // try to salvage a return value to try to yield as much useful results to the user as possible
-                    let return_ty = if let Some(fallback_id) = best_fallback {
-                        let ResolvedFnInfo { ty_return } =
-                            resolve_fn(state, fallback_id, current_fn_stack, false);
-                        ty_return.clone()
-                    } else {
-                        CMType::Never
-                    };
-                    (CMExpression::FailAfter(resolved_arguments), return_ty)
+
+                    return (
+                        CMExpression::Call {
+                            function_id,
+                            arguments: resolved_arguments,
+                            always_inline: false,
+                            inlined_lambdas: None,
+                        },
+                        info.ty_return.clone(),
+                    );
                 }
+            }
+
+            match *callable {
                 RMExpression::ReadProperty {
                     expr,
                     property_ident,
                 } => {
-                    let (expr, ty) = resolve_expr(
+                    // calling an associated function `( ... ).do_something( ... )`
+                    let (callable, ty_callable) = resolve_expr(
                         *expr,
                         state,
                         current_fn_stack,
@@ -934,44 +1124,134 @@ fn resolve_expr(
                         ty_return,
                     );
 
-                    let fn_lut = get_fn_lut(&ty, state);
-                    dbg!(fn_lut);
+                    let fn_lut = get_fn_lut(&ty_callable, state);
 
-                    let base_impl_fn = fn_lut.named.get(&property_ident).and_then(|id| {
-                        let args = &state.functions[*id].params;
-                        dbg!(&args[1..], &ty_arguments, &args[0], &ty);
-                        if args[1..] == ty_arguments && &args[0] == &ty {
-                            Some(*id)
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(base_impl_fn) = base_impl_fn {
-                        let ResolvedFnInfo { ty_return } =
-                            resolve_fn(state, base_impl_fn, current_fn_stack, false);
-                        (
-                            CMExpression::Call {
-                                function_id: FnRef::ModuleFunction(base_impl_fn),
-                                arguments: std::iter::once(expr)
-                                    .chain(resolved_arguments.into_iter())
-                                    .collect(),
-                                always_inline: false,
-                                inlined_lambdas: None,
-                            },
-                            ty_return.clone(),
-                        )
-                    } else {
-                        todo!("named associated functions (trait impls and such)");
+                    let Some(function_id) = fn_lut.named.get(&property_ident).copied() else {
+                        fails!(format!("property '{}' is not callable", &property_ident));
+                    };
+
+                    let info = resolve_fn_full_id(state, function_id, current_fn_stack);
+
+                    if info.ty_args.len() == 0 || info.ty_args[0] != ty_callable {
+                        panic!("associated function somehow had first argument as something other than `self` (this should not be allowed yet).");
                     }
+                    if &info.ty_args[1..] != ty_arguments {
+                        fails!(format!("argument types mismatched // TODO template args"));
+                    }
+
+                    (
+                        CMExpression::Call {
+                            function_id,
+                            arguments: std::iter::once(callable)
+                                .chain(resolved_arguments.into_iter())
+                                .collect(),
+                            always_inline: false,
+                            inlined_lambdas: None,
+                        },
+                        info.ty_return.clone(),
+                    )
                 }
                 _ => {
-                    // fail
-                    state.add_diagnostic(Raw2CommonDiagnostic {
-                        text: format!("object is not callable"),
-                    });
-                    (CMExpression::Fail, CMType::Never)
+                    // don't know what this is and the callable trait either hasn't been invented yet or will never exist.
+                    fails!(format!("object is not callable"));
                 }
             }
+
+            // match *callable {
+            //     RMExpression::Ident { ident } => {
+            //         // function call
+            //         let mut best_fallback = None;
+            //         let mut had_semimatch = false;
+            //         for function_id in statics_stack
+            //             .iter()
+            //             .rev()
+            //             .flat_map(|frame| frame.functions.get(&ident))
+            //             .flatten()
+            //             .copied()
+            //         {
+            //             let k = &state.functions[function_id];
+            //             if &k.params == &ty_arguments {
+            //                 let ResolvedFnInfo { ty_return } =
+            //                     resolve_fn(state, function_id, current_fn_stack, false);
+            //                 return (
+            //                     CMExpression::Call {
+            //                         function_id: FnRef::ModuleFunction(function_id),
+            //                         arguments: resolved_arguments,
+            //                         always_inline: false,
+            //                         inlined_lambdas: None,
+            //                     },
+            //                     ty_return.clone(),
+            //                 );
+            //             } else if k.params.len() == ty_arguments.len() {
+            //                 if had_semimatch {
+            //                     best_fallback = None;
+            //                 } else {
+            //                     best_fallback = Some(function_id)
+            //                 }
+            //                 had_semimatch = true;
+            //             }
+            //         }
+            //         // did not find lny suitable call signatures
+            //         state.add_diagnostic(Raw2CommonDiagnostic {
+            //             text: format!("did not find any suitable call signatures"),
+            //         });
+            //         // try to salvage a return value to try to yield as much useful results to the user as possible
+            //         let return_ty = if let Some(fallback_id) = best_fallback {
+            //             let ResolvedFnInfo { ty_return } =
+            //                 resolve_fn(state, fallback_id, current_fn_stack, false);
+            //             ty_return.clone()
+            //         } else {
+            //             CMType::Never
+            //         };
+            //         (CMExpression::FailAfter(resolved_arguments), return_ty)
+            //     }
+            //     RMExpression::ReadProperty {
+            //         expr,
+            //         property_ident,
+            //     } => {
+            //         let (expr, ty) = resolve_expr(
+            //             *expr,
+            //             state,
+            //             current_fn_stack,
+            //             statics_stack,
+            //             locals,
+            //             locals_lookup,
+            //             loop_context_stack,
+            //             ty_return,
+            //         );
+
+            //         let fn_lut = get_fn_lut(&ty, state);
+            //         dbg!(fn_lut);
+
+            //         let base_impl_fn = fn_lut.named.get(&property_ident).and_then(|id| {
+            //             let args = &state.functions[*id].params;
+            //             dbg!(&args[1..], &ty_arguments, &args[0], &ty);
+            //             if args[1..] == ty_arguments && &args[0] == &ty {
+            //                 Some(*id)
+            //             } else {
+            //                 None
+            //             }
+            //         });
+            //         if let Some(base_impl_fn) = base_impl_fn {
+            //             let ResolvedFnInfo { ty_return } =
+            //                 resolve_fn(state, base_impl_fn, current_fn_stack, false);
+            //             (
+            //                 CMExpression::Call {
+            //                     function_id: FnRef::ModuleFunction(base_impl_fn),
+            //                     arguments: std::iter::once(expr)
+            //                         .chain(resolved_arguments.into_iter())
+            //                         .collect(),
+            //                     always_inline: false,
+            //                     inlined_lambdas: None,
+            //                 },
+            //                 ty_return.clone(),
+            //             )
+            //         } else {
+            //             todo!("named associated functions (trait impls and such)");
+            //         }
+            //     }
+            //     _ => {}
+            // }
         }
 
         RMExpression::LiteralValue(literal) => {
@@ -1122,6 +1402,10 @@ fn resolve_expr(
 
         RMExpression::AnonymousFunction { params, block } => todo!(),
 
+        RMExpression::OpUnary { .. } | RMExpression::OpBinary { .. } => {
+            todo!("// TODO [raw_2_common] operator overloading as trait implementation")
+        }
+        /*
         RMExpression::OpBinary { op, lhs, rhs } => {
             let (lhs, ty_lhs) = resolve_expr(
                 *lhs,
@@ -1242,7 +1526,7 @@ fn resolve_expr(
                 }
             }
         }
-
+        */
         RMExpression::Conditional {
             condition,
             block,

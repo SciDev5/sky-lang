@@ -2,7 +2,7 @@ use num::complex::Complex64;
 
 use crate::{
     common::{common_module::CMType, IdentInt},
-    parse::fn_lookup::{Intrinsic1FnId, Intrinsic2FnId, IntrinsicFnId},
+    parse::fn_lookup::{Intrinsic1FnId, Intrinsic2FnId, IntrinsicNFnId},
 };
 
 #[derive(Debug)]
@@ -26,7 +26,7 @@ pub enum Instr {
         function_id: Intrinsic2FnId,
     },
     CallIntrinsicN {
-        function_id: IntrinsicFnId,
+        function_id: IntrinsicNFnId,
     },
     LiteralFunctionRef {
         function_id: IdentInt,

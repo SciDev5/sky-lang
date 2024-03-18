@@ -710,6 +710,8 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         let prefixes = std::iter::from_fn(|| self.try_parse_expr_prefix()).collect::<Vec<_>>();
 
         let mut expr = match parse_first!(self;
+            ////////////// TODO migrate to macros.
+            try_intrinsicinvoke => |expr| expr?,
 
             // -- imports/submodules -- //
             try_parse_import => |expr| expr?,
@@ -1644,6 +1646,27 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                     Err(false) => return Err(false),
                 }
                 Ok(ASTExpression::Import { include_paths: out })
+            },
+        )
+    }
+
+    /// Matches `$IntrinsicFunction(arg1,arg2)` and similar.
+    ///
+    /// NOTE: This is a placeholder and should be replaced with macros when I get to implementing that.
+    fn try_intrinsicinvoke(&mut self) -> Option<ParseResult<ASTExpression>> {
+        self.parse_optional_result(
+            |t| {
+                t.try_symbol(SLSymbol::MacroInvoke)?;
+                t.try_ident()
+            },
+            |t, ident| {
+                t.bracket_open(BracketType::Paren)?;
+                let mut args = vec![];
+                while let None = t.try_bracket_close(BracketType::Paren) {
+                    args.push(t.parse_expr::</* allow range literal */ true, /* allow block postfix */ true>()?);
+                    while let Some(_) = t.try_separator(SeparatorType::Comma) {}
+                }
+                Ok(ASTExpression::TEMPIntrinsicInvoke { ident, args })
             },
         )
     }

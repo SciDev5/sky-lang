@@ -431,6 +431,8 @@ gen_SLSymbol! {
     PropertyAccess ("."),
 
     Hash ("#"),
+
+    MacroInvoke ("$"),
 }
 
 subtokenize_sub_enum! {

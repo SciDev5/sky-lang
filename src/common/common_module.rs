@@ -3,10 +3,10 @@ use std::{collections::HashMap, fmt::Debug, rc::Rc};
 use num::complex::Complex64;
 
 use crate::{
-    build::module_tree::ModuleTree,
+    build::module_tree::{FullId, ModuleTree},
     common::{IdentInt, IdentStr},
     math::tensor::Tensor,
-    parse::fn_lookup::FnRef,
+    parse::fn_lookup::{FnRef, IntrinsicFnId},
 };
 
 pub type DocComment = Option<String>;
@@ -139,16 +139,20 @@ pub enum CMExpression {
         ident: IdentInt,
     },
 
+    CallIntrinsic {
+        id: IntrinsicFnId,
+        arguments: Vec<CMExpression>,
+    },
     Call {
-        function_id: FnRef,
+        function_id: FullId,
         arguments: Vec<CMExpression>,
         always_inline: bool,
         inlined_lambdas: Option<Vec<CMInlineLambda>>,
     },
 
     CallDyn {
-        trait_id: IdentInt,
-        function_id: IdentInt,
+        trait_id: FullId,
+        function_id: FullId,
         arguments: Vec<CMExpression>,
         always_inline: bool,
         inlined_lambdas: Option<Vec<CMInlineLambda>>,
@@ -157,7 +161,7 @@ pub enum CMExpression {
     LiteralValue(CMLiteralValue),
     LiteralArray(CMLiteralArray),
     LiteralFunctionRef {
-        function_id: IdentInt,
+        function_id: FullId,
     },
     LiteralStructInit {
         ident: IdentInt,

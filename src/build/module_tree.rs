@@ -38,6 +38,15 @@ impl FullId {
             _ => false,
         }
     }
+    fn standardize_dependency_refs(self, prev_id: FullId) -> FullId {
+        match (prev_id, self) {
+            (Self::Local(_), _) => self,
+            (Self::NonLocal { dependency_id, .. }, Self::Local(id)) => {
+                Self::NonLocal { dependency_id, id }
+            }
+            _ => todo!("// TODO handle module reexports"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +89,9 @@ impl ModuleTree {
             dependency_list: Vec::new(),
             reexport_dependency_list: Vec::new(),
         }
+    }
+    pub fn get_dependency(&self, id: usize) -> &CommonModule {
+        self.dependency_list[id].module.as_ref()
     }
     pub fn add_dependency(&mut self, name: IdentStr, package: PackageRef) -> bool {
         if self.dependencies.get(&name).is_some() {
@@ -139,6 +151,84 @@ impl ModuleTree {
             module_tree: self,
             submodule_id,
         }
+    }
+
+    pub fn finish_get(
+        &self,
+        preluid: ModuleTreeLookupPreliminary,
+    ) -> Result<ModuleTreeLookup, ModuleTreeLookupError> {
+        self.get(preluid.lookup, &preluid.unmatched_path)
+    }
+    pub fn get_fn(
+        &self,
+        mut current_lookup: ModuleTreeLookup,
+        path: &[IdentStr],
+    ) -> Result<FullId, ModuleTreeLookupError> {
+        current_lookup = self.get(current_lookup, &path[..path.len() - 1])?;
+
+        self.get_exports(current_lookup)
+            .and_then(|exports| exports.functions.get(&path[path.len() - 1]))
+            .copied()
+            .ok_or(ModuleTreeLookupError {
+                n_matched_before_fail: path.len() - 1,
+            })
+    }
+    fn get_exports(&self, current_lookup: ModuleTreeLookup) -> Option<&ModuleExports> {
+        Some(match current_lookup {
+            ModuleTreeLookup::Function(_) => {
+                return None;
+            }
+            ModuleTreeLookup::Struct(_) | ModuleTreeLookup::Trait(_) => {
+                todo!("// TODO handle imports from inside structs/traits");
+            }
+            ModuleTreeLookup::Module(FullId::Local(submod_id)) => {
+                &self.sub_modules[submod_id].public_module_exports
+            }
+            ModuleTreeLookup::Module(FullId::NonLocal {
+                dependency_id,
+                id: submod_id,
+            }) => {
+                &self.dependency_list[dependency_id]
+                    .module
+                    .submodule_tree
+                    .sub_modules[submod_id]
+                    .public_module_exports
+            }
+        })
+    }
+    pub fn get(
+        &self,
+        mut current_lookup: ModuleTreeLookup,
+        path: &[IdentStr],
+    ) -> Result<ModuleTreeLookup, ModuleTreeLookupError> {
+        for (i, ident) in path.iter().enumerate() {
+            if let ModuleTreeLookup::Module(FullId::Local(submod_id)) = &current_lookup {
+                if let Some(next_id) = self.sub_modules[*submod_id].children.get(ident) {
+                    current_lookup = ModuleTreeLookup::Module(FullId::Local(next_id.0));
+                    continue;
+                }
+            }
+            let Some(exports) = self.get_exports(current_lookup) else {
+                return Err(ModuleTreeLookupError {
+                    n_matched_before_fail: i,
+                });
+            };
+            let prev_id = current_lookup.id();
+            current_lookup = if let Some(id) = exports.modules.get(ident) {
+                ModuleTreeLookup::Module(id.standardize_dependency_refs(prev_id))
+            } else if let Some(id) = exports.structs.get(ident) {
+                ModuleTreeLookup::Struct(id.standardize_dependency_refs(prev_id))
+            } else if let Some(id) = exports.traits.get(ident) {
+                ModuleTreeLookup::Trait(id.standardize_dependency_refs(prev_id))
+            } else if let Some(id) = exports.functions.get(ident) {
+                ModuleTreeLookup::Function(id.standardize_dependency_refs(prev_id))
+            } else {
+                return Err(ModuleTreeLookupError {
+                    n_matched_before_fail: i,
+                });
+            };
+        }
+        Ok(current_lookup)
     }
     // pub fn resolve_at_root(&self, path: &[IdentStr]) -> Option<ModuleResolution> {
     //     self.resolve(SubModuleId(0), path)
@@ -217,71 +307,31 @@ impl<'a> ModuleTreeSubModuleHandle<'a> {
         start_id: SubModuleId,
         i0: usize,
         mut path: Vec<IdentStr>,
-    ) -> PreliminaryModuleTreeLookupId {
+    ) -> ModuleTreeLookupPreliminary {
         let mut id = start_id.0;
         for i in i0..path.len() {
             if let Some(new_id) = self.module_tree.sub_modules[id].children.get(&path[i]) {
                 id = new_id.0;
             } else {
                 path.drain(..i);
-                return PreliminaryModuleTreeLookupId::ModuleChild(FullId::Local(id), path);
+                return ModuleTreeLookupPreliminary {
+                    lookup: ModuleTreeLookup::Module(FullId::Local(id)),
+                    unmatched_path: path,
+                };
             }
         }
-        PreliminaryModuleTreeLookupId::Full(ModuleTreeLookup::Module(FullId::Local(id)))
-    }
-    fn get_nonlocal(&self, dependency_id: usize, path: &[IdentStr]) -> ModuleTreeLookup {
-        let mut dependency_id = dependency_id;
-        let mut submodule_id = 0; // root
-        let len = path.len();
-        for i in 0..len {
-            let package = self.module_tree.dependency_list[dependency_id]
-                .module
-                .as_ref();
-            let exports = &package.submodule_tree.sub_modules[submodule_id].public_module_exports;
-
-            if let Some(id) = exports.modules.get(&path[i]) {
-                match id {
-                    FullId::Local(new_submodule_id) => submodule_id = *new_submodule_id,
-                    FullId::NonLocal { .. } => todo!("// TODO handle reexports"),
-                }
-            } else if let Some(id) = exports.functions.get(&path[i]) {
-                if i == len - 1 {
-                    return ModuleTreeLookup::Function(match *id {
-                        FullId::Local(id) => FullId::NonLocal { dependency_id, id },
-                        FullId::NonLocal { .. } => todo!("// TODO handle reexports"),
-                    });
-                } else {
-                    return ModuleTreeLookup::Failed(i);
-                }
-            } else if let Some(id) = exports.structs.get(&path[i]) {
-                if i == len - 1 {
-                    return ModuleTreeLookup::Struct(match *id {
-                        FullId::Local(id) => FullId::NonLocal { dependency_id, id },
-                        FullId::NonLocal { .. } => todo!("// TODO handle reexports"),
-                    });
-                } else {
-                    todo!("// TODO handle imports from inside structs");
-                }
-            } else if let Some(id) = exports.traits.get(&path[i]) {
-                if i == len - 1 {
-                    return ModuleTreeLookup::Trait(match *id {
-                        FullId::Local(id) => FullId::NonLocal { dependency_id, id },
-                        FullId::NonLocal { .. } => todo!("// TODO handle reexports"),
-                    });
-                } else {
-                    todo!("// TODO handle imports from inside traits");
-                }
-            }
+        ModuleTreeLookupPreliminary {
+            lookup: ModuleTreeLookup::Module(FullId::Local(id)),
+            unmatched_path: vec![],
         }
-        ModuleTreeLookup::Module(FullId::NonLocal {
-            dependency_id,
-            id: submodule_id,
-        })
     }
-    pub fn preliminary_get<'b>(&self, path: Vec<IdentStr>) -> PreliminaryModuleTreeLookupId {
+    pub fn preliminary_get<'b>(
+        &self,
+        path: Vec<IdentStr>,
+    ) -> Result<ModuleTreeLookupPreliminary, ModuleTreeLookupError> {
         assert!(path.len() > 0);
         if path[0] == IDENT_ROOT_MODULE {
-            self.preliminary_get_local(SubModuleId(0), 1, path)
+            Ok(self.preliminary_get_local(SubModuleId(0), 1, path))
         } else if path[0] == IDENT_PARENT_MODULE {
             todo!("// TODO import super.whatever");
         } else if self.module_tree.sub_modules[self.submodule_id]
@@ -289,11 +339,25 @@ impl<'a> ModuleTreeSubModuleHandle<'a> {
             .get(&path[0])
             .is_some()
         {
-            self.preliminary_get_local(SubModuleId(self.submodule_id), 0, path)
+            Ok(self.preliminary_get_local(SubModuleId(self.submodule_id), 0, path))
         } else if let Some(dependency_id) = self.module_tree.dependencies.get(&path[0]).copied() {
-            PreliminaryModuleTreeLookupId::Full(self.get_nonlocal(dependency_id, &path[1..]))
+            Ok(ModuleTreeLookupPreliminary {
+                lookup: self
+                    .module_tree
+                    .get(
+                        ModuleTreeLookup::Module(FullId::NonLocal {
+                            dependency_id,
+                            id: 0,
+                        }),
+                        &path[1..],
+                    )
+                    .map_err(|ok_count| ok_count + 1)?,
+                unmatched_path: vec![],
+            })
         } else {
-            PreliminaryModuleTreeLookupId::Invalid
+            Err(ModuleTreeLookupError {
+                n_matched_before_fail: 0,
+            })
         }
     }
 }
@@ -304,14 +368,30 @@ pub enum ModuleTreeLookup {
     Struct(FullId),
     Trait(FullId),
     Module(FullId),
-    /// The parameter is the index of the failed lookup in the import path array. (eg. if `b`` is missing in `import a.b.c`, then get returns `Failed(1)`)
-    Failed(usize),
+}
+impl ModuleTreeLookup {
+    fn id(self) -> FullId {
+        match self {
+            Self::Function(id) | Self::Struct(id) | Self::Trait(id) | Self::Module(id) => id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ModuleTreeLookupError {
+    pub n_matched_before_fail: usize,
+}
+impl std::ops::Add<usize> for ModuleTreeLookupError {
+    type Output = ModuleTreeLookupError;
+    fn add(mut self, rhs: usize) -> Self::Output {
+        Self {
+            n_matched_before_fail: self.n_matched_before_fail + 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
-pub enum PreliminaryModuleTreeLookupId {
-    Full(ModuleTreeLookup),
-    ModuleChild(FullId, Vec<IdentStr>),
-    IllegalSuper,
-    Invalid,
+pub struct ModuleTreeLookupPreliminary {
+    lookup: ModuleTreeLookup,
+    unmatched_path: Vec<IdentStr>,
 }

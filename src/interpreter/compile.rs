@@ -1,7 +1,8 @@
 use crate::{
+    build::module_tree::FullId,
     common::common_module::{CMExpression, CMFunction, CMLiteralValue, CMStruct, CommonModule},
     interpreter::bytecode::Literal,
-    parse::fn_lookup::FnRef,
+    parse::fn_lookup::{FnRef, IntrinsicFnId},
 };
 
 use super::bytecode::{BFunction, BStruct, BytecodeModule, Instr};
@@ -273,30 +274,13 @@ fn compile_expr(
             }
             Value
         }
-        CMExpression::Call {
-            function_id,
-            arguments,
-            always_inline,
-            inlined_lambdas,
-        } => {
-            if always_inline || inlined_lambdas.is_some() {
-                todo!();
-            }
-            match function_id {
-                FnRef::Identity => {
+        CMExpression::CallIntrinsic { id, arguments } => {
+            match id {
+                IntrinsicFnId::Identity => {
                     let [argument] = <[_; 1]>::try_from(arguments).expect("there was not 1 argument for FnRef::Identity, this means fn_lookup has an issue");
                     return compile_expr(argument, instructions, yield_value);
                 }
-                FnRef::ModuleFunction(function_id) => {
-                    for expr in arguments {
-                        match compile_expr(expr, instructions, true) {
-                            Never => return Never,
-                            _ => { /* ok (+1 iv) */ }
-                        };
-                    }
-                    instructions.push(Instr::Call { function_id });
-                }
-                FnRef::Intrinsic1(function_id) => {
+                IntrinsicFnId::Intrinsic1(function_id) => {
                     let [argument] = <[_; 1]>::try_from(arguments).expect("there was not 1 argument for FnRef::Intrinsic1, this means fn_lookup has an issue");
                     match compile_expr(argument, instructions, true) {
                         Never => return Never,
@@ -304,7 +288,7 @@ fn compile_expr(
                     };
                     instructions.push(Instr::CallIntrinsic1 { function_id });
                 }
-                FnRef::Intrinsic2(function_id) => {
+                IntrinsicFnId::Intrinsic2(function_id) => {
                     let arguments = <[_; 2]>::try_from(arguments).expect("there were not 2 arguments for FnRef::Intrinsic2, this means fn_lookup has an issue");
                     for expr in arguments {
                         match compile_expr(expr, instructions, true) {
@@ -314,7 +298,7 @@ fn compile_expr(
                     }
                     instructions.push(Instr::CallIntrinsic2 { function_id });
                 }
-                FnRef::Intrinsic(function_id) => {
+                IntrinsicFnId::Intrinsic(function_id) => {
                     for expr in arguments {
                         match compile_expr(expr, instructions, true) {
                             Never => return Never,
@@ -323,6 +307,29 @@ fn compile_expr(
                     }
                     instructions.push(Instr::CallIntrinsicN { function_id });
                 }
+            }
+            Value
+        }
+        CMExpression::Call {
+            function_id,
+            arguments,
+            always_inline,
+            inlined_lambdas,
+        } => {
+            if always_inline || inlined_lambdas.is_some() {
+                todo!();
+            }
+            for expr in arguments {
+                match compile_expr(expr, instructions, true) {
+                    Never => return Never,
+                    _ => { /* ok (+1 iv) */ }
+                };
+            }
+            match function_id {
+                FullId::Local(function_id) => {
+                    instructions.push(Instr::Call { function_id });
+                }
+                FullId::NonLocal { dependency_id, id } => todo!(),
             }
             Value
         }

@@ -178,6 +178,12 @@ pub enum ASTExpression {
     Import {
         include_paths: Vec<Vec<IdentStr>>,
     },
+
+    /// TODO: replace this with macros
+    TEMPIntrinsicInvoke {
+        ident: IdentStr,
+        args: Vec<ASTExpression>,
+    },
 }
 
 pub type ASTBlock = Vec<ASTExpression>;

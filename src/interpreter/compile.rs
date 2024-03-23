@@ -2,7 +2,7 @@ use crate::{
     build::module_tree::FullId,
     common::common_module::{CMExpression, CMFunction, CMLiteralValue, CMStruct, CommonModule},
     interpreter::bytecode::Literal,
-    parse::fn_lookup::{FnRef, IntrinsicFnId},
+    parse::fn_lookup::IntrinsicFnId,
 };
 
 use super::bytecode::{BFunction, BStruct, BytecodeModule, Instr};

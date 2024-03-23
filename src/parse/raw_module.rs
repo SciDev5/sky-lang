@@ -11,7 +11,7 @@ use crate::{
     math::tensor::Tensor,
 };
 
-use super::{fn_lookup::IntrinsicFnId, ops::SLOperator};
+use super::{fn_lookup::IntrinsicFnId, macros::MacroCall, ops::SLOperator};
 
 #[derive(Debug, Clone)]
 pub struct RMScopedStatics {
@@ -66,6 +66,7 @@ pub struct RMTemplateDef {
 
 #[derive(Debug, Clone)]
 pub struct RMFunctionInfo {
+    pub attrs: Vec<MacroCall<RMExpression>>,
     pub doc_comment: DocComment,
     pub params: Vec<(IdentStr, RMType)>,
     pub local_template_defs: Vec<RMTemplateDef>,
@@ -86,6 +87,7 @@ pub struct RMFunction {
 // }
 #[derive(Debug)]
 pub struct RMStruct {
+    pub attrs: Vec<MacroCall<RMExpression>>,
     pub doc_comment: DocComment,
     pub fields: HashMap<IdentStr, (RMType, DocComment)>,
     pub impl_functions: HashMap<IdentStr, CMAssociatedFunction>,
@@ -100,6 +102,7 @@ pub struct RMTraitImpl {
 }
 #[derive(Debug)]
 pub struct RMTrait {
+    pub attrs: Vec<MacroCall<RMExpression>>,
     pub doc_comment: DocComment,
     pub functions: HashMap<IdentStr, CMAssociatedFunction>,
     /// Contains references to all static references this struct can see, including itself.
@@ -265,6 +268,11 @@ pub enum RMExpression {
     LoopContinue,
 
     Return(Option<Box<RMExpression>>),
+
+    InlineMacroCall {
+        call: MacroCall<RMExpression>,
+        ty_ret: RMType,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -12,6 +12,7 @@ use super::{
         ASTTypedIdent, ASTVarAccessExpression,
     },
     fn_lookup::IntrinsicFnId,
+    macros::MacroCall,
     raw_module::{
         LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralArray,
         RMLiteralValue, RMScopedStatics, RMStruct, RMTrait, RMTraitImpl, RawModule,
@@ -183,6 +184,7 @@ fn transform_expr_block_inner_scoped(
 
 fn transform_function(
     ASTFunctionDefinition {
+        attrs,
         doc_comment,
         is_exported,
         ident,
@@ -199,6 +201,7 @@ fn transform_function(
 ) -> (IdentInt, bool) {
     let function = RMFunction {
         info: RMFunctionInfo {
+            attrs: transform_attrs(attrs),
             doc_comment,
             local_template_defs,
             params: params
@@ -254,6 +257,13 @@ fn transform_trait_impl(
     }
 }
 
+fn transform_attrs(attrs: Vec<MacroCall<ASTExpression>>) -> Vec<MacroCall<RMExpression>> {
+    attrs
+        .into_iter()
+        .map(|attr| attr.lazy_map(|_| todo!("// TODO transform_attrs handle exprs")))
+        .collect()
+}
+
 fn transform_expr(
     expr: ASTExpression,
     state: &mut StaticsGlobalState,
@@ -300,6 +310,7 @@ fn transform_expr(
             RMExpression::Void
         }
         ASTExpression::StructDefinition {
+            attrs,
             doc_comment,
             is_exported,
             ident,
@@ -308,6 +319,7 @@ fn transform_expr(
             impl_traits,
         } => {
             let st = RMStruct {
+                attrs: transform_attrs(attrs),
                 doc_comment,
                 all_scoped: RMScopedStatics::empty(),
                 fields: properties
@@ -341,6 +353,7 @@ fn transform_expr(
             RMExpression::Void
         }
         ASTExpression::TraitDefinition {
+            attrs,
             doc_comment,
             is_exported,
             ident,

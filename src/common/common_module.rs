@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Debug, rc::Rc};
+use std::{collections::HashMap, fmt::Debug};
 
 use num::complex::Complex64;
 
@@ -6,7 +6,7 @@ use crate::{
     build::module_tree::{FullId, ModuleTree},
     common::{IdentInt, IdentStr},
     math::tensor::Tensor,
-    parse::fn_lookup::{FnRef, IntrinsicFnId},
+    parse::{fn_lookup::IntrinsicFnId, macros::MacroCall},
 };
 
 pub type DocComment = Option<String>;
@@ -19,6 +19,7 @@ pub struct CMLocalVarInfo {
 }
 #[derive(Debug, Clone)]
 pub struct CMFunctionInfo {
+    pub attrs: Vec<MacroCall<CMExpression>>,
     pub doc_comment: DocComment,
     pub params: Vec<CMType>,
     pub ty_return: CMType,
@@ -56,6 +57,7 @@ pub struct CMInlineLambda {
 }
 #[derive(Debug, Clone)]
 pub struct CMStruct {
+    pub attrs: Vec<MacroCall<CMExpression>>,
     pub doc_comment: DocComment,
     pub fields: Vec<CMType>,
     pub fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
@@ -69,6 +71,7 @@ struct CMTraitImpl {
 }
 #[derive(Debug, Clone)]
 struct CMTrait {
+    pub attrs: Vec<MacroCall<CMExpression>>,
     pub doc_comment: DocComment,
     pub function_lut: HashMap<IdentStr, IdentInt>,
     pub functions: Vec<CMAssociatedFunction>,
@@ -198,6 +201,18 @@ pub enum CMExpression {
     LoopContinue,
 
     Return(Option<Box<CMExpression>>),
+
+    InlineMacroCall {
+        call: MacroCall<CMExpression>,
+        ty_ret: CMType,
+    },
+}
+
+#[derive(Debug)]
+pub struct CMTopLevelBlock {
+    pub code: Vec<CMExpression>,
+    pub locals: Vec<CMLocalVarInfo>,
+    pub ty_eval: CMType,
 }
 
 #[derive(Debug)]
@@ -206,6 +221,6 @@ pub struct CommonModule {
     pub closure_functions: Vec<CMClosureFunction>,
     pub structs: Vec<CMStruct>,
     // pub traits: Vec<CMTrait>,
-    pub top_level: (Vec<CMExpression>, Vec<CMLocalVarInfo>, CMType),
+    pub top_level: Vec<CMTopLevelBlock>,
     pub submodule_tree: ModuleTree,
 }

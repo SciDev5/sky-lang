@@ -9,6 +9,7 @@ use crate::{
 };
 
 use super::{
+    macros::MacroCall,
     ops::SLOperator,
     raw_module::{RMTemplateDef, RMType},
 };
@@ -158,6 +159,7 @@ pub enum ASTExpression {
     FunctionDefinition(ASTFunctionDefinition),
 
     StructDefinition {
+        attrs: Vec<MacroCall<ASTExpression>>,
         doc_comment: DocComment,
         is_exported: bool,
         ident: IdentStr,
@@ -167,6 +169,7 @@ pub enum ASTExpression {
         impl_traits: HashMap<IdentStr, ASTTraitImpl>,
     },
     TraitDefinition {
+        attrs: Vec<MacroCall<ASTExpression>>,
         doc_comment: DocComment,
         is_exported: bool,
         ident: IdentStr,
@@ -190,6 +193,7 @@ pub type ASTBlock = Vec<ASTExpression>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTFunctionDefinition {
+    pub attrs: Vec<MacroCall<ASTExpression>>,
     pub doc_comment: DocComment,
     pub is_exported: bool,
     pub ident: IdentStr,

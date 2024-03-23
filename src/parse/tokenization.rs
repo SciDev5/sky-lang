@@ -432,7 +432,8 @@ gen_SLSymbol! {
 
     Hash ("#"),
 
-    MacroInvoke ("$"),
+    MacroSpecial ("$"),
+    MacroAttrSpecial ("@"),
 }
 
 subtokenize_sub_enum! {

@@ -25,6 +25,7 @@ use super::{
         ASTExpression, ASTFunctionDefinition, ASTLiteral, ASTOptionallyTypedIdent, ASTTypedIdent,
         ASTVarAccessExpression,
     },
+    macros::{MacroCall, MacroObject},
     ops::SLOperator,
     raw_module::{RMTemplateDef, RMType},
     tokenization::{BracketType, Keyword, SLSymbol, SLToken, SeparatorType},
@@ -1333,6 +1334,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         &mut self,
         doc_comment: DocComment,
         is_exported: bool,
+        attrs: Vec<MacroCall<ASTExpression>>,
         can_be_disembodied: bool,
         can_be_instance: bool,
     ) -> ParseResult<ASTFunctionDefinition> {
@@ -1389,6 +1391,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         };
 
         Ok(ASTFunctionDefinition {
+            attrs,
             doc_comment,
             is_exported,
             ident,
@@ -1421,15 +1424,17 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         self.parse_optional_result(
             |t| {
                 let doc_comment = t.try_doc_comment();
+                let attrs = t.macro_attrs();
                 let is_exported = t.try_keyword(Keyword::Export).is_some();
                 t.try_keyword(Keyword::FunctionDefinition)?;
-                Some((doc_comment, is_exported))
+                Some((doc_comment, is_exported, attrs))
             },
-            |t, (doc_comment, is_exported)| {
+            |t, (doc_comment, is_exported, attrs)| {
                 Self::finish_parse_function_declaration(
                     t,
                     doc_comment,
                     is_exported,
+                    attrs?,
                     can_be_disembodied,
                     can_be_instance,
                 )
@@ -1446,11 +1451,13 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         self.parse_optional_result(
             |t| {
                 let doc_comment = t.try_doc_comment();
+                let attrs = t.macro_attrs();
                 let is_exported = t.try_keyword(Keyword::Export).is_some();
                 t.try_keyword(Keyword::StructDefinition)?;
-                Some((doc_comment, is_exported))
+                Some((doc_comment, is_exported, attrs))
             },
-            |t, (doc_comment, is_exported)| {
+            |t, (doc_comment, is_exported, attrs)| {
+                let attrs = attrs?;
                 let ident = t.ident()?;
 
                 // TODO type parameters
@@ -1533,6 +1540,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                 t.bracket_close(BracketType::Curly)?;
 
                 Ok(ASTExpression::StructDefinition {
+                    attrs,
                     doc_comment,
                     is_exported,
                     ident,
@@ -1547,11 +1555,13 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         self.parse_optional_result(
             |t| {
                 let doc_comment = t.try_doc_comment();
+                let attrs = t.macro_attrs();
                 let is_exported = t.try_keyword(Keyword::Export).is_some();
                 t.try_keyword(Keyword::TraitDefinition)?;
-                Some((doc_comment, is_exported))
+                Some((doc_comment, is_exported, attrs))
             },
-            |t, (doc_comment, is_exported)| {
+            |t, (doc_comment, is_exported, attrs)| {
+                let attrs = attrs?;
                 let ident = t.ident()?;
                 // TODO template types in traits
                 let bounds = match t.try_parse_trait_bounds() {
@@ -1569,6 +1579,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                 }
 
                 Ok(ASTExpression::TraitDefinition {
+                    attrs,
                     doc_comment,
                     is_exported,
                     ident,
@@ -1656,7 +1667,7 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
     fn try_intrinsicinvoke(&mut self) -> Option<ParseResult<ASTExpression>> {
         self.parse_optional_result(
             |t| {
-                t.try_symbol(SLSymbol::MacroInvoke)?;
+                t.try_symbol(SLSymbol::MacroSpecial)?;
                 t.try_ident()
             },
             |t, ident| {
@@ -1669,6 +1680,116 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                 Ok(ASTExpression::TEMPIntrinsicInvoke { ident, args })
             },
         )
+    }
+
+    fn macro_attrs(&mut self) -> ParseResult<Vec<MacroCall<ASTExpression>>> {
+        let mut attrs = vec![];
+        while let Some(attr) = self.try_macro_attr() {
+            attrs.push(match attr {
+                Ok(attr) => attr,
+                Err(true) => continue,
+                Err(false) => return Err(false),
+            });
+        }
+        Ok(attrs)
+    }
+    fn try_macro_attr(&mut self) -> Option<ParseResult<MacroCall<ASTExpression>>> {
+        self.parse_optional_result(
+            |t| t.try_symbol(SLSymbol::MacroAttrSpecial),
+            |t, _| self.finish_macro(),
+        )
+    }
+    fn try_macro_inline(&mut self) -> Option<ParseResult<MacroCall<ASTExpression>>> {
+        self.parse_optional_result(
+            |t| t.try_symbol(SLSymbol::MacroSpecial),
+            |t, _| self.finish_macro(),
+        )
+    }
+
+    /// Finish parsing macro invocations.
+    ///
+    /// Responsible for parsing name and all macro objects.
+    ///
+    /// ```text
+    /// <macro_signature> =
+    ///     | $ <:name:> <object>
+    ///     | $( @ <:name:> <object> )* <attrable>
+    ///     given [
+    ///         <:name:> : ident\out
+    ///         <:literal:>* : ident\internal
+    ///         <expr> : expression // scoped expression, has inputs, outputs
+    ///         <ident> : ident\... // identifier, either generated by the macro, referenced, or both
+    ///         <separator> : literal_token
+    ///     ]
+    ///     
+    /// <object> =
+    ///     | ( $( <object> <separator>? )* )
+    ///     | [ $( <object> <separator>? )* ]
+    ///     | { $( <object> <separator>? )* }
+    ///     | " $( ... ${ <object> <separator>? } )* ... "
+    ///     | # <:literal:>
+    ///     | $ <expr>
+    ///     | $ { <expr>* }
+    ///     | : <type_trait>
+    ///     | <ident>                
+    /// ```
+    fn finish_macro(&mut self) -> ParseResult<MacroCall<ASTExpression>> {
+        let name = self.ident()?;
+        let object = self.parse_macro_object()?;
+        Ok(MacroCall { name, object })
+    }
+
+    /// ```text
+    /// <object> =
+    ///     | ( $( <object> <separator>? )* )
+    ///     | [ $( <object> <separator>? )* ]
+    ///     | { $( <object> <separator>? )* }
+    ///     | " $( ... ${ <object> <separator>? } )* ... "
+    ///     | # <:literal:>
+    ///     | $ <expr>
+    ///     | $ { <expr>* }
+    ///     | : <type_trait>
+    ///     | <ident>     
+    /// ```
+    ///
+    /// See [`Self::finish_macro`].
+    fn parse_macro_object(&mut self) -> ParseResult<MacroObject<ASTExpression>> {
+        Ok(if let Some(bracket_type) = self.try_any_bracket_open() {
+            // `{ ... }`, `[ ... ]`, `( ... )`
+            let mut children = vec![];
+            while !matches!(self.peek_next(), None | Some(SLToken::BracketClose(_))) {
+                let child_obj = self.parse_macro_object()?;
+                let sep = self.try_any_separator();
+                children.push((child_obj, sep));
+            }
+            self.bracket_close(bracket_type).map_err(|_| false)?;
+
+            MacroObject::Listlike {
+                ty: bracket_type,
+                children,
+            }
+        } else if self.try_symbol(SLSymbol::MacroSpecial).is_some() {
+            if self.try_bracket_open(BracketType::Curly).is_some() {
+                // `${ ... }`
+
+                MacroObject::Expr(self.parse_block()?)
+            } else {
+                // `$ ... `
+                MacroObject::Expr(vec![self.parse_expr()?])
+            }
+        } else if self.try_separator(SeparatorType::Colon).is_some() {
+            // `: ... `
+            todo!("// TODO types in macros");
+        } else if self.try_symbol(SLSymbol::Hash).is_some() {
+            // `# ... `
+            MacroObject::LiteralIdent(self.ident()?)
+        } else if let Some(ident) = self.try_ident() {
+            // `<ident>`
+            MacroObject::Ident(ident)
+        } else {
+            eprintln!("// TODO string things");
+            return Err(true);
+        })
     }
 }
 

@@ -8,7 +8,7 @@ use crate::{
     common::{
         common_module::{
             CMAssociatedFunction, CMExpression, CMFunction, CMFunctionInfo, CMLiteralValue,
-            CMLocalVarInfo, CMStruct, CMType, CommonModule, DocComment,
+            CMLocalVarInfo, CMStruct, CMTopLevelBlock, CMType, CommonModule, DocComment,
         },
         IdentInt, IdentStr,
     },
@@ -17,6 +17,7 @@ use crate::{
 
 use super::{
     fn_lookup::{gen_struct_fn_lut, AssociatedFnLut, FnRef},
+    macros::MacroCall,
     raw_module::{
         LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralValue,
         RMStruct, RMTrait, RMTraitImpl, RMType, RawModule, ScopedStatics,
@@ -25,6 +26,7 @@ use super::{
 
 #[derive(Debug, Clone)]
 struct PartiallyResolvedFunction {
+    attrs: Vec<MacroCall<CMExpression>>,
     doc_comment: DocComment,
     params: Vec<CMType>,
     param_idents: Vec<IdentStr>,
@@ -87,6 +89,7 @@ impl PartiallyResolvedFunctionBody {
 
 #[derive(Debug, Clone)]
 pub struct PartiallyResolvedStruct {
+    attrs: Vec<MacroCall<CMExpression>>,
     doc_comment: DocComment,
     fields: Vec<CMType>,
     fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
@@ -99,6 +102,7 @@ pub struct PartiallyResolvedStruct {
 }
 #[derive(Debug, Clone)]
 pub struct PartiallyResolvedTrait {
+    attrs: Vec<MacroCall<CMExpression>>,
     doc_comment: DocComment,
 
     functions: HashMap<String, CMAssociatedFunction>,
@@ -154,6 +158,7 @@ pub fn raw_2_common(
                 |RMFunction {
                      info:
                          RMFunctionInfo {
+                             attrs,
                              doc_comment,
                              params,
                              local_template_defs,
@@ -165,6 +170,7 @@ pub fn raw_2_common(
                  }| {
                     let all_scoped = all_scoped.finish_imports(&submodule_tree);
                     PartiallyResolvedFunction {
+                        attrs: resolve_attrs(attrs),
                         doc_comment: doc_comment,
                         params: params
                             .iter()
@@ -218,6 +224,7 @@ pub fn raw_2_common(
             .into_iter()
             .map(
                 |RMStruct {
+                     attrs,
                      doc_comment,
                      fields,
                      impl_functions,
@@ -236,6 +243,7 @@ pub fn raw_2_common(
                         })
                         .unzip();
                     PartiallyResolvedStruct {
+                        attrs: resolve_attrs(attrs),
                         doc_comment,
                         fields,
                         fields_info,
@@ -259,11 +267,13 @@ pub fn raw_2_common(
             .into_iter()
             .map(
                 |RMTrait {
+                     attrs,
                      doc_comment,
                      functions,
                      all_scoped,
                  }| {
                     PartiallyResolvedTrait {
+                        attrs: resolve_attrs(attrs),
                         doc_comment,
                         functions,
                     }
@@ -277,30 +287,24 @@ pub fn raw_2_common(
     // translate top-level block
     let mut current_fn_stack = vec![];
     let mut statics_stack = vec![];
-    let mut locals = vec![];
-    let mut locals_lookup = HashMap::new();
     let mut loop_context_stack = vec![];
     let mut ty_return = None;
-    let (top_level, ty_top_level) = resolve_block(
-        todo!("// TODO raw_module.top_level"),
-        &mut state,
-        &mut current_fn_stack,
-        &mut statics_stack,
-        &mut locals,
-        &mut locals_lookup,
-        &mut loop_context_stack,
-        &mut ty_return,
-    );
-
-    // translate all functions (automatically skips reresolving functions we've already resolved)
-    for current_fn_id in 0..state.functions.len() {
-        resolve_fn(&mut state, current_fn_id, &mut current_fn_stack, true);
-    }
-
-    CommonModule {
-        top_level: (
-            top_level,
-            locals
+    let top_level = top_level
+        .into_iter()
+        .map(|block| {
+            let mut locals = vec![];
+            let mut locals_lookup = HashMap::new();
+            let (top_level_code, ty_eval) = resolve_block(
+                block,
+                &mut state,
+                &mut current_fn_stack,
+                &mut statics_stack,
+                &mut locals,
+                &mut locals_lookup,
+                &mut loop_context_stack,
+                &mut ty_return,
+            );
+            let locals = locals
                 .into_iter()
                 .map(
                     |LocalVar {
@@ -314,14 +318,28 @@ pub fn raw_2_common(
                         writable,
                     },
                 )
-                .collect(),
-            ty_top_level,
-        ),
+                .collect();
+            CMTopLevelBlock {
+                code: top_level_code,
+                locals,
+                ty_eval,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    // translate all functions (automatically skips reresolving functions we've already resolved)
+    for current_fn_id in 0..state.functions.len() {
+        resolve_fn(&mut state, current_fn_id, &mut current_fn_stack, true);
+    }
+
+    CommonModule {
+        top_level,
         functions: state
             .functions
             .into_iter()
             .map(
                 |PartiallyResolvedFunction {
+                     attrs,
                      doc_comment,
                      params,
                      param_idents,
@@ -330,6 +348,7 @@ pub fn raw_2_common(
                     let (ty_return, block, locals) = body.unwrap_translated();
                     CMFunction {
                         info: CMFunctionInfo {
+                            attrs,
                             doc_comment,
                             params,
                             ty_return,
@@ -345,6 +364,7 @@ pub fn raw_2_common(
             .into_iter()
             .map(
                 |PartiallyResolvedStruct {
+                     attrs,
                      doc_comment,
                      fields,
                      fields_info,
@@ -354,6 +374,7 @@ pub fn raw_2_common(
                      fn_lut_inst: _,
                  }| {
                     CMStruct {
+                        attrs,
                         doc_comment,
                         fields,
                         fields_info,
@@ -365,7 +386,7 @@ pub fn raw_2_common(
             .collect(),
         // traits: state.traits
         closure_functions: vec![], // TODO
-        submodule_tree: todo!("// TODO CommonModule.submodule_tree"),
+        submodule_tree,
     }
 }
 
@@ -523,6 +544,16 @@ fn static_resolve_trait(statics_scope_stack: &[ScopedStatics], id: &IdentStr) ->
     } else {
         todo!("handle trait not found");
     }
+}
+
+fn resolve_macro(macro_call: MacroCall<RMExpression>) -> MacroCall<CMExpression> {
+    macro_call.lazy_map(|_| todo!("// TODO resolve_attrs handle exprs"))
+}
+fn resolve_attrs(attrs: Vec<MacroCall<RMExpression>>) -> Vec<MacroCall<CMExpression>> {
+    attrs
+        .into_iter()
+        .map(|macro_call| resolve_macro(macro_call))
+        .collect()
 }
 
 struct ResolvedFnInfo<'a> {
@@ -1962,6 +1993,17 @@ fn resolve_expr(
                 });
                 (CMExpression::Fail, CMType::Void)
             }
+        }
+        RMExpression::InlineMacroCall { call, ty_ret } => {
+            let ty_ret = static_resolve_type(&statics_stack, &ty_ret);
+
+            (
+                CMExpression::InlineMacroCall {
+                    call: resolve_macro(call),
+                    ty_ret: ty_ret.clone(),
+                },
+                ty_ret,
+            )
         }
     }
 }

@@ -1,7 +1,11 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, hash::Hash, rc::Rc};
 
 use crate::{
-    common::{common_module::CommonModule, IdentInt, IdentStr},
+    common::{
+        backend::{BackendId, BackendInfo, BackendsIndex},
+        common_module::CommonModule,
+        IdentInt, IdentStr,
+    },
     parse::tokenization::{IDENT_PARENT_MODULE, IDENT_ROOT_MODULE},
 };
 
@@ -11,17 +15,52 @@ pub struct SubModuleId(usize);
 pub struct PackageId(pub usize);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SubModuleTreeEntry {
+pub enum SubModuleCodeRef {
+    None,
+    Common {
+        module_id: IdentInt,
+    },
+    Multiplatform {
+        common_module_id: IdentInt,
+        platform_specific: HashMap<BackendId, IdentInt>,
+    },
+}
+impl SubModuleCodeRef {
+    fn is_none(&self) -> bool {
+        match self {
+            Self::None => true,
+            _ => false,
+        }
+    }
+    fn is_some(&self) -> bool {
+        !self.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubModuleEntryInfo {
+    pub ty: SubModuleType,
+    pub id: SubModuleId,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubModuleType {
+    Common,
+    MultiplatformCommon,
+    MultiplatformSpecific(BackendInfo),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubModuleTreeEntry {
     children: HashMap<IdentStr, SubModuleId>,
-    code_mod_id: Option<IdentInt>,
-    pub public_module_exports: ModuleExports,
+    code_ref: SubModuleCodeRef,
+    exports: CombinedModuleExports,
 }
 impl SubModuleTreeEntry {
     fn empty() -> Self {
         Self {
             children: HashMap::new(),
-            code_mod_id: None,
-            public_module_exports: ModuleExports::new_empty(),
+            code_ref: SubModuleCodeRef::None,
+            exports: CombinedModuleExports::new_empty(),
         }
     }
 }
@@ -65,6 +104,136 @@ impl ModuleExports {
             modules: HashMap::new(),
         }
     }
+    fn clear(&mut self) {
+        self.functions.clear();
+        self.structs.clear();
+        self.traits.clear();
+        self.modules.clear();
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombinedModuleExports {
+    pub common: ModuleExports,
+    pub platform: HashMap<BackendId, ModuleExports>,
+}
+macro_rules! combined_module_exports_getfn {
+    ($name: ident, $which: ident) => {
+        fn $name(
+            &self,
+            id: &IdentStr,
+            backends_index: &BackendsIndex,
+            platform_id: Option<BackendId>,
+        ) -> Option<MultiplatformFullId> {
+            Self::get_any(
+                &self.common.$which,
+                self.platform
+                    .iter()
+                    .map(|(backend, it)| (*backend, &it.$which)),
+                id,
+                backends_index,
+                platform_id,
+            )
+        }
+    };
+}
+impl CombinedModuleExports {
+    fn new_empty() -> Self {
+        Self {
+            common: ModuleExports::new_empty(),
+            platform: HashMap::new(),
+        }
+    }
+    /// Gets the [`ModuleExports`] for this platform. If it's not there, it creates one.
+    fn edit_for_platform(&mut self, platform: Option<BackendId>) -> &mut ModuleExports {
+        match platform {
+            None => &mut self.common,
+            Some(platform_id) => self
+                .platform
+                .entry(platform_id)
+                .or_insert_with(|| ModuleExports::new_empty()),
+        }
+    }
+    fn get_any<'a>(
+        exports_common: &HashMap<IdentStr, FullId>,
+        exports_by_platform: impl Iterator<Item = (BackendId, &'a HashMap<IdentStr, FullId>)>,
+        id: &IdentStr,
+        backends_index: &BackendsIndex,
+        platform_id: Option<BackendId>,
+    ) -> Option<MultiplatformFullId> {
+        // platform_id == base_platform_id -> (common[id],platform[id])
+        // platform_id subplatform_of base_platform_id -> (platform[platform_id else compat][id] else common[id], platform[*compat_list])
+        // else -> id(platform[id], platform[*compat_list])
+
+        if let Some(platform_id) = platform_id {
+            let mut platform_variants = exports_by_platform
+                .filter(|(exports_platform_id, _)| {
+                    backends_index.a_is_subplatform_of_b(*exports_platform_id, platform_id)
+                })
+                .filter_map(|(exports_platform_id, exports)| {
+                    Some((exports_platform_id, *exports.get(id)?))
+                })
+                .collect::<HashMap<_, _>>();
+            let (_, common) = platform_variants.remove_entry(&platform_id)?;
+            let platform_variants = if platform_variants.is_empty() {
+                None
+            } else {
+                Some(platform_variants)
+            };
+
+            Some(MultiplatformFullId {
+                common,
+                platform_variants,
+            })
+        } else {
+            let common = *exports_common.get(id)?;
+            let platform_variants = exports_by_platform
+                .filter_map(|(exports_platform_id, exports)| {
+                    Some((exports_platform_id, *exports.get(id)?))
+                })
+                .collect::<Vec<_>>();
+            let platform_variants = if platform_variants.is_empty() {
+                None
+            } else {
+                Some(platform_variants.into_iter().collect())
+            };
+            Some(MultiplatformFullId {
+                common,
+                platform_variants,
+            })
+        }
+    }
+    combined_module_exports_getfn!(get_fn, functions);
+    combined_module_exports_getfn!(get_struct, structs);
+    combined_module_exports_getfn!(get_module, modules);
+    combined_module_exports_getfn!(get_trait, traits);
+}
+
+#[derive(Debug, Clone)]
+struct MultiplatformFullId {
+    common: FullId,
+    platform_variants: Option<HashMap<BackendId, FullId>>,
+}
+impl MultiplatformFullId {
+    pub fn reify_id(&self, platform_id: BackendId) -> FullId {
+        self.platform_variants
+            .and_then(|v| {
+                eprintln!("// TODO backend inheritence and mid-level compatibility");
+                v.get(&platform_id).copied()
+            })
+            .unwrap_or(self.common)
+    }
+    pub fn standardize_dependency_refs(&self, prev_id: FullId) -> Self {
+        Self {
+            common: self.common.standardize_dependency_refs(prev_id),
+            platform_variants: self.platform_variants.map(|it| {
+                it.iter()
+                    .map(|(backend_id, full_id)| {
+                        (*backend_id, full_id.standardize_dependency_refs(prev_id))
+                    })
+                    .collect()
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +244,7 @@ pub struct PackageRef {
 
 #[derive(Debug, Clone)]
 pub struct ModuleTree {
+    base_platform_id: BackendId,
     sub_modules: Vec<SubModuleTreeEntry>,
     dependencies: HashMap<IdentStr, usize>,
     dependency_list: Vec<PackageRef>,
@@ -82,8 +252,9 @@ pub struct ModuleTree {
 }
 
 impl ModuleTree {
-    pub fn new() -> Self {
+    pub fn new(base_platform_id: BackendId) -> Self {
         Self {
+            base_platform_id,
             sub_modules: vec![SubModuleTreeEntry::empty()],
             dependencies: HashMap::new(),
             dependency_list: Vec::new(),
@@ -104,23 +275,20 @@ impl ModuleTree {
 
         true
     }
-    pub fn insert_at_root(
-        &mut self,
+    pub fn entry_at_root<'a>(
+        &'a mut self,
         path: &[IdentStr],
-        module_code_id: IdentInt,
-    ) -> Option<SubModuleId> {
-        self.insert(SubModuleId(0), path, module_code_id)
+    ) -> (SubModuleId, &'a mut SubModuleCodeRef) {
+        self.entry(SubModuleId(0), path)
     }
-    pub fn insert(
-        &mut self,
+    pub fn entry<'a>(
+        &'a mut self,
         base_submodule_id: SubModuleId,
         path: &[IdentStr],
-        module_code_id: IdentInt,
-    ) -> Option<SubModuleId> {
+    ) -> (SubModuleId, &'a mut SubModuleCodeRef) {
         let mut id = base_submodule_id;
         if id.0 >= self.sub_modules.len() {
-            eprintln!("[{}:{}] Somehow provided base_submodule_id that is out of bounds for this SubModuleTree.", file!(), line!());
-            return None;
+            panic!("[{}:{}] Somehow provided base_submodule_id that is out of bounds for this SubModuleTree.", file!(), line!());
         }
 
         for path_step in path {
@@ -134,46 +302,48 @@ impl ModuleTree {
                     SubModuleId(n_entries)
                 });
             if new_tree_entry {
-                self.sub_modules.push(SubModuleTreeEntry::empty());
+                self.sub_modules
+                    .push(SubModuleTreeEntry::empty(self.base_platform_id));
             }
         }
 
-        let prev_module_code_id = &mut self.sub_modules[id.0].code_mod_id;
-        if prev_module_code_id.is_some() {
-            None
-        } else {
-            *prev_module_code_id = Some(module_code_id);
-            Some(id)
-        }
+        (id, &mut self.sub_modules[id.0].code_ref)
     }
-    pub fn edit_submodule_data(&mut self, submodule_id: usize) -> ModuleTreeSubModuleHandle {
+    pub fn edit_submodule_data(
+        &mut self,
+        submodule_id: usize,
+        platform_id: Option<BackendId>,
+    ) -> ModuleTreeSubModuleHandle {
         ModuleTreeSubModuleHandle {
             module_tree: self,
             submodule_id,
+            platform_id,
+            is_multiplatform_common: false,
         }
     }
 
     pub fn finish_get(
         &self,
         preluid: ModuleTreeLookupPreliminary,
+        // platform_id: Option<BackendId>,
     ) -> Result<ModuleTreeLookup, ModuleTreeLookupError> {
-        self.get(preluid.lookup, &preluid.unmatched_path)
+        self.get(preluid.lookup, &preluid.unmatched_path, preluid.platform_id)
     }
     pub fn get_fn(
         &self,
         mut current_lookup: ModuleTreeLookup,
         path: &[IdentStr],
+        platform_id: Option<BackendId>,
     ) -> Result<FullId, ModuleTreeLookupError> {
-        current_lookup = self.get(current_lookup, &path[..path.len() - 1])?;
+        current_lookup = self.get(current_lookup, &path[..path.len() - 1], platform_id)?;
 
         self.get_exports(current_lookup)
-            .and_then(|exports| exports.functions.get(&path[path.len() - 1]))
-            .copied()
+            .and_then(|exports| exports.get_fn(&path[path.len() - 1], platform_id))
             .ok_or(ModuleTreeLookupError {
                 n_matched_before_fail: path.len() - 1,
             })
     }
-    fn get_exports(&self, current_lookup: ModuleTreeLookup) -> Option<&ModuleExports> {
+    fn get_exports(&self, current_lookup: ModuleTreeLookup) -> Option<&CombinedModuleExports> {
         Some(match current_lookup {
             ModuleTreeLookup::Function(_) => {
                 return None;
@@ -182,7 +352,7 @@ impl ModuleTree {
                 todo!("// TODO handle imports from inside structs/traits");
             }
             ModuleTreeLookup::Module(FullId::Local(submod_id)) => {
-                &self.sub_modules[submod_id].public_module_exports
+                &self.sub_modules[submod_id].exports
             }
             ModuleTreeLookup::Module(FullId::NonLocal {
                 dependency_id,
@@ -192,7 +362,7 @@ impl ModuleTree {
                     .module
                     .submodule_tree
                     .sub_modules[submod_id]
-                    .public_module_exports
+                    .exports
             }
         })
     }
@@ -200,6 +370,8 @@ impl ModuleTree {
         &self,
         mut current_lookup: ModuleTreeLookup,
         path: &[IdentStr],
+        backends_index: &BackendsIndex,
+        platform_id: BackendId,
     ) -> Result<ModuleTreeLookup, ModuleTreeLookupError> {
         for (i, ident) in path.iter().enumerate() {
             if let ModuleTreeLookup::Module(FullId::Local(submod_id)) = &current_lookup {
@@ -214,19 +386,20 @@ impl ModuleTree {
                 });
             };
             let prev_id = current_lookup.id();
-            current_lookup = if let Some(id) = exports.modules.get(ident) {
-                ModuleTreeLookup::Module(id.standardize_dependency_refs(prev_id))
-            } else if let Some(id) = exports.structs.get(ident) {
-                ModuleTreeLookup::Struct(id.standardize_dependency_refs(prev_id))
-            } else if let Some(id) = exports.traits.get(ident) {
-                ModuleTreeLookup::Trait(id.standardize_dependency_refs(prev_id))
-            } else if let Some(id) = exports.functions.get(ident) {
-                ModuleTreeLookup::Function(id.standardize_dependency_refs(prev_id))
-            } else {
-                return Err(ModuleTreeLookupError {
-                    n_matched_before_fail: i,
-                });
-            };
+            current_lookup =
+                if let Some(id) = exports.get_module(ident, backends_index, platform_id) {
+                    ModuleTreeLookup::Module(id.standardize_dependency_refs(prev_id))
+                } else if let Some(id) = exports.get_struct(ident, backends_index, platform_id) {
+                    ModuleTreeLookup::Struct(id.standardize_dependency_refs(prev_id))
+                } else if let Some(id) = exports.get_trait(ident, backends_index, platform_id) {
+                    ModuleTreeLookup::Trait(id.standardize_dependency_refs(prev_id))
+                } else if let Some(id) = exports.get_fn(ident, backends_index, platform_id) {
+                    ModuleTreeLookup::Function(id.standardize_dependency_refs(prev_id))
+                } else {
+                    return Err(ModuleTreeLookupError {
+                        n_matched_before_fail: i,
+                    });
+                };
         }
         Ok(current_lookup)
     }
@@ -293,14 +466,32 @@ impl ModuleTree {
 pub struct ModuleTreeSubModuleHandle<'a> {
     module_tree: &'a mut ModuleTree,
     submodule_id: usize,
+    is_multiplatform_common: bool,
+    platform_id: Option<BackendId>,
 }
 
 impl<'a> ModuleTreeSubModuleHandle<'a> {
-    pub fn switch_submodule(&mut self, new_submodule_id: usize) {
-        self.submodule_id = new_submodule_id
+    pub fn get_current_submodule_id(&self) -> (SubModuleId, Option<BackendId>, bool) {
+        (
+            SubModuleId(self.submodule_id),
+            self.platform_id,
+            self.is_multiplatform_common,
+        )
+    }
+    pub fn switch_submodule(
+        &mut self,
+        submodule_id: SubModuleId,
+        platform_id: Option<BackendId>,
+        is_multiplatform_common: bool,
+    ) {
+        self.submodule_id = submodule_id.0;
+        self.platform_id = platform_id;
+        self.is_multiplatform_common = is_multiplatform_common;
     }
     pub fn public_exports_mut(&mut self) -> &mut ModuleExports {
-        &mut self.module_tree.sub_modules[self.submodule_id].public_module_exports
+        &mut self.module_tree.sub_modules[self.submodule_id]
+            .exports
+            .edit_for_platform(self.platform_id)
     }
     fn preliminary_get_local(
         &self,
@@ -315,12 +506,14 @@ impl<'a> ModuleTreeSubModuleHandle<'a> {
             } else {
                 path.drain(..i);
                 return ModuleTreeLookupPreliminary {
+                    platform_id: self.platform_id,
                     lookup: ModuleTreeLookup::Module(FullId::Local(id)),
                     unmatched_path: path,
                 };
             }
         }
         ModuleTreeLookupPreliminary {
+            platform_id: self.platform_id,
             lookup: ModuleTreeLookup::Module(FullId::Local(id)),
             unmatched_path: vec![],
         }
@@ -342,6 +535,7 @@ impl<'a> ModuleTreeSubModuleHandle<'a> {
             Ok(self.preliminary_get_local(SubModuleId(self.submodule_id), 0, path))
         } else if let Some(dependency_id) = self.module_tree.dependencies.get(&path[0]).copied() {
             Ok(ModuleTreeLookupPreliminary {
+                platform_id: self.platform_id,
                 lookup: self
                     .module_tree
                     .get(
@@ -350,6 +544,7 @@ impl<'a> ModuleTreeSubModuleHandle<'a> {
                             id: 0,
                         }),
                         &path[1..],
+                        self.platform_id,
                     )
                     .map_err(|ok_count| ok_count + 1)?,
                 unmatched_path: vec![],
@@ -362,17 +557,22 @@ impl<'a> ModuleTreeSubModuleHandle<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum ModuleTreeLookup {
-    Function(FullId),
-    Struct(FullId),
-    Trait(FullId),
-    Module(FullId),
+    Function(MultiplatformFullId),
+    Struct(MultiplatformFullId),
+    Trait(MultiplatformFullId),
+    Module(MultiplatformFullId),
 }
 impl ModuleTreeLookup {
-    fn id(self) -> FullId {
+    fn id(self, platform_id: Option<BackendId>) -> FullId {
         match self {
-            Self::Function(id) | Self::Struct(id) | Self::Trait(id) | Self::Module(id) => id,
+            Self::Module(id) | Self::Function(id) | Self::Struct(id) | Self::Trait(id) => {
+                match platform_id {
+                    Some(platform_id) => id.reify_id(platform_id),
+                    None => id.common,
+                }
+            }
         }
     }
 }
@@ -392,6 +592,7 @@ impl std::ops::Add<usize> for ModuleTreeLookupError {
 
 #[derive(Debug, Clone)]
 pub struct ModuleTreeLookupPreliminary {
+    platform_id: Option<BackendId>,
     lookup: ModuleTreeLookup,
     unmatched_path: Vec<IdentStr>,
 }

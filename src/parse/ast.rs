@@ -3,8 +3,12 @@ use std::{collections::HashMap, fmt::Debug};
 use num::complex::Complex64;
 
 use crate::{
-    build::module_tree::ModuleTree,
-    common::{common_module::DocComment, IdentStr},
+    build::module_tree::{ModuleTree, SubModuleCodeRef, SubModuleEntryInfo, SubModuleType},
+    common::{
+        backend::{BackendId, BackendInfo, BackendsIndex},
+        common_module::DocComment,
+        IdentStr,
+    },
     math::tensor::Tensor,
 };
 
@@ -228,21 +232,86 @@ pub enum ASTArray {
     Tensor(Tensor<ASTExpression>),
 }
 
+pub struct ASTSubModule {
+    pub block: ASTBlock,
+    pub mod_type: SubModuleEntryInfo,
+}
+
 pub struct ASTModule {
-    pub modules: Vec<ASTBlock>,
+    pub modules: Vec<ASTSubModule>,
     pub submodule_tree: ModuleTree,
+
+    pub base_supported_backend: BackendInfo,
+}
+pub enum PreASTSubModule {
+    Common(ASTBlock),
+    Multiplatform {
+        common: ASTBlock,
+        platform_specific: HashMap<BackendId, ASTBlock>,
+    },
 }
 impl ASTModule {
-    pub fn new(iter: impl Iterator<Item = (Vec<IdentStr>, ASTBlock)>) -> Self {
+    pub fn new(
+        base_supported_backend: BackendId,
+        iter: impl Iterator<Item = (Vec<IdentStr>, PreASTSubModule)>,
+        backends_index: &mut BackendsIndex,
+    ) -> Self {
         let mut modules = vec![];
         let mut submodule_tree = ModuleTree::new();
-        for (i, (path, block)) in iter.enumerate() {
-            modules.push(block);
-            submodule_tree.insert_at_root(&path, i);
+        for (path, block) in iter {
+            let i = modules.len();
+            let (id, code_ref) = submodule_tree.entry_at_root(&path);
+            *code_ref = match block {
+                PreASTSubModule::Common(block) => {
+                    modules.push(ASTSubModule {
+                        block,
+                        mod_type: SubModuleEntryInfo {
+                            ty: SubModuleType::Common,
+                            id,
+                        },
+                    });
+                    SubModuleCodeRef::Common { module_id: i }
+                }
+                PreASTSubModule::Multiplatform {
+                    common,
+                    platform_specific: platform_specific_in,
+                } => {
+                    modules.push(ASTSubModule {
+                        block: common,
+                        mod_type: SubModuleEntryInfo {
+                            ty: SubModuleType::MultiplatformCommon,
+                            id,
+                        },
+                    });
+                    let mut platform_specific = HashMap::new();
+                    for (backend_id, block) in platform_specific_in {
+                        let i1 = modules.len();
+                        let Some(backend) = backends_index.lookup(backend_id) else {
+                            eprintln!("// TODO warn if backend cant be found");
+                            continue;
+                        };
+                        modules.push(ASTSubModule {
+                            block,
+                            mod_type: SubModuleEntryInfo {
+                                ty: SubModuleType::MultiplatformSpecific(backend),
+                                id,
+                            },
+                        });
+                        platform_specific.insert(backend_id, i1);
+                    }
+                    SubModuleCodeRef::Multiplatform {
+                        common_module_id: i,
+                        platform_specific,
+                    }
+                }
+            };
         }
         Self {
             modules,
             submodule_tree,
+            base_supported_backend: backends_index
+                .lookup(base_supported_backend)
+                .expect("// TODO error if base backend cant be found"),
         }
     }
 }

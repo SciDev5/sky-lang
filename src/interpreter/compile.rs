@@ -130,19 +130,20 @@ impl InstrList {
 }
 
 pub fn compile_interpreter_bytecode_module(common: CommonModule) -> BytecodeModule {
-    BytecodeModule {
-        functions: common.functions.into_iter().map(compile_fn).collect(),
-        structs: common.structs.into_iter().map(compile_struct).collect(),
-        top_level: (
-            compile_block_top(common.top_level.0).unwrap_instruction_list(),
-            common
-                .top_level
-                .1
-                .into_iter()
-                .map(|var_info| var_info.ty)
-                .collect(),
-        ),
-    }
+    todo!()
+    // BytecodeModule {
+    //     functions: common.functions.into_iter().map(compile_fn).collect(),
+    //     structs: common.structs.into_iter().map(compile_struct).collect(),
+    //     top_level: (
+    //         compile_block_top(common.top_level.0).unwrap_instruction_list(),
+    //         common
+    //             .top_level
+    //             .1
+    //             .into_iter()
+    //             .map(|var_info| var_info.ty)
+    //             .collect(),
+    //     ),
+    // }
 }
 
 fn compile_fn(func: CMFunction) -> BFunction {
@@ -203,6 +204,7 @@ fn compile_expr(
     // ValueOrVoid -> should always end with one additional value in the iv stack coressponding
     // Never -> doesn't matter because the iv stack gets discarded
     match expr {
+        _ => todo!(),
         CMExpression::Void => {
             if yield_value {
                 instructions.push(Instr::PushVoid);

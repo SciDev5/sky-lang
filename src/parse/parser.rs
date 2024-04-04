@@ -1696,13 +1696,13 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
     fn try_macro_attr(&mut self) -> Option<ParseResult<MacroCall<ASTExpression>>> {
         self.parse_optional_result(
             |t| t.try_symbol(SLSymbol::MacroAttrSpecial),
-            |t, _| self.finish_macro(),
+            |t, _| t.finish_macro(),
         )
     }
     fn try_macro_inline(&mut self) -> Option<ParseResult<MacroCall<ASTExpression>>> {
         self.parse_optional_result(
             |t| t.try_symbol(SLSymbol::MacroSpecial),
-            |t, _| self.finish_macro(),
+            |t, _| t.finish_macro(),
         )
     }
 
@@ -1772,10 +1772,12 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
             if self.try_bracket_open(BracketType::Curly).is_some() {
                 // `${ ... }`
 
-                MacroObject::Expr(self.parse_block()?)
+                MacroObject::Expr(
+                    self.parse_block::</* not top level - matches closing curly*/ false>()?,
+                )
             } else {
                 // `$ ... `
-                MacroObject::Expr(vec![self.parse_expr()?])
+                MacroObject::Expr(vec![self.parse_expr::<false, false>()?])
             }
         } else if self.try_separator(SeparatorType::Colon).is_some() {
             // `: ... `

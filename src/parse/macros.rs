@@ -45,7 +45,7 @@ impl<XExpr: Debug + Clone> MacroObject<XExpr> {
                 ty,
                 children: children
                     .into_iter()
-                    .map(|(child, ty)| (child.lazy_map(f), ty))
+                    .map(|(child, ty)| (child.lazy_map(|expr| f(expr)), ty))
                     .collect(),
             },
             MacroObject::Typelike { lookup } => MacroObject::Typelike { lookup },

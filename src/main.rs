@@ -1,4 +1,5 @@
 use skylab::{
+    common::backend::BackendsIndex,
     dbg_bytecode_module_code,
     interpreter::{
         compile::compile_interpreter_bytecode_module, gc::GarbageCollector, interpreter::execute,
@@ -174,7 +175,9 @@ fn main() {
     for (i, expr) in parsed.iter().enumerate() {
         println!("[{}] {:?}", i, expr);
     }
+    let mut ix = BackendsIndex::new();
     let ast = ASTModule::new(
+        0,
         [
             (vec![], parsed),
             (
@@ -186,6 +189,7 @@ fn main() {
             ),
         ]
         .into_iter(),
+        &mut ix,
     );
     dbg!(ast_2_raw(ast));
     // let ast = ASTModule::new([(vec![], parsed)].into_iter());

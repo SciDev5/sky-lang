@@ -20,7 +20,7 @@ use super::{
     macros::MacroCall,
     raw_module::{
         LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralValue,
-        RMStruct, RMTrait, RMTraitImpl, RMType, RawModule, ScopedStatics,
+        RMStruct, RMTrait, RMTraitImpl, RMType, RawModule, RawModuleTopLevel, ScopedStatics,
     },
 };
 
@@ -56,7 +56,10 @@ enum PartiallyResolvedFunctionBody {
 impl PartiallyResolvedFunctionBody {
     fn unwrap_translated(self) -> (CMType, Vec<CMExpression>, Vec<CMLocalVarInfo>) {
         match self {
-            PartiallyResolvedFunctionBody::Disembodied { ty_return } => (ty_return, vec![], vec![]),
+            PartiallyResolvedFunctionBody::Disembodied { ty_return } => {
+                let fail_expr = CMExpression::Fail;
+                (ty_return, vec![fail_expr], vec![])
+            }
             PartiallyResolvedFunctionBody::Translated {
                 ty_return,
                 block,
@@ -148,6 +151,7 @@ pub fn raw_2_common(
         traits,
         top_level,
         mut submodule_tree,
+        base_supported_backend,
     }: RawModule,
 ) -> CommonModule {
     let mut diagnostics = vec![];
@@ -171,7 +175,7 @@ pub fn raw_2_common(
                     let all_scoped = all_scoped.finish_imports(&submodule_tree);
                     PartiallyResolvedFunction {
                         attrs: resolve_attrs(attrs),
-                        doc_comment: doc_comment,
+                        doc_comment,
                         params: params
                             .iter()
                             .map(|(_, ty)| static_resolve_type(&[all_scoped.clone()], ty))
@@ -188,7 +192,7 @@ pub fn raw_2_common(
                                 all_scoped,
                                 block,
                             },
-                            None if can_be_disembodied => {
+                            None if can_be_disembodied.is_true() => {
                                 PartiallyResolvedFunctionBody::Disembodied {
                                     ty_return: match &return_ty {
                                         Some(ty) => static_resolve_type(&[all_scoped.clone()], ty),
@@ -291,7 +295,7 @@ pub fn raw_2_common(
     let mut ty_return = None;
     let top_level = top_level
         .into_iter()
-        .map(|block| {
+        .map(|RawModuleTopLevel { block, mod_type }| {
             let mut locals = vec![];
             let mut locals_lookup = HashMap::new();
             let (top_level_code, ty_eval) = resolve_block(
@@ -323,6 +327,8 @@ pub fn raw_2_common(
                 code: top_level_code,
                 locals,
                 ty_eval,
+
+                mod_type,
             }
         })
         .collect::<Vec<_>>();
@@ -386,7 +392,9 @@ pub fn raw_2_common(
             .collect(),
         // traits: state.traits
         closure_functions: vec![], // TODO
-        submodule_tree,
+        submodule_tree: state.submodule_tree,
+
+        base_supported_backend,
     }
 }
 

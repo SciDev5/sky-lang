@@ -3,8 +3,11 @@ use std::{collections::HashMap, fmt::Debug};
 use num::complex::Complex64;
 
 use crate::{
-    build::module_tree::{ModuleTree, ModuleTreeLookup, ModuleTreeLookupPreliminary},
+    build::module_tree::{
+        ModuleTree, ModuleTreeLookup, ModuleTreeLookupPreliminary, SubModuleEntryInfo,
+    },
     common::{
+        backend::BackendInfo,
         common_module::{CMAssociatedFunction, DocComment},
         IdentInt, IdentStr,
     },
@@ -64,6 +67,18 @@ pub struct RMTemplateDef {
     // TODO trait bounds
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum CanBeDisembodied {
+    No,
+    YesTrait,
+    YesMultiplatformCommon,
+}
+impl CanBeDisembodied {
+    pub fn is_true(self) -> bool {
+        matches!(self, Self::YesMultiplatformCommon | Self::YesTrait)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RMFunctionInfo {
     pub attrs: Vec<MacroCall<RMExpression>>,
@@ -71,7 +86,7 @@ pub struct RMFunctionInfo {
     pub params: Vec<(IdentStr, RMType)>,
     pub local_template_defs: Vec<RMTemplateDef>,
     pub return_ty: Option<RMType>,
-    pub can_be_disembodied: bool,
+    pub can_be_disembodied: CanBeDisembodied,
     /// Contains references to all static references this function can see, including itself.
     pub all_scoped: RMScopedStatics,
 }
@@ -282,12 +297,21 @@ pub struct RMBlock {
     /// excluding outer scopes.
     pub inner_scoped: RMScopedStatics,
 }
+
+#[derive(Debug)]
+pub struct RawModuleTopLevel {
+    pub block: RMBlock,
+    pub mod_type: SubModuleEntryInfo,
+}
+
 #[derive(Debug)]
 pub struct RawModule {
     pub functions: Vec<RMFunction>,
     pub structs: Vec<RMStruct>,
     pub traits: Vec<RMTrait>,
 
-    pub top_level: Vec<RMBlock>,
+    pub top_level: Vec<RawModuleTopLevel>,
     pub submodule_tree: ModuleTree,
+
+    pub base_supported_backend: BackendInfo,
 }

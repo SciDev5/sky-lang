@@ -3,11 +3,13 @@ use std::{collections::HashMap, fmt::Debug};
 use num::complex::Complex64;
 
 use crate::{
-    build::module_tree::{FullId, ModuleTree},
+    build::module_tree::{FullId, ModuleTree, SubModuleEntryInfo},
     common::{IdentInt, IdentStr},
     math::tensor::Tensor,
     parse::{fn_lookup::IntrinsicFnId, macros::MacroCall},
 };
+
+use super::backend::BackendInfo;
 
 pub type DocComment = Option<String>;
 
@@ -213,6 +215,8 @@ pub struct CMTopLevelBlock {
     pub code: Vec<CMExpression>,
     pub locals: Vec<CMLocalVarInfo>,
     pub ty_eval: CMType,
+
+    pub mod_type: SubModuleEntryInfo,
 }
 
 #[derive(Debug)]
@@ -223,4 +227,6 @@ pub struct CommonModule {
     // pub traits: Vec<CMTrait>,
     pub top_level: Vec<CMTopLevelBlock>,
     pub submodule_tree: ModuleTree,
+
+    pub base_supported_backend: BackendInfo,
 }

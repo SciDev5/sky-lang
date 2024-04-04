@@ -1,21 +1,25 @@
 use std::collections::HashMap;
 
 use crate::{
-    build::module_tree::{FullId, ModuleTreeLookupPreliminary, ModuleTreeSubModuleHandle},
-    common::{common_module::CMAssociatedFunction, IdentInt, IdentStr},
+    build::module_tree::{
+        FullId, ModuleTreeLookupPreliminary, ModuleTreeSubModuleHandle, SubModuleEntryInfo,
+        SubModuleType,
+    },
+    common::{backend::BackendInfo, common_module::CMAssociatedFunction, IdentInt, IdentStr},
 };
 
 use super::{
     ast::{
         ASTAnonymousFunction, ASTArray, ASTCompoundPostfixContents, ASTExpression,
-        ASTFunctionDefinition, ASTLiteral, ASTModule, ASTOptionallyTypedIdent, ASTTraitImpl,
-        ASTTypedIdent, ASTVarAccessExpression,
+        ASTFunctionDefinition, ASTLiteral, ASTModule, ASTOptionallyTypedIdent, ASTSubModule,
+        ASTTraitImpl, ASTTypedIdent, ASTVarAccessExpression,
     },
     fn_lookup::IntrinsicFnId,
     macros::MacroCall,
     raw_module::{
-        LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo, RMLiteralArray,
-        RMLiteralValue, RMScopedStatics, RMStruct, RMTrait, RMTraitImpl, RawModule,
+        CanBeDisembodied, LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo,
+        RMLiteralArray, RMLiteralValue, RMScopedStatics, RMStruct, RMTrait, RMTraitImpl, RawModule,
+        RawModuleTopLevel,
     },
 };
 
@@ -104,20 +108,33 @@ pub fn ast_2_raw(
     ASTModule {
         modules,
         mut submodule_tree,
+        base_supported_backend,
     }: ASTModule,
 ) -> RawModule {
     let mut state = StaticsGlobalState {
         structs: vec![],
         traits: vec![],
         functions: vec![],
-        module_tree: submodule_tree.edit_submodule_data(0),
+        module_tree: submodule_tree.edit_submodule_data(0, None),
     };
     let top_level = modules
         .into_iter()
-        .enumerate()
-        .map(|(submodule_id, ast_submodule)| {
-            state.module_tree.switch_submodule(submodule_id);
-            transform_expr_block_inner_scoped(ast_submodule, &mut state, true)
+        .map(|ASTSubModule { block, mod_type }| {
+            let SubModuleEntryInfo { ty, id } = mod_type;
+            let (platform_id, is_multiplatform_common) = match ty {
+                SubModuleType::Common => (None, true),
+                SubModuleType::MultiplatformCommon => (None, false),
+                SubModuleType::MultiplatformSpecific(BackendInfo {
+                    name,
+                    id,
+                    parent_ids,
+                }) => (Some(id), false),
+            };
+            state
+                .module_tree
+                .switch_submodule(id, platform_id, is_multiplatform_common);
+            let block = transform_expr_block_inner_scoped(block, &mut state, true);
+            RawModuleTopLevel { block, mod_type }
         })
         .collect::<Vec<_>>();
 
@@ -134,6 +151,8 @@ pub fn ast_2_raw(
         functions,
         top_level,
         submodule_tree,
+
+        base_supported_backend,
     }
 }
 
@@ -209,7 +228,14 @@ fn transform_function(
                 .map(|ASTTypedIdent { ident, ty }| (ident, ty))
                 .collect(),
             return_ty,
-            can_be_disembodied,
+            can_be_disembodied: match (
+                can_be_disembodied,
+                state.module_tree.get_current_submodule_id(),
+            ) {
+                (true, _) => CanBeDisembodied::YesTrait,
+                (false, (_, None, true)) => CanBeDisembodied::YesMultiplatformCommon,
+                (false, _) => CanBeDisembodied::No,
+            },
             all_scoped: RMScopedStatics::empty(),
         },
         block: block.map(|block| transform_expr_block_inner_scoped(block, state, false)),

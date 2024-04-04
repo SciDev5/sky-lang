@@ -1,1 +1,0 @@
-module name matches struct / trait / inner module name

@@ -2,7 +2,7 @@ use std::{collections::HashMap, hash::Hash, rc::Rc};
 
 use crate::{
     common::{
-        backend::{BackendId, BackendInfo, BackendsIndex},
+        backend::{BackendId, PlatformInfo},
         common_module::CommonModule,
         IdentInt, IdentStr,
     },
@@ -46,7 +46,7 @@ pub struct SubModuleEntryInfo {
 pub enum SubModuleType {
     Common,
     MultiplatformCommon,
-    MultiplatformSpecific(BackendInfo),
+    MultiplatformSpecific(PlatformInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,127 +112,40 @@ impl ModuleExports {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CombinedModuleExports {
-    pub common: ModuleExports,
-    pub platform: HashMap<BackendId, ModuleExports>,
-}
-macro_rules! combined_module_exports_getfn {
-    ($name: ident, $which: ident) => {
-        fn $name(
-            &self,
-            id: &IdentStr,
-            backends_index: &BackendsIndex,
-            platform_id: Option<BackendId>,
-        ) -> Option<MultiplatformFullId> {
-            Self::get_any(
-                &self.common.$which,
-                self.platform
-                    .iter()
-                    .map(|(backend, it)| (*backend, &it.$which)),
-                id,
-                backends_index,
-                platform_id,
-            )
-        }
-    };
-}
+pub struct CombinedModuleExports(HashMap<BackendId, ModuleExports>);
 impl CombinedModuleExports {
     fn new_empty() -> Self {
-        Self {
-            common: ModuleExports::new_empty(),
-            platform: HashMap::new(),
-        }
+        Self(HashMap::new())
     }
     /// Gets the [`ModuleExports`] for this platform. If it's not there, it creates one.
-    fn edit_for_platform(&mut self, platform: Option<BackendId>) -> &mut ModuleExports {
-        match platform {
-            None => &mut self.common,
-            Some(platform_id) => self
-                .platform
-                .entry(platform_id)
-                .or_insert_with(|| ModuleExports::new_empty()),
-        }
+    fn edit_for_platform(&mut self, platform_id: BackendId) -> &mut ModuleExports {
+        self.0
+            .entry(platform_id)
+            .or_insert_with(|| ModuleExports::new_empty())
     }
-    fn get_any<'a>(
-        exports_common: &HashMap<IdentStr, FullId>,
-        exports_by_platform: impl Iterator<Item = (BackendId, &'a HashMap<IdentStr, FullId>)>,
-        id: &IdentStr,
-        backends_index: &BackendsIndex,
-        platform_id: Option<BackendId>,
-    ) -> Option<MultiplatformFullId> {
-        // platform_id == base_platform_id -> (common[id],platform[id])
-        // platform_id subplatform_of base_platform_id -> (platform[platform_id else compat][id] else common[id], platform[*compat_list])
-        // else -> id(platform[id], platform[*compat_list])
 
-        if let Some(platform_id) = platform_id {
-            let mut platform_variants = exports_by_platform
-                .filter(|(exports_platform_id, _)| {
-                    backends_index.a_is_subplatform_of_b(*exports_platform_id, platform_id)
-                })
-                .filter_map(|(exports_platform_id, exports)| {
-                    Some((exports_platform_id, *exports.get(id)?))
-                })
-                .collect::<HashMap<_, _>>();
-            let (_, common) = platform_variants.remove_entry(&platform_id)?;
-            let platform_variants = if platform_variants.is_empty() {
-                None
-            } else {
-                Some(platform_variants)
-            };
-
-            Some(MultiplatformFullId {
-                common,
-                platform_variants,
-            })
-        } else {
-            let common = *exports_common.get(id)?;
-            let platform_variants = exports_by_platform
-                .filter_map(|(exports_platform_id, exports)| {
-                    Some((exports_platform_id, *exports.get(id)?))
-                })
-                .collect::<Vec<_>>();
-            let platform_variants = if platform_variants.is_empty() {
-                None
-            } else {
-                Some(platform_variants.into_iter().collect())
-            };
-            Some(MultiplatformFullId {
-                common,
-                platform_variants,
-            })
-        }
+    fn get_compatible_exports(
+        &self,
+        origin_platform_info: PlatformInfo,
+    ) -> impl std::iter::Iterator<Item = (BackendId, &ModuleExports)> {
+        origin_platform_info
+            .compat_ids
+            .into_iter()
+            .filter_map(|id| self.0.get(id).map(|v| (*id, v)))
     }
-    combined_module_exports_getfn!(get_fn, functions);
-    combined_module_exports_getfn!(get_struct, structs);
-    combined_module_exports_getfn!(get_module, modules);
-    combined_module_exports_getfn!(get_trait, traits);
 }
 
 #[derive(Debug, Clone)]
-struct MultiplatformFullId {
-    common: FullId,
-    platform_variants: Option<HashMap<BackendId, FullId>>,
-}
+pub struct MultiplatformFullId(HashMap<BackendId, FullId>);
 impl MultiplatformFullId {
-    pub fn reify_id(&self, platform_id: BackendId) -> FullId {
-        self.platform_variants
-            .and_then(|v| {
-                eprintln!("// TODO backend inheritence and mid-level compatibility");
-                v.get(&platform_id).copied()
-            })
-            .unwrap_or(self.common)
-    }
-    pub fn standardize_dependency_refs(&self, prev_id: FullId) -> Self {
-        Self {
-            common: self.common.standardize_dependency_refs(prev_id),
-            platform_variants: self.platform_variants.map(|it| {
-                it.iter()
-                    .map(|(backend_id, full_id)| {
-                        (*backend_id, full_id.standardize_dependency_refs(prev_id))
-                    })
-                    .collect()
-            }),
+    pub fn reify_id(&self, platform_info: PlatformInfo) -> FullId {
+        eprintln!("// TODO backend inheritence and mid-level compatibility");
+        for platform_id in platform_info.compat_ids {
+            if let Some(out_id) = self.0.get(&platform_id) {
+                return *out_id;
+            }
         }
+        todo!("// TODO find some way to deal with MultiplatformFullId::reify_id not matching anything.");
     }
 }
 
@@ -244,7 +157,6 @@ pub struct PackageRef {
 
 #[derive(Debug, Clone)]
 pub struct ModuleTree {
-    base_platform_id: BackendId,
     sub_modules: Vec<SubModuleTreeEntry>,
     dependencies: HashMap<IdentStr, usize>,
     dependency_list: Vec<PackageRef>,
@@ -252,9 +164,8 @@ pub struct ModuleTree {
 }
 
 impl ModuleTree {
-    pub fn new(base_platform_id: BackendId) -> Self {
+    pub fn new() -> Self {
         Self {
-            base_platform_id,
             sub_modules: vec![SubModuleTreeEntry::empty()],
             dependencies: HashMap::new(),
             dependency_list: Vec::new(),
@@ -302,8 +213,7 @@ impl ModuleTree {
                     SubModuleId(n_entries)
                 });
             if new_tree_entry {
-                self.sub_modules
-                    .push(SubModuleTreeEntry::empty(self.base_platform_id));
+                self.sub_modules.push(SubModuleTreeEntry::empty());
             }
         }
 
@@ -312,248 +222,316 @@ impl ModuleTree {
     pub fn edit_submodule_data(
         &mut self,
         submodule_id: usize,
-        platform_id: Option<BackendId>,
+        platform_info: PlatformInfo,
     ) -> ModuleTreeSubModuleHandle {
         ModuleTreeSubModuleHandle {
             module_tree: self,
             submodule_id,
-            platform_id,
+            platform_info,
             is_multiplatform_common: false,
         }
     }
+    /*
 
-    pub fn finish_get(
-        &self,
-        preluid: ModuleTreeLookupPreliminary,
-        // platform_id: Option<BackendId>,
-    ) -> Result<ModuleTreeLookup, ModuleTreeLookupError> {
-        self.get(preluid.lookup, &preluid.unmatched_path, preluid.platform_id)
-    }
-    pub fn get_fn(
-        &self,
-        mut current_lookup: ModuleTreeLookup,
-        path: &[IdentStr],
-        platform_id: Option<BackendId>,
-    ) -> Result<FullId, ModuleTreeLookupError> {
-        current_lookup = self.get(current_lookup, &path[..path.len() - 1], platform_id)?;
+        Lookup stuff:
 
-        self.get_exports(current_lookup)
-            .and_then(|exports| exports.get_fn(&path[path.len() - 1], platform_id))
-            .ok_or(ModuleTreeLookupError {
-                n_matched_before_fail: path.len() - 1,
-            })
-    }
-    fn get_exports(&self, current_lookup: ModuleTreeLookup) -> Option<&CombinedModuleExports> {
-        Some(match current_lookup {
-            ModuleTreeLookup::Function(_) => {
-                return None;
-            }
-            ModuleTreeLookup::Struct(_) | ModuleTreeLookup::Trait(_) => {
-                todo!("// TODO handle imports from inside structs/traits");
-            }
-            ModuleTreeLookup::Module(FullId::Local(submod_id)) => {
-                &self.sub_modules[submod_id].exports
-            }
-            ModuleTreeLookup::Module(FullId::NonLocal {
+        Knowns:
+        - all modules' exports
+        - import path
+        - origin module and its target backend
+
+        Constraints:
+        - can only import from modules with same or more general target backends (only constrained by origin module, though)
+
+        Want:
+        - full id and type of imported resource
+
+    ///////////////////////////////////////////
+
+        Types of lookup:
+        - lookup import preliminary (local modules unknown, library modules known; failures/unknowns are left resolved up to failure point; outputs generic partial import or terminal if obvious)
+        - lookup import finalize (all modules known; failures reported; outputs generic import or terminal if obvious)
+        - lookup access (contextual; all modules known; failures reported; leaves context-specific terminal else failure)
+         */
+
+    fn import_step(
+        &self,
+        origin_platform_info: PlatformInfo,
+        mod_id: FullId,
+        path_step: &String,
+    ) -> Option<ModuleTreeLookup> {
+        let exports = match mod_id {
+            FullId::NonLocal {
                 dependency_id,
-                id: submod_id,
-            }) => {
+                id: mod_id,
+            } => {
+                // ---- dependency module ---- //
                 &self.dependency_list[dependency_id]
                     .module
                     .submodule_tree
-                    .sub_modules[submod_id]
+                    .sub_modules[mod_id]
                     .exports
             }
+
+            FullId::Local(mod_id) => {
+                // ---- local module ---- //
+                if let Some(new_mod_id) =
+                    self.import_step_local_children(SubModuleId(mod_id), path_step)
+                {
+                    return Some(ModuleTreeLookup::Module(FullId::Local(mod_id)));
+                }
+                &self.sub_modules[mod_id].exports
+            }
+        };
+
+        let mut all_exports_vec = vec![];
+        let mut does_export_fn = false;
+        let mut does_export_struct = false;
+        let mut does_export_trait = false;
+        for (platform_id, exports) in exports.get_compatible_exports(origin_platform_info) {
+            if let Some(new_mod_id) = exports.modules.get(path_step) {
+                return Some(ModuleTreeLookup::Module(
+                    new_mod_id.standardize_dependency_refs(mod_id),
+                ));
+            }
+            if exports.functions.contains_key(path_step) {
+                does_export_fn = true;
+            }
+            if exports.structs.contains_key(path_step) {
+                does_export_struct = true;
+            }
+            if exports.traits.contains_key(path_step) {
+                does_export_trait = true;
+            }
+            all_exports_vec.push((platform_id, exports));
+        }
+
+        let n = [does_export_fn, does_export_struct, does_export_trait]
+            .into_iter()
+            .filter(|does_export_it| *does_export_it)
+            .count();
+        if n > 1 {
+            panic!("Failed to prevent multiple types of things from being exported under the same name. // TODO add something to prevent this before");
+        }
+        if n == 0 {
+            return None;
+        }
+
+        let new_id = MultiplatformFullId(
+            all_exports_vec
+                .into_iter()
+                .filter_map(|(id, exports)| {
+                    (if does_export_fn {
+                        &exports.functions
+                    } else if does_export_struct {
+                        &exports.structs
+                    } else if does_export_trait {
+                        &exports.traits
+                    } else {
+                        unreachable!();
+                    })
+                    .get(path_step)
+                    .map(|v| (id, v.standardize_dependency_refs(mod_id)))
+                })
+                .collect(),
+        );
+        Some(if does_export_fn {
+            ModuleTreeLookup::Function(new_id)
+        } else if does_export_struct {
+            ModuleTreeLookup::Struct(new_id)
+        } else if does_export_trait {
+            ModuleTreeLookup::Trait(new_id)
+        } else {
+            unreachable!();
         })
     }
-    pub fn get(
+    fn import_step_local_children(
         &self,
-        mut current_lookup: ModuleTreeLookup,
-        path: &[IdentStr],
-        backends_index: &BackendsIndex,
-        platform_id: BackendId,
-    ) -> Result<ModuleTreeLookup, ModuleTreeLookupError> {
-        for (i, ident) in path.iter().enumerate() {
-            if let ModuleTreeLookup::Module(FullId::Local(submod_id)) = &current_lookup {
-                if let Some(next_id) = self.sub_modules[*submod_id].children.get(ident) {
-                    current_lookup = ModuleTreeLookup::Module(FullId::Local(next_id.0));
-                    continue;
+        mod_id: SubModuleId,
+        path_step: &String,
+    ) -> Option<SubModuleId> {
+        self.sub_modules[mod_id.0].children.get(path_step).copied()
+    }
+
+    pub fn import_preliminary(
+        &self,
+        origin_platform_info: PlatformInfo,
+        mod_id: SubModuleId,
+        mut path: Vec<IdentStr>,
+    ) -> ModuleTreeLookupPreliminary {
+        assert!(path.len() > 0);
+
+        let mut current_mod_id = FullId::Local(mod_id.0);
+        let mut i = 0;
+        match path[0].as_str() {
+            IDENT_ROOT_MODULE => {
+                i += 1;
+                current_mod_id = FullId::Local(0); // jump to package root
+            }
+            IDENT_PARENT_MODULE => {
+                // should consume all in a chain of parent accesses `super.super.su...`
+                // only allowed at the start
+                todo!("// TODO imports from parent module");
+            }
+            _ => {
+                if let Some(dependency_id) = self.dependencies.get(&path[0]).copied() {
+                    i += 1;
+                    current_mod_id = FullId::NonLocal {
+                        dependency_id,
+                        id: 0,
+                    };
+                } else {
+                    let FullId::Local(mod_id) = current_mod_id else { unreachable!() };
+                    let mut mod_id = SubModuleId(mod_id);
+                    while let Some(new_mod_id) = self.import_step_local_children(mod_id, &path[i]) {
+                        i += 1;
+                        mod_id = new_mod_id;
+
+                        if i >= path.len() {
+                            break;
+                        }
+                    }
+                    current_mod_id = FullId::Local(mod_id.0);
                 }
             }
-            let Some(exports) = self.get_exports(current_lookup) else {
-                return Err(ModuleTreeLookupError {
-                    n_matched_before_fail: i,
-                });
-            };
-            let prev_id = current_lookup.id();
-            current_lookup =
-                if let Some(id) = exports.get_module(ident, backends_index, platform_id) {
-                    ModuleTreeLookup::Module(id.standardize_dependency_refs(prev_id))
-                } else if let Some(id) = exports.get_struct(ident, backends_index, platform_id) {
-                    ModuleTreeLookup::Struct(id.standardize_dependency_refs(prev_id))
-                } else if let Some(id) = exports.get_trait(ident, backends_index, platform_id) {
-                    ModuleTreeLookup::Trait(id.standardize_dependency_refs(prev_id))
-                } else if let Some(id) = exports.get_fn(ident, backends_index, platform_id) {
-                    ModuleTreeLookup::Function(id.standardize_dependency_refs(prev_id))
-                } else {
+        }
+
+        path.drain(..i);
+        ModuleTreeLookupPreliminary {
+            origin_platform_info,
+            current: ModuleTreeLookup::Module(current_mod_id),
+            n_consumed: i,
+            unmatched_path: path,
+        }
+    }
+
+    pub fn import_finish(
+        &self,
+        base: ModuleTreeLookupPreliminary,
+    ) -> Result<ModuleTreeLookup, ModuleTreeLookupError> {
+        self.import_extend(
+            &base.current,
+            &base.unmatched_path,
+            base.n_consumed,
+            base.origin_platform_info,
+        )
+    }
+
+    fn import_extend(
+        &self,
+        base: &ModuleTreeLookup,
+        path: &[IdentStr],
+        n_consumed: usize,
+        origin_platform_info: PlatformInfo,
+    ) -> Result<ModuleTreeLookup, ModuleTreeLookupError> {
+        let mut current = base.clone();
+        for (j, path_step) in path.into_iter().enumerate() {
+            macro_rules! fail {
+                () => {
                     return Err(ModuleTreeLookupError {
-                        n_matched_before_fail: i,
+                        n_matched_before_fail: j + n_consumed,
                     });
                 };
+            }
+            match current {
+                ModuleTreeLookup::Module(mod_id) => {
+                    if let Some(new) = self.import_step(origin_platform_info, mod_id, &path_step) {
+                        current = new;
+                    } else {
+                        fail!();
+                    }
+                }
+                ModuleTreeLookup::Struct(id) => {
+                    todo!("// TODO access struct functions from outside");
+                }
+                ModuleTreeLookup::Trait(id) => {
+                    todo!("// TODO access trait functions from outside");
+                }
+                _ => {
+                    fail!();
+                }
+            }
         }
-        Ok(current_lookup)
+        Ok(current)
     }
-    // pub fn resolve_at_root(&self, path: &[IdentStr]) -> Option<ModuleResolution> {
-    //     self.resolve(SubModuleId(0), path)
-    // }
-
-    // pub fn resolve(
-    //     &self,
-    //     base_submodule_id: SubModuleId,
-    //     path: &[IdentStr],
-    // ) -> Option<ModuleResolution> {
-    //     let mut id = base_submodule_id;
-    //     if id.0 >= self.sub_modules.len() {
-    //         eprintln!("[{}:{}] Somehow provided base_submodule_id that is out of bounds for this SubModuleTree.", file!(), line!());
-    //         return None;
-    //     }
-
-    //     if path.len() == 1 {
-    //         self.sub_modules[id.0]
-    //             .children
-    //             .get(&path[0])
-    //             .map(|id| ModuleResolution {
-    //                 id: *id,
-    //                 child: None,
-    //             })
-    //     } else {
-    //         for path_step in &path[..path.len() - 1] {
-    //             id = *self.sub_modules[id.0].children.get(path_step)?;
-    //         }
-    //         let child = {
-    //             let path_step = path.last().unwrap();
-    //             match self.sub_modules[id.0].children.get(path_step) {
-    //                 Some(new_id) => {
-    //                     id = *new_id;
-    //                     None
-    //                 }
-    //                 None => Some(path_step.clone()),
-    //             }
-    //         };
-
-    //         Some(ModuleResolution { id, child })
-    //     }
-    // }
-    // pub fn get<'a>(
-    //     &self,
-    //     base_submodule_id: SubModuleId,
-    //     mut path: impl Iterator<Item = &'a IdentStr>,
-    // ) -> Option<IdentInt> {
-    //     let mut id = base_submodule_id;
-    //     if id.0 >= self.sub_modules.len() {
-    //         eprintln!("[{}:{}] Somehow provided base_submodule_id that is out of bounds for this SubModuleTree.", file!(), line!());
-    //         return None;
-    //     }
-
-    //     while let Some(path_step) = path.next() {
-    //         id = *self.sub_modules[id.0].children.get(path_step)?;
-    //     }
-
-    //     self.sub_modules[id.0].code_mod_id
-    // }
+    pub fn access_fn(
+        &self,
+        base: &ModuleTreeLookup,
+        path: &[IdentStr],
+        origin_platform_info: PlatformInfo,
+    ) -> Result<MultiplatformFullId, ModuleTreeLookupError> {
+        match self.import_extend(base, path, 0, origin_platform_info)? {
+            ModuleTreeLookup::Function(id) => Ok(id),
+            _ => Err(ModuleTreeLookupError {
+                n_matched_before_fail: path.len() - 1,
+            }),
+        }
+    }
+    pub fn access_struct(
+        &self,
+        base: &ModuleTreeLookup,
+        path: &[IdentStr],
+        origin_platform_info: PlatformInfo,
+    ) -> Result<MultiplatformFullId, ModuleTreeLookupError> {
+        match self.import_extend(base, path, 0, origin_platform_info)? {
+            ModuleTreeLookup::Struct(id) => Ok(id),
+            _ => Err(ModuleTreeLookupError {
+                n_matched_before_fail: path.len() - 1,
+            }),
+        }
+    }
+    pub fn access_trait(
+        &self,
+        base: &ModuleTreeLookup,
+        path: &[IdentStr],
+        origin_platform_info: PlatformInfo,
+    ) -> Result<MultiplatformFullId, ModuleTreeLookupError> {
+        match self.import_extend(base, path, 0, origin_platform_info)? {
+            ModuleTreeLookup::Trait(id) => Ok(id),
+            _ => Err(ModuleTreeLookupError {
+                n_matched_before_fail: path.len() - 1,
+            }),
+        }
+    }
 }
 
 pub struct ModuleTreeSubModuleHandle<'a> {
     module_tree: &'a mut ModuleTree,
     submodule_id: usize,
     is_multiplatform_common: bool,
-    platform_id: Option<BackendId>,
+    platform_info: PlatformInfo,
 }
 
 impl<'a> ModuleTreeSubModuleHandle<'a> {
-    pub fn get_current_submodule_id(&self) -> (SubModuleId, Option<BackendId>, bool) {
+    pub fn get_current_submodule_id(&self) -> (SubModuleId, BackendId, bool) {
         (
             SubModuleId(self.submodule_id),
-            self.platform_id,
+            self.platform_info.id,
             self.is_multiplatform_common,
         )
     }
     pub fn switch_submodule(
         &mut self,
         submodule_id: SubModuleId,
-        platform_id: Option<BackendId>,
+        platform_info: PlatformInfo,
         is_multiplatform_common: bool,
     ) {
         self.submodule_id = submodule_id.0;
-        self.platform_id = platform_id;
+        self.platform_info = platform_info;
         self.is_multiplatform_common = is_multiplatform_common;
     }
     pub fn public_exports_mut(&mut self) -> &mut ModuleExports {
         &mut self.module_tree.sub_modules[self.submodule_id]
             .exports
-            .edit_for_platform(self.platform_id)
+            .edit_for_platform(self.platform_info.id)
     }
-    fn preliminary_get_local(
-        &self,
-        start_id: SubModuleId,
-        i0: usize,
-        mut path: Vec<IdentStr>,
-    ) -> ModuleTreeLookupPreliminary {
-        let mut id = start_id.0;
-        for i in i0..path.len() {
-            if let Some(new_id) = self.module_tree.sub_modules[id].children.get(&path[i]) {
-                id = new_id.0;
-            } else {
-                path.drain(..i);
-                return ModuleTreeLookupPreliminary {
-                    platform_id: self.platform_id,
-                    lookup: ModuleTreeLookup::Module(FullId::Local(id)),
-                    unmatched_path: path,
-                };
-            }
-        }
-        ModuleTreeLookupPreliminary {
-            platform_id: self.platform_id,
-            lookup: ModuleTreeLookup::Module(FullId::Local(id)),
-            unmatched_path: vec![],
-        }
-    }
-    pub fn preliminary_get<'b>(
-        &self,
-        path: Vec<IdentStr>,
-    ) -> Result<ModuleTreeLookupPreliminary, ModuleTreeLookupError> {
-        assert!(path.len() > 0);
-        if path[0] == IDENT_ROOT_MODULE {
-            Ok(self.preliminary_get_local(SubModuleId(0), 1, path))
-        } else if path[0] == IDENT_PARENT_MODULE {
-            todo!("// TODO import super.whatever");
-        } else if self.module_tree.sub_modules[self.submodule_id]
-            .children
-            .get(&path[0])
-            .is_some()
-        {
-            Ok(self.preliminary_get_local(SubModuleId(self.submodule_id), 0, path))
-        } else if let Some(dependency_id) = self.module_tree.dependencies.get(&path[0]).copied() {
-            Ok(ModuleTreeLookupPreliminary {
-                platform_id: self.platform_id,
-                lookup: self
-                    .module_tree
-                    .get(
-                        ModuleTreeLookup::Module(FullId::NonLocal {
-                            dependency_id,
-                            id: 0,
-                        }),
-                        &path[1..],
-                        self.platform_id,
-                    )
-                    .map_err(|ok_count| ok_count + 1)?,
-                unmatched_path: vec![],
-            })
-        } else {
-            Err(ModuleTreeLookupError {
-                n_matched_before_fail: 0,
-            })
-        }
+
+    pub fn preliminary_get<'b>(&self, path: Vec<IdentStr>) -> ModuleTreeLookupPreliminary {
+        self.module_tree.import_preliminary(
+            self.platform_info,
+            SubModuleId(self.submodule_id),
+            path,
+        )
     }
 }
 
@@ -562,19 +540,7 @@ pub enum ModuleTreeLookup {
     Function(MultiplatformFullId),
     Struct(MultiplatformFullId),
     Trait(MultiplatformFullId),
-    Module(MultiplatformFullId),
-}
-impl ModuleTreeLookup {
-    fn id(self, platform_id: Option<BackendId>) -> FullId {
-        match self {
-            Self::Module(id) | Self::Function(id) | Self::Struct(id) | Self::Trait(id) => {
-                match platform_id {
-                    Some(platform_id) => id.reify_id(platform_id),
-                    None => id.common,
-                }
-            }
-        }
-    }
+    Module(FullId),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -592,7 +558,8 @@ impl std::ops::Add<usize> for ModuleTreeLookupError {
 
 #[derive(Debug, Clone)]
 pub struct ModuleTreeLookupPreliminary {
-    platform_id: Option<BackendId>,
-    lookup: ModuleTreeLookup,
+    origin_platform_info: PlatformInfo,
+    current: ModuleTreeLookup,
+    n_consumed: usize,
     unmatched_path: Vec<IdentStr>,
 }

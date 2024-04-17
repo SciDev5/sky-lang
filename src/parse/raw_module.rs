@@ -4,10 +4,10 @@ use num::complex::Complex64;
 
 use crate::{
     build::module_tree::{
-        ModuleTree, ModuleTreeLookup, ModuleTreeLookupPreliminary, SubModuleEntryInfo,
+        FullId, ModuleTree, ModuleTreeLookup, ModuleTreeLookupPreliminary, SubModuleEntryInfo,
     },
     common::{
-        backend::BackendInfo,
+        backend::PlatformInfo,
         common_module::{CMAssociatedFunction, DocComment},
         IdentInt, IdentStr,
     },
@@ -32,23 +32,48 @@ impl RMScopedStatics {
             imports: HashMap::new(),
         }
     }
-    pub fn finish_imports(self, submodule_tree: &ModuleTree) -> ScopedStatics {
+    pub fn finish_imports(mut self, submodule_tree: &ModuleTree) -> ScopedStatics {
+        let imports = self
+            .imports
+            .into_iter()
+            .map(|(ident, import_lookup_preliminary)| {
+                (
+                    ident,
+                    submodule_tree
+                        .import_finish(import_lookup_preliminary)
+                        .expect("// TODO handle errors finishing import lookups"),
+                )
+            })
+            .filter_map(|(ident, v)| match v {
+                ModuleTreeLookup::Module(id) => Some((ident, v)),
+                ModuleTreeLookup::Function(id) => {
+                    self.functions
+                        .entry(ident)
+                        .and_modify(|_| todo!("// TODO handle overlapping import/local names"))
+                        .or_insert(id);
+                    None
+                }
+                ModuleTreeLookup::Struct(id) => {
+                    self.structs
+                        .entry(ident)
+                        .and_modify(|_| todo!("// TODO handle overlapping import/local names"))
+                        .or_insert(id);
+                    None
+                }
+                ModuleTreeLookup::Trait(id) => {
+                    self.traits
+                        .entry(ident)
+                        .and_modify(|_| todo!("// TODO handle overlapping import/local names"))
+                        .or_insert(id);
+                    None
+                }
+            })
+            .collect();
         ScopedStatics {
             functions: self.functions,
             structs: self.structs,
             traits: self.traits,
-            imports: self
-                .imports
-                .into_iter()
-                .map(|(ident, import_lookup_preliminary)| {
-                    (
-                        ident,
-                        submodule_tree
-                            .finish_get(import_lookup_preliminary)
-                            .expect("// TODO handle errors finishing import lookups"),
-                    )
-                })
-                .collect(),
+            imports,
         }
     }
 }
@@ -58,7 +83,7 @@ pub struct ScopedStatics {
     pub functions: HashMap<IdentStr, Vec<IdentInt>>,
     pub structs: HashMap<IdentStr, IdentInt>,
     pub traits: HashMap<IdentStr, IdentInt>,
-    pub imports: HashMap<IdentStr, ModuleTreeLookup>,
+    pub imports: HashMap<IdentStr, FullId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -313,5 +338,5 @@ pub struct RawModule {
     pub top_level: Vec<RawModuleTopLevel>,
     pub submodule_tree: ModuleTree,
 
-    pub base_supported_backend: BackendInfo,
+    pub base_supported_backend: PlatformInfo,
 }

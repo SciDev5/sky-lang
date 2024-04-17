@@ -5,7 +5,11 @@ use crate::{
         FullId, ModuleTreeLookupPreliminary, ModuleTreeSubModuleHandle, SubModuleEntryInfo,
         SubModuleType,
     },
-    common::{backend::BackendInfo, common_module::CMAssociatedFunction, IdentInt, IdentStr},
+    common::{
+        backend::{BackendsIndex, PlatformInfo},
+        common_module::CMAssociatedFunction,
+        IdentInt, IdentStr,
+    },
 };
 
 use super::{
@@ -110,25 +114,31 @@ pub fn ast_2_raw(
         mut submodule_tree,
         base_supported_backend,
     }: ASTModule,
+    backends_index: &BackendsIndex,
 ) -> RawModule {
     let mut state = StaticsGlobalState {
         structs: vec![],
         traits: vec![],
         functions: vec![],
-        module_tree: submodule_tree.edit_submodule_data(0, None),
+        module_tree: submodule_tree.edit_submodule_data(0, base_supported_backend),
     };
     let top_level = modules
         .into_iter()
         .map(|ASTSubModule { block, mod_type }| {
             let SubModuleEntryInfo { ty, id } = mod_type;
             let (platform_id, is_multiplatform_common) = match ty {
-                SubModuleType::Common => (None, true),
-                SubModuleType::MultiplatformCommon => (None, false),
-                SubModuleType::MultiplatformSpecific(BackendInfo {
+                SubModuleType::Common => (base_supported_backend, false),
+                SubModuleType::MultiplatformCommon => (base_supported_backend, true),
+                SubModuleType::MultiplatformSpecific(PlatformInfo {
                     name,
                     id,
-                    parent_ids,
-                }) => (Some(id), false),
+                    compat_ids,
+                }) => (
+                    backends_index
+                        .lookup(id)
+                        .expect("ast_2_raw backend info was not loaded before use in compilation"),
+                    false,
+                ),
             };
             state
                 .module_tree
@@ -233,7 +243,7 @@ fn transform_function(
                 state.module_tree.get_current_submodule_id(),
             ) {
                 (true, _) => CanBeDisembodied::YesTrait,
-                (false, (_, None, true)) => CanBeDisembodied::YesMultiplatformCommon,
+                (false, (_, _, true)) => CanBeDisembodied::YesMultiplatformCommon,
                 (false, _) => CanBeDisembodied::No,
             },
             all_scoped: RMScopedStatics::empty(),
@@ -315,14 +325,7 @@ fn transform_expr(
                     .and_modify(|_| {
                         todo!("// TODO report imports with the same name in local scopes");
                     })
-                    .or_insert_with(|| {
-                        // ------------------
-                        state
-                            .module_tree
-                            .preliminary_get(path)
-                            .expect("// TODO handle failed preliminary get")
-                        // ------------------
-                    });
+                    .or_insert_with(|| state.module_tree.preliminary_get(path));
             }
             RMExpression::Void
         }

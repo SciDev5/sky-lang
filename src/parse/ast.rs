@@ -5,7 +5,7 @@ use num::complex::Complex64;
 use crate::{
     build::module_tree::{ModuleTree, SubModuleCodeRef, SubModuleEntryInfo, SubModuleType},
     common::{
-        backend::{BackendId, BackendInfo, BackendsIndex},
+        backend::{BackendId, BackendsIndex, PlatformInfo},
         common_module::DocComment,
         IdentStr,
     },
@@ -241,7 +241,7 @@ pub struct ASTModule {
     pub modules: Vec<ASTSubModule>,
     pub submodule_tree: ModuleTree,
 
-    pub base_supported_backend: BackendInfo,
+    pub base_supported_backend: PlatformInfo,
 }
 pub enum PreASTSubModule {
     Common(ASTBlock),

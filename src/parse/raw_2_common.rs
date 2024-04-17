@@ -4,8 +4,11 @@ use std::{
 };
 
 use crate::{
-    build::module_tree::{FullId, ModuleTree, ModuleTreeLookup, ModuleTreeLookupError},
+    build::module_tree::{
+        FullId, ModuleTree, ModuleTreeLookup, ModuleTreeLookupError, MultiplatformFullId,
+    },
     common::{
+        backend::PlatformInfo,
         common_module::{
             CMAssociatedFunction, CMExpression, CMFunction, CMFunctionInfo, CMLiteralValue,
             CMLocalVarInfo, CMStruct, CMTopLevelBlock, CMType, CommonModule, DocComment,
@@ -398,81 +401,30 @@ pub fn raw_2_common(
     }
 }
 
-enum StaticLookup<'a> {
-    Fail { resolved_part: &'a [IdentStr] },
-    Module(FullId),
-    Struct(FullId),
-    Trait(FullId),
+struct StaticLookupFail<'a> {
+    resolved_part: &'a [IdentStr],
 }
-fn static_lookup_helper_lookup(
-    submodule_tree: &ModuleTree,
-    scoped_statics: &ScopedStatics,
-    ident: &IdentStr,
-) -> Option<ModuleTreeLookup> {
-    Some(
-        if let Some(id) = scoped_statics.structs.get(ident).copied() {
-            ModuleTreeLookup::Struct(FullId::Local(id))
-        } else if let Some(id) = scoped_statics.traits.get(ident).copied() {
-            ModuleTreeLookup::Trait(FullId::Local(id))
-        } else if let Some(lookup) = scoped_statics.imports.get(ident) {
-            *lookup
-        } else {
-            return None;
-        },
-    )
-}
-fn static_lookup_no_fn<'a>(
-    submodule_tree: &ModuleTree,
+type StaticLookup<'a, T> = Result<T, StaticLookupFail<'a>>;
+
+fn statics_stack_resolve<F: Fn(&ScopedStatics) -> Option<T>, T>(
     statics_scope_stack: &[ScopedStatics],
-    resolution_chain: &'a [IdentStr],
-) -> StaticLookup<'a> {
-    assert!(resolution_chain.len() >= 1);
+    f: F,
+) -> Option<T> {
     // reverse to prioritize higher scope stack frames, which correspond to the innermost scopes.
-    for scoped_statics in statics_scope_stack.iter().rev() {
-        if let Some(lookup) =
-            static_lookup_helper_lookup(submodule_tree, scoped_statics, &resolution_chain[0])
-        {
-            return match submodule_tree
-                .get(lookup, &resolution_chain[1..])
-                .map_err(|ok_count| ok_count + 1)
-            {
-                Ok(ModuleTreeLookup::Module(id)) => StaticLookup::Module(id),
-                Ok(ModuleTreeLookup::Trait(id)) => StaticLookup::Trait(id),
-                Ok(ModuleTreeLookup::Struct(id)) => StaticLookup::Struct(id),
-                Ok(ModuleTreeLookup::Function(id)) => StaticLookup::Fail {
-                    resolved_part: &resolution_chain[..resolution_chain.len() - 1],
-                },
-                Err(ModuleTreeLookupError {
-                    n_matched_before_fail,
-                }) => StaticLookup::Fail {
-                    resolved_part: &resolution_chain[..n_matched_before_fail],
-                },
-            };
-        }
-    }
-    StaticLookup::Fail { resolved_part: &[] }
-}
-enum StaticLookupFn<'a> {
-    Fail { resolved_part: &'a [IdentStr] },
-    Function(FullId),
+    statics_scope_stack.iter().rev().find_map(f)
 }
 fn static_lookup_fn<'a>(
     submodule_tree: &ModuleTree,
     statics_scope_stack: &[ScopedStatics],
     resolution_chain: &'a [IdentStr],
-) -> StaticLookupFn<'a> {
+    platform: &PlatformInfo,
+) -> StaticLookup<'a, MultiplatformFullId> {
     if resolution_chain.len() == 1 {
         let ident = &resolution_chain[0];
-        // reverse to prioritize higher scope stack frames, which correspond to the innermost scopes.
-        for scoped_statics in statics_scope_stack.iter().rev() {
-            if let Some(id) = scoped_statics.functions.get(ident) {
-                eprintln!("// TODO handle overloads or disallow them");
-                return StaticLookupFn::Function(FullId::Local(id[0]));
-            }
-        }
-        StaticLookupFn::Fail {
-            resolved_part: &resolution_chain[..0],
-        }
+
+        eprintln!("// TODO handle overloads or disallow them");
+        statics_stack_resolve(statics_scope_stack, |scope| scope.functions.get(ident))
+            .ok_or(StaticLookupFail { resolved_part: &[] })
     } else {
         // reverse to prioritize higher scope stack frames, which correspond to the innermost scopes.
         for scoped_statics in statics_scope_stack.iter().rev() {

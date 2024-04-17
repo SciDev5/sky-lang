@@ -9,7 +9,7 @@ use crate::{
     parse::{fn_lookup::IntrinsicFnId, macros::MacroCall},
 };
 
-use super::backend::BackendInfo;
+use super::backend::PlatformInfo;
 
 pub type DocComment = Option<String>;
 
@@ -228,5 +228,5 @@ pub struct CommonModule {
     pub top_level: Vec<CMTopLevelBlock>,
     pub submodule_tree: ModuleTree,
 
-    pub base_supported_backend: BackendInfo,
+    pub base_supported_backend: PlatformInfo,
 }

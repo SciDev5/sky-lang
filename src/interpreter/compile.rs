@@ -1,11 +1,81 @@
+use std::rc::Rc;
+
 use crate::{
     build::module_tree::FullId,
-    common::common_module::{CMExpression, CMFunction, CMLiteralValue, CMStruct, CommonModule},
+    common::{
+        backend::{BackendCompiler, BackendId, CommonBackend, PlatformInfo},
+        common_module::{CMExpression, CMFunction, CMLiteralValue, CMStruct, CommonModule},
+    },
     interpreter::bytecode::Literal,
-    parse::fn_lookup::IntrinsicFnId,
 };
 
 use super::bytecode::{BFunction, BStruct, BytecodeModule, Instr};
+
+#[derive(Debug, Clone, Copy)]
+pub struct InterpreterBackend;
+impl BackendCompiler for InterpreterBackend {
+    const ID: BackendId = 1;
+    const PLATFORM_INFO: PlatformInfo = PlatformInfo {
+        id: Self::ID,
+        name: "interpreter",
+        compat_ids: &[Self::ID, CommonBackend::ID],
+    };
+
+    type Output = BytecodeModule;
+    fn compile(&self, source: &Vec<Rc<CommonModule>>) -> Self::Output {
+        let mut builder_info = BuilderInfo {
+            mod_zero_index_functions: Vec::with_capacity(source.len()),
+            mod_zero_index_structs: Vec::with_capacity(source.len()),
+            current_package: 0,
+            current_package_deps: vec![],
+        };
+        let mut nf = 0;
+        let mut ns = 0;
+        for cm in source {
+            builder_info.mod_zero_index_functions.push(nf);
+            builder_info.mod_zero_index_structs.push(ns);
+            nf += cm.functions.len();
+            ns += cm.structs.len();
+        }
+        let mut functions = vec![];
+        let mut structs = vec![];
+        for (i, cm) in source.iter().map(|it| it.as_ref()).enumerate() {
+            builder_info.current_package = i;
+            builder_info.current_package_deps = cm
+                .submodule_tree
+                .get_dependency_list()
+                .iter()
+                .map(|it| it.id.0)
+                .collect();
+
+            functions.extend(cm.functions.iter().cloned().map(compile_fn));
+            structs.extend(cm.structs.iter().cloned().map(compile_struct));
+        }
+
+        BytecodeModule {
+            functions,
+            structs,
+            top_level: {
+                let common = source.last().unwrap();
+                (
+                    compile_block_top(common.top_level[0].code.clone()).unwrap_instruction_list(),
+                    common
+                        .top_level
+                        .iter()
+                        .map(|var_info| var_info.ty_eval.clone())
+                        .collect(),
+                )
+            },
+        }
+    }
+}
+
+struct BuilderInfo {
+    mod_zero_index_functions: Vec<usize>,
+    mod_zero_index_structs: Vec<usize>,
+    current_package: usize,
+    current_package_deps: Vec<usize>,
+}
 
 struct InstrList {
     instructions: Vec<Instr>,
@@ -129,23 +199,6 @@ impl InstrList {
     }
 }
 
-pub fn compile_interpreter_bytecode_module(common: CommonModule) -> BytecodeModule {
-    todo!()
-    // BytecodeModule {
-    //     functions: common.functions.into_iter().map(compile_fn).collect(),
-    //     structs: common.structs.into_iter().map(compile_struct).collect(),
-    //     top_level: (
-    //         compile_block_top(common.top_level.0).unwrap_instruction_list(),
-    //         common
-    //             .top_level
-    //             .1
-    //             .into_iter()
-    //             .map(|var_info| var_info.ty)
-    //             .collect(),
-    //     ),
-    // }
-}
-
 fn compile_fn(func: CMFunction) -> BFunction {
     BFunction {
         params: func.info.params,
@@ -204,7 +257,6 @@ fn compile_expr(
     // ValueOrVoid -> should always end with one additional value in the iv stack coressponding
     // Never -> doesn't matter because the iv stack gets discarded
     match expr {
-        _ => todo!(),
         CMExpression::Void => {
             if yield_value {
                 instructions.push(Instr::PushVoid);
@@ -276,42 +328,6 @@ fn compile_expr(
             }
             Value
         }
-        CMExpression::CallIntrinsic { id, arguments } => {
-            match id {
-                IntrinsicFnId::Identity => {
-                    let [argument] = <[_; 1]>::try_from(arguments).expect("there was not 1 argument for FnRef::Identity, this means fn_lookup has an issue");
-                    return compile_expr(argument, instructions, yield_value);
-                }
-                IntrinsicFnId::Intrinsic1(function_id) => {
-                    let [argument] = <[_; 1]>::try_from(arguments).expect("there was not 1 argument for FnRef::Intrinsic1, this means fn_lookup has an issue");
-                    match compile_expr(argument, instructions, true) {
-                        Never => return Never,
-                        _ => { /* ok (+1 iv) */ }
-                    };
-                    instructions.push(Instr::CallIntrinsic1 { function_id });
-                }
-                IntrinsicFnId::Intrinsic2(function_id) => {
-                    let arguments = <[_; 2]>::try_from(arguments).expect("there were not 2 arguments for FnRef::Intrinsic2, this means fn_lookup has an issue");
-                    for expr in arguments {
-                        match compile_expr(expr, instructions, true) {
-                            Never => return Never,
-                            _ => { /* ok (+1 iv) */ }
-                        };
-                    }
-                    instructions.push(Instr::CallIntrinsic2 { function_id });
-                }
-                IntrinsicFnId::Intrinsic(function_id) => {
-                    for expr in arguments {
-                        match compile_expr(expr, instructions, true) {
-                            Never => return Never,
-                            _ => { /* ok (+1 iv) */ }
-                        };
-                    }
-                    instructions.push(Instr::CallIntrinsicN { function_id });
-                }
-            }
-            Value
-        }
         CMExpression::Call {
             function_id,
             arguments,
@@ -327,7 +343,7 @@ fn compile_expr(
                     _ => { /* ok (+1 iv) */ }
                 };
             }
-            match function_id {
+            match function_id.reify_id(InterpreterBackend::PLATFORM_INFO) {
                 FullId::Local(function_id) => {
                     instructions.push(Instr::Call { function_id });
                 }
@@ -642,6 +658,11 @@ fn compile_expr(
             // net +1 iv
             instructions.push(Instr::Return); // consumes 1 iv
             Never
+        }
+
+        v => {
+            dbg!(v);
+            todo!()
         }
     }
 }

@@ -435,6 +435,28 @@ pub fn gen_struct_fn_lut(
     }
     lut
 }
+
+fn lookup_struct_lut<const DO_INSTANCE_LUT: bool>(
+    state: &ResolverGlobalState,
+    id: FullId,
+) -> &AssociatedFnLut {
+    match id {
+        FullId::Local(id) => {
+            let s = &state.structs[id];
+            if DO_INSTANCE_LUT {
+                &s.fn_lut_inst
+            } else {
+                &s.fn_lut_clss
+            }
+        }
+        FullId::NonLocal { dependency_id, id } => {
+            // let _s = state.submodule_tree.get_dependency(dependency_id).structs[id];
+
+            todo!("// TODO get AssociatedFnLut from dependency struct");
+        }
+    }
+}
+
 pub fn get_fn_lut<'a>(ty: &CMType, state: &'a ResolverGlobalState) -> &'a AssociatedFnLut {
     match ty {
         CMType::Void => &INTRINSICS.empty_lut,
@@ -448,7 +470,7 @@ pub fn get_fn_lut<'a>(ty: &CMType, state: &'a ResolverGlobalState) -> &'a Associ
         CMType::String => &INTRINSICS.string,
         CMType::Tuple(_) => &INTRINSICS.empty_lut,
         CMType::FunctionRef { params, return_ty } => todo!(),
-        CMType::StructInstance(id) => &state.structs[*id].fn_lut_inst,
-        CMType::StructData(id) => &state.structs[*id].fn_lut_clss,
+        CMType::StructInstance(id) => lookup_struct_lut::<true>(state, *id),
+        CMType::StructData(id) => lookup_struct_lut::<false>(state, *id),
     }
 }

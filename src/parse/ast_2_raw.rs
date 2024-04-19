@@ -18,7 +18,6 @@ use super::{
         ASTFunctionDefinition, ASTLiteral, ASTModule, ASTOptionallyTypedIdent, ASTSubModule,
         ASTTraitImpl, ASTTypedIdent, ASTVarAccessExpression,
     },
-    fn_lookup::IntrinsicFnId,
     macros::MacroCall,
     raw_module::{
         CanBeDisembodied, LiteralStructInit, RMBlock, RMExpression, RMFunction, RMFunctionInfo,
@@ -32,6 +31,7 @@ struct StaticsGlobalState<'a> {
     traits: Vec<RMTrait>,
     functions: Vec<RMFunction>,
     module_tree: ModuleTreeSubModuleHandle<'a>,
+    backends_index: &'a BackendsIndex,
 }
 
 struct StaticsCurrentScope {
@@ -121,6 +121,7 @@ pub fn ast_2_raw(
         traits: vec![],
         functions: vec![],
         module_tree: submodule_tree.edit_submodule_data(0, base_supported_backend),
+        backends_index,
     };
     let top_level = modules
         .into_iter()
@@ -230,6 +231,10 @@ fn transform_function(
 ) -> (IdentInt, bool) {
     let function = RMFunction {
         info: RMFunctionInfo {
+            platform_info: state
+                .backends_index
+                .lookup(state.module_tree.get_current_submodule_id().1)
+                .expect("not all necessary platforms were loaded"),
             attrs: transform_attrs(attrs),
             doc_comment,
             local_template_defs,
@@ -307,15 +312,6 @@ fn transform_expr(
     top_level: bool,
 ) -> RMExpression {
     match expr {
-        ASTExpression::TEMPIntrinsicInvoke { ident, mut args } => {
-            let Some(id) = IntrinsicFnId::lookup(&ident) else {
-                panic!("invalid intrinsic function id");
-            };
-            RMExpression::CallIntrinsic {
-                id,
-                arguments: transform_expr_vec(args, state, scope),
-            }
-        }
         ASTExpression::Import { include_paths } => {
             for path in include_paths {
                 let local_name = path.last().unwrap();

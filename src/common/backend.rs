@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
+
+use crate::interpreter::compile::InterpreterBackend;
 
 use super::common_module::CommonModule;
 
@@ -18,7 +20,7 @@ pub trait BackendCompiler {
     // TODO more complex tasks like partial compilation and hot patching definition
 
     type Output;
-    fn compile(&self, source: &Vec<CommonModule>) -> Self::Output;
+    fn compile(&self, source: &Vec<Rc<CommonModule>>) -> Self::Output;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +59,7 @@ impl BackendsIndex {
     fn load_backend_by_id(&self, id: BackendId) -> Option<PlatformInfo> {
         Some(match id {
             CommonBackend::ID => CommonBackend::PLATFORM_INFO,
+            InterpreterBackend::ID => InterpreterBackend::PLATFORM_INFO,
             _ => return None,
         })
     }
@@ -97,7 +100,7 @@ impl BackendCompiler for CommonBackend {
     };
 
     type Output = ();
-    fn compile(&self, source: &Vec<CommonModule>) -> Self::Output {
+    fn compile(&self, source: &Vec<Rc<CommonModule>>) -> Self::Output {
         panic!("CommonBackend is not a compiler, but rather an empty common ground that all actual compilers are a superset of.");
     }
 }

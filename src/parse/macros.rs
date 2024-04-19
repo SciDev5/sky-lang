@@ -31,21 +31,21 @@ impl<XExpr: Debug + Clone> MacroCall<XExpr> {
     ) -> MacroCall<YExpr> {
         MacroCall {
             name: self.name,
-            object: self.object.lazy_map(f),
+            object: self.object.lazy_map(&f),
         }
     }
 }
 impl<XExpr: Debug + Clone> MacroObject<XExpr> {
-    pub fn lazy_map<YExpr: Debug + Clone, F: Fn(Vec<XExpr>) -> Vec<YExpr>>(
+    pub fn lazy_map<YExpr: Debug + Clone>(
         self,
-        f: F,
+        f: &dyn Fn(Vec<XExpr>) -> Vec<YExpr>,
     ) -> MacroObject<YExpr> {
         match self {
             MacroObject::Listlike { ty, children } => MacroObject::Listlike {
                 ty,
                 children: children
                     .into_iter()
-                    .map(|(child, ty)| (child.lazy_map(|expr| f(expr)), ty))
+                    .map(|(child, ty)| (child.lazy_map(&|expr| f(expr)), ty))
                     .collect(),
             },
             MacroObject::Typelike { lookup } => MacroObject::Typelike { lookup },

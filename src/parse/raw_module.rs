@@ -4,7 +4,8 @@ use num::complex::Complex64;
 
 use crate::{
     build::module_tree::{
-        FullId, ModuleTree, ModuleTreeLookup, ModuleTreeLookupPreliminary, SubModuleEntryInfo,
+        FullId, ModuleTree, ModuleTreeLookup, ModuleTreeLookupPreliminary, MultiplatformFullId,
+        SubModuleEntryInfo,
     },
     common::{
         backend::PlatformInfo,
@@ -14,7 +15,7 @@ use crate::{
     math::tensor::Tensor,
 };
 
-use super::{fn_lookup::IntrinsicFnId, macros::MacroCall, ops::SLOperator};
+use super::{macros::MacroCall, ops::SLOperator};
 
 #[derive(Debug, Clone)]
 pub struct RMScopedStatics {
@@ -33,6 +34,28 @@ impl RMScopedStatics {
         }
     }
     pub fn finish_imports(mut self, submodule_tree: &ModuleTree) -> ScopedStatics {
+        let mut functions = self
+            .functions
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    v.into_iter()
+                        .map(|v| MultiplatformFullId::dbg_new(FullId::Local(v)))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let mut structs = self
+            .structs
+            .into_iter()
+            .map(|(k, v)| (k, FullId::Local(v)))
+            .collect::<HashMap<_, _>>();
+        let mut traits = self
+            .traits
+            .into_iter()
+            .map(|(k, v)| (k, FullId::Local(v)))
+            .collect::<HashMap<_, _>>();
         let imports = self
             .imports
             .into_iter()
@@ -45,34 +68,34 @@ impl RMScopedStatics {
                 )
             })
             .filter_map(|(ident, v)| match v {
-                ModuleTreeLookup::Module(id) => Some((ident, v)),
+                ModuleTreeLookup::Module(id) => Some((ident, id)),
                 ModuleTreeLookup::Function(id) => {
-                    self.functions
-                        .entry(ident)
-                        .and_modify(|_| todo!("// TODO handle overlapping import/local names"))
-                        .or_insert(id);
+                    let mut overloads = functions.entry(ident).or_insert(vec![]);
+                    eprintln!("// TODO order of overloads to properly shadow");
+                    overloads.push(id);
+
                     None
                 }
                 ModuleTreeLookup::Struct(id) => {
-                    self.structs
+                    structs
                         .entry(ident)
                         .and_modify(|_| todo!("// TODO handle overlapping import/local names"))
-                        .or_insert(id);
+                        .or_insert_with(|| id.dbg_reify_id());
                     None
                 }
                 ModuleTreeLookup::Trait(id) => {
-                    self.traits
+                    traits
                         .entry(ident)
                         .and_modify(|_| todo!("// TODO handle overlapping import/local names"))
-                        .or_insert(id);
+                        .or_insert_with(|| id.dbg_reify_id());
                     None
                 }
             })
             .collect();
         ScopedStatics {
-            functions: self.functions,
-            structs: self.structs,
-            traits: self.traits,
+            functions,
+            structs,
+            traits,
             imports,
         }
     }
@@ -80,9 +103,9 @@ impl RMScopedStatics {
 
 #[derive(Debug, Clone)]
 pub struct ScopedStatics {
-    pub functions: HashMap<IdentStr, Vec<IdentInt>>,
-    pub structs: HashMap<IdentStr, IdentInt>,
-    pub traits: HashMap<IdentStr, IdentInt>,
+    pub functions: HashMap<IdentStr, Vec<MultiplatformFullId>>,
+    pub structs: HashMap<IdentStr, FullId>,
+    pub traits: HashMap<IdentStr, FullId>,
     pub imports: HashMap<IdentStr, FullId>,
 }
 
@@ -106,6 +129,7 @@ impl CanBeDisembodied {
 
 #[derive(Debug, Clone)]
 pub struct RMFunctionInfo {
+    pub platform_info: PlatformInfo,
     pub attrs: Vec<MacroCall<RMExpression>>,
     pub doc_comment: DocComment,
     pub params: Vec<(IdentStr, RMType)>,
@@ -248,10 +272,6 @@ pub enum RMExpression {
         ident: IdentStr,
     },
 
-    CallIntrinsic {
-        id: IntrinsicFnId,
-        arguments: Vec<RMExpression>,
-    },
     Call {
         callable: Box<RMExpression>,
         arguments: Vec<RMExpression>,

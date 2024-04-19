@@ -3,7 +3,9 @@ use std::{collections::HashMap, fmt::Debug};
 use num::complex::Complex64;
 
 use crate::{
-    build::module_tree::{ModuleTree, SubModuleCodeRef, SubModuleEntryInfo, SubModuleType},
+    build::module_tree::{
+        ModuleTree, PackageRef, SubModuleCodeRef, SubModuleEntryInfo, SubModuleType,
+    },
     common::{
         backend::{BackendId, BackendsIndex, PlatformInfo},
         common_module::DocComment,
@@ -185,12 +187,6 @@ pub enum ASTExpression {
     Import {
         include_paths: Vec<Vec<IdentStr>>,
     },
-
-    /// TODO: replace this with macros
-    TEMPIntrinsicInvoke {
-        ident: IdentStr,
-        args: Vec<ASTExpression>,
-    },
 }
 
 pub type ASTBlock = Vec<ASTExpression>;
@@ -255,9 +251,19 @@ impl ASTModule {
         base_supported_backend: BackendId,
         iter: impl Iterator<Item = (Vec<IdentStr>, PreASTSubModule)>,
         backends_index: &mut BackendsIndex,
+        libs: impl Iterator<Item = (IdentStr, PackageRef)>,
     ) -> Self {
+        backends_index
+            .lookup_or_load(base_supported_backend)
+            .expect("// TODO handle required backend doesn't exist");
+
         let mut modules = vec![];
         let mut submodule_tree = ModuleTree::new();
+        for (name, package) in libs {
+            if !submodule_tree.add_dependency(name, package) {
+                panic!("// TODO handle failed to construct dependencies");
+            }
+        }
         for (path, block) in iter {
             let i = modules.len();
             let (id, code_ref) = submodule_tree.entry_at_root(&path);
@@ -286,10 +292,11 @@ impl ASTModule {
                     let mut platform_specific = HashMap::new();
                     for (backend_id, block) in platform_specific_in {
                         let i1 = modules.len();
-                        let Some(backend) = backends_index.lookup(backend_id) else {
+                        let Some(backend) = backends_index.lookup_or_load(backend_id) else {
                             eprintln!("// TODO warn if backend cant be found");
                             continue;
                         };
+                        dbg!("HERE", backend);
                         modules.push(ASTSubModule {
                             block,
                             mod_type: SubModuleEntryInfo {

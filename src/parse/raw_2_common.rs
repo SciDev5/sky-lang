@@ -1,11 +1,8 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Debug,
-};
+use std::{collections::HashMap, fmt::Debug};
 
 use crate::{
     build::module_tree::{
-        FullId, ModuleTree, ModuleTreeLookup, ModuleTreeLookupError, MultiplatformFullId,
+        FullId, ModuleTree, ModuleTreeLookup, MultiplatformFullId, SubModuleType,
     },
     common::{
         backend::PlatformInfo,
@@ -15,7 +12,6 @@ use crate::{
         },
         IdentInt, IdentStr,
     },
-    parse::fn_lookup::get_fn_lut,
 };
 
 use super::{
@@ -29,6 +25,7 @@ use super::{
 
 #[derive(Debug, Clone)]
 struct PartiallyResolvedFunction {
+    platform_info: PlatformInfo,
     attrs: Vec<MacroCall<CMExpression>>,
     doc_comment: DocComment,
     params: Vec<CMType>,
@@ -101,7 +98,7 @@ pub struct PartiallyResolvedStruct {
     fields_info: HashMap<IdentStr, (IdentInt, DocComment)>,
 
     pub impl_functions: HashMap<IdentStr, CMAssociatedFunction>,
-    pub impl_traits: HashMap<IdentInt, RMTraitImpl>,
+    pub impl_traits: HashMap<FullId, RMTraitImpl>,
 
     pub fn_lut_inst: AssociatedFnLut,
     pub fn_lut_clss: AssociatedFnLut,
@@ -114,7 +111,8 @@ pub struct PartiallyResolvedTrait {
     functions: HashMap<String, CMAssociatedFunction>,
 }
 pub struct ResolverGlobalState {
-    submodule_tree: ModuleTree,
+    pub submodule_tree: ModuleTree,
+    current_platform_info: PlatformInfo,
     functions: Vec<PartiallyResolvedFunction>,
     pub structs: Vec<PartiallyResolvedStruct>,
     pub traits: Vec<PartiallyResolvedTrait>,
@@ -159,12 +157,14 @@ pub fn raw_2_common(
 ) -> CommonModule {
     let mut diagnostics = vec![];
     let mut state = ResolverGlobalState {
+        current_platform_info: base_supported_backend,
         functions: functions
             .into_iter()
             .map(
                 |RMFunction {
                      info:
                          RMFunctionInfo {
+                             platform_info,
                              attrs,
                              doc_comment,
                              params,
@@ -177,6 +177,7 @@ pub fn raw_2_common(
                  }| {
                     let all_scoped = all_scoped.finish_imports(&submodule_tree);
                     PartiallyResolvedFunction {
+                        platform_info,
                         attrs: resolve_attrs(attrs),
                         doc_comment,
                         params: params
@@ -301,6 +302,11 @@ pub fn raw_2_common(
         .map(|RawModuleTopLevel { block, mod_type }| {
             let mut locals = vec![];
             let mut locals_lookup = HashMap::new();
+            state.current_platform_info = match mod_type.ty {
+                SubModuleType::Common => base_supported_backend,
+                SubModuleType::MultiplatformCommon => base_supported_backend,
+                SubModuleType::MultiplatformSpecific(platform_info) => platform_info,
+            };
             let (top_level_code, ty_eval) = resolve_block(
                 block,
                 &mut state,
@@ -348,6 +354,7 @@ pub fn raw_2_common(
             .into_iter()
             .map(
                 |PartiallyResolvedFunction {
+                     platform_info,
                      attrs,
                      doc_comment,
                      params,
@@ -413,52 +420,57 @@ fn statics_stack_resolve<F: Fn(&ScopedStatics) -> Option<T>, T>(
     // reverse to prioritize higher scope stack frames, which correspond to the innermost scopes.
     statics_scope_stack.iter().rev().find_map(f)
 }
-fn static_lookup_fn<'a>(
+fn statics_get_effective_base_lookup(
+    statics: &ScopedStatics,
+    ident: &IdentStr,
+) -> Option<ModuleTreeLookup> {
+    statics
+        .imports
+        .get(ident)
+        .map(|id| ModuleTreeLookup::Module(*id))
+        .or_else(|| {
+            statics
+                .structs
+                .get(ident)
+                .map(|id| ModuleTreeLookup::Struct(MultiplatformFullId::dbg_new(*id)))
+        })
+        .or_else(|| {
+            statics
+                .traits
+                .get(ident)
+                .map(|id| ModuleTreeLookup::Trait(MultiplatformFullId::dbg_new(*id)))
+        })
+}
+fn static_lookup_fn<'a, 'b>(
     submodule_tree: &ModuleTree,
-    statics_scope_stack: &[ScopedStatics],
+    statics_scope_stack: &'b [ScopedStatics],
     resolution_chain: &'a [IdentStr],
     platform: &PlatformInfo,
-) -> StaticLookup<'a, MultiplatformFullId> {
+) -> StaticLookup<'a, Vec<MultiplatformFullId>> {
+    assert!(resolution_chain.len() >= 1);
+
+    let resc_first = &resolution_chain[0];
     if resolution_chain.len() == 1 {
-        let ident = &resolution_chain[0];
-
-        eprintln!("// TODO handle overloads or disallow them");
-        statics_stack_resolve(statics_scope_stack, |scope| scope.functions.get(ident))
-            .ok_or(StaticLookupFail { resolved_part: &[] })
+        statics_stack_resolve(statics_scope_stack, |scope| {
+            scope.functions.get(resc_first).map(|it| it.clone())
+        })
+        .ok_or(StaticLookupFail { resolved_part: &[] })
     } else {
-        // reverse to prioritize higher scope stack frames, which correspond to the innermost scopes.
-        for scoped_statics in statics_scope_stack.iter().rev() {
-            if let Some(lookup) =
-                static_lookup_helper_lookup(submodule_tree, scoped_statics, &resolution_chain[0])
-            {
-                return match submodule_tree
-                    .get(lookup, &resolution_chain[1..])
-                    .map_err(|ok_count| ok_count + 1)
-                {
-                    Ok(ModuleTreeLookup::Function(id)) => StaticLookupFn::Function(id),
-                    Ok(
-                        ModuleTreeLookup::Struct(id)
-                        | ModuleTreeLookup::Trait(id)
-                        | ModuleTreeLookup::Module(id),
-                    ) => StaticLookupFn::Fail {
-                        resolved_part: &resolution_chain[..resolution_chain.len() - 1],
-                    },
-                    Err(ModuleTreeLookupError {
-                        n_matched_before_fail,
-                    }) => StaticLookupFn::Fail {
-                        resolved_part: &resolution_chain[..n_matched_before_fail],
-                    },
-                };
-            }
-        }
+        let Some(lookup_initial) = statics_stack_resolve(statics_scope_stack, |scope| statics_get_effective_base_lookup(scope, resc_first)) else {
+            return Err(StaticLookupFail { resolved_part: &[] })
+        };
 
-        StaticLookupFn::Fail {
-            resolved_part: &resolution_chain[..0],
-        }
+        submodule_tree
+            .access_fn(&lookup_initial, &resolution_chain[1..], *platform)
+            .map(|v| [v].to_vec())
+            .map_err(|err| StaticLookupFail {
+                resolved_part: &resolution_chain[..1 + err.n_matched_before_fail],
+            })
     }
 }
 
 fn static_resolve_type(statics_scope_stack: &[ScopedStatics], ty: &RMType) -> CMType {
+    eprintln!("// TODO imported type defs and multiplatform struct/traits");
     match ty {
         RMType::Void => CMType::Void,
         RMType::Never => CMType::Never,
@@ -494,11 +506,11 @@ fn static_resolve_type(statics_scope_stack: &[ScopedStatics], ty: &RMType) -> CM
         ),
     }
 }
-fn static_resolve_trait(statics_scope_stack: &[ScopedStatics], id: &IdentStr) -> IdentInt {
+fn static_resolve_trait(statics_scope_stack: &[ScopedStatics], ident: &IdentStr) -> FullId {
     if let Some(id) = statics_scope_stack
         .iter()
         .rev()
-        .find_map(|statics_elt| statics_elt.traits.get(id))
+        .find_map(|statics_elt| statics_elt.traits.get(ident))
     {
         *id
     } else {
@@ -767,30 +779,6 @@ fn resolve_expr(
     ty_return: &mut Option<CMType>,
 ) -> (CMExpression, CMType) {
     match expr {
-        RMExpression::CallIntrinsic { id, arguments } => {
-            let (arguments, ty_args): (Vec<_>, Vec<_>) = arguments
-                .into_iter()
-                .map(|expr| {
-                    resolve_expr(
-                        expr,
-                        state,
-                        current_fn_stack,
-                        statics_stack,
-                        locals,
-                        locals_lookup,
-                        loop_context_stack,
-                        ty_return,
-                    )
-                })
-                .unzip();
-            let Some(ty_ret) = id.ty_ret(ty_args) else {
-                state.add_diagnostic(Raw2CommonDiagnostic { text: format!("intrinsic funciton call received wrong number of arguments") });
-                return (CMExpression::FailAfter(arguments), CMType::Unknown)
-            };
-            (CMExpression::CallIntrinsic { id, arguments }, ty_ret)
-        }
-
-        // TODO use CMType::Never to detect dead code
         RMExpression::Void => (CMExpression::Void, CMType::Void),
         RMExpression::DeclareVar {
             doc_comment,
@@ -987,24 +975,25 @@ fn resolve_expr(
                 ty_return,
             );
 
-            match &ty {
-                CMType::StructInstance(id) => {
-                    if let Some((i, _)) = state.structs[*id].fields_info.get(&property_ident) {
-                        let ty_return = state.structs[*id].fields[*i].clone();
+            todo!("// TODO property resolution");
+            // match &ty {
+            //     CMType::StructInstance(id) => {
+            //         if let Some((i, _)) = state.structs[*id].fields_info.get(&property_ident) {
+            //             let ty_return = state.structs[*id].fields[*i].clone();
 
-                        (
-                            CMExpression::ReadProperty {
-                                expr: Box::new(expr),
-                                property_ident: *i,
-                            },
-                            ty_return,
-                        )
-                    } else {
-                        (CMExpression::FailAfter(vec![expr]), CMType::Unknown)
-                    }
-                }
-                _ => todo!("// TODO property resolution of non-struct things"),
-            }
+            //             (
+            //                 CMExpression::ReadProperty {
+            //                     expr: Box::new(expr),
+            //                     property_ident: *i,
+            //                 },
+            //                 ty_return,
+            //             )
+            //         } else {
+            //             (CMExpression::FailAfter(vec![expr]), CMType::Unknown)
+            //         }
+            //     }
+            //     _ => todo!("// TODO property resolution of non-struct things"),
+            // }
         }
         RMExpression::Ident { ident } => match locals_lookup.get(&ident) {
             Some(id) => {
@@ -1066,26 +1055,42 @@ fn resolve_expr(
                 let path = path.into_iter().cloned().collect::<Vec<_>>();
                 if !locals_lookup.contains_key(&path[0]) {
                     // calling a function by name `do_something( ... )` and `module_a.module_b.do_something( ... )`
-                    let function_id =
-                        match static_lookup_fn(&state.submodule_tree, &statics_stack, &path[..]) {
-                            StaticLookupFn::Function(id) => id,
-                            StaticLookupFn::Fail { resolved_part } => fails!(format!(
-                                "could not resolve lookup [{} !! {} !!]",
-                                resolved_part.iter().cloned().collect::<Vec<_>>().join("."),
-                                path[resolved_part.len()..]
-                                    .iter()
-                                    .cloned()
-                                    .collect::<Vec<_>>()
-                                    .join("."),
-                            )),
-                        };
+                    let overloads = match static_lookup_fn(
+                        &state.submodule_tree,
+                        &statics_stack,
+                        &path[..],
+                        &state.current_platform_info,
+                    ) {
+                        Ok(id) => id,
+                        Err(StaticLookupFail { resolved_part }) => fails!(format!(
+                            "could not resolve lookup [{} !! {} !!]",
+                            resolved_part.iter().cloned().collect::<Vec<_>>().join("."),
+                            path[resolved_part.len()..]
+                                .iter()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("."),
+                        )),
+                    };
 
-                    let info = resolve_fn_full_id(state, function_id, current_fn_stack);
+                    let k = overloads.into_iter().find_map(|function_id| {
+                        let info =
+                            resolve_fn_full_id(state, function_id.dbg_reify_id(), current_fn_stack);
 
-                    if info.ty_args != ty_arguments {
+                        if info.ty_args == ty_arguments {
+                            Some(function_id)
+                        } else {
+                            None
+                        }
+                    });
+                    let function_id = if let Some(function_id) = k {
+                        function_id
+                    } else {
                         fails!(format!("argument types mismatched // TODO template args"));
-                    }
+                    };
 
+                    let info =
+                        resolve_fn_full_id(state, function_id.dbg_reify_id(), current_fn_stack);
                     return (
                         CMExpression::Call {
                             function_id,
@@ -1115,32 +1120,33 @@ fn resolve_expr(
                         ty_return,
                     );
 
-                    let fn_lut = get_fn_lut(&ty_callable, state);
+                    todo!("// TODO calling associated functions but multiplatform")
+                    // let fn_lut = get_fn_lut(&ty_callable, state);
 
-                    let Some(function_id) = fn_lut.named.get(&property_ident).copied() else {
-                        fails!(format!("property '{}' is not callable", &property_ident));
-                    };
+                    // let Some(function_id) = fn_lut.named.get(&property_ident).copied() else {
+                    //     fails!(format!("property '{}' is not callable", &property_ident));
+                    // };
 
-                    let info = resolve_fn_full_id(state, function_id, current_fn_stack);
+                    // let info = resolve_fn_full_id(state, function_id, current_fn_stack);
 
-                    if info.ty_args.len() == 0 || info.ty_args[0] != ty_callable {
-                        panic!("associated function somehow had first argument as something other than `self` (this should not be allowed yet).");
-                    }
-                    if &info.ty_args[1..] != ty_arguments {
-                        fails!(format!("argument types mismatched // TODO template args"));
-                    }
+                    // if info.ty_args.len() == 0 || info.ty_args[0] != ty_callable {
+                    //     panic!("associated function somehow had first argument as something other than `self` (this should not be allowed yet).");
+                    // }
+                    // if &info.ty_args[1..] != ty_arguments {
+                    //     fails!(format!("argument types mismatched // TODO template args"));
+                    // }
 
-                    (
-                        CMExpression::Call {
-                            function_id,
-                            arguments: std::iter::once(callable)
-                                .chain(resolved_arguments.into_iter())
-                                .collect(),
-                            always_inline: false,
-                            inlined_lambdas: None,
-                        },
-                        info.ty_return.clone(),
-                    )
+                    // (
+                    //     CMExpression::Call {
+                    //         function_id,
+                    //         arguments: std::iter::once(callable)
+                    //             .chain(resolved_arguments.into_iter())
+                    //             .collect(),
+                    //         always_inline: false,
+                    //         inlined_lambdas: None,
+                    //     },
+                    //     info.ty_return.clone(),
+                    // )
                 }
                 _ => {
                     // don't know what this is and the callable trait either hasn't been invented yet or will never exist.
@@ -1308,87 +1314,88 @@ fn resolve_expr(
                 }
             };
 
-            if let Some(ident) = ident {
-                let st = &state.structs[ident];
-                // TODO all structs are dict structs rn
+            todo!("// TODO struct initialization with the multiplatform stuff")
+            // if let Some(ident) = ident {
+            //     let st = &state.structs[ident];
+            //     // TODO all structs are dict structs rn
 
-                let names = names.unwrap();
+            //     let names = names.unwrap();
 
-                let mut diagnostics = vec![];
-                let mut fail_at = data.len();
+            //     let mut diagnostics = vec![];
+            //     let mut fail_at = data.len();
 
-                let assign_to = names.iter().enumerate().map(|(i, name)| {
-                    let Some((id, _)) = st.fields_info.get(name) else {
-                        diagnostics.push(Raw2CommonDiagnostic { text: format!("could not find property '{}' in '{}'", name, ident_str) });
-                        fail_at = fail_at.min(i);
-                        return None;
-                    };
-                    Some(*id)
-                }).collect::<Vec<_>>();
+            //     let assign_to = names.iter().enumerate().map(|(i, name)| {
+            //         let Some((id, _)) = st.fields_info.get(name) else {
+            //             diagnostics.push(Raw2CommonDiagnostic { text: format!("could not find property '{}' in '{}'", name, ident_str) });
+            //             fail_at = fail_at.min(i);
+            //             return None;
+            //         };
+            //         Some(*id)
+            //     }).collect::<Vec<_>>();
 
-                for (i, (assign_to, eval_ty)) in
-                    assign_to.iter().copied().zip(types.into_iter()).enumerate()
-                {
-                    if let Some(assign_to) = assign_to {
-                        if eval_ty != st.fields[assign_to] {
-                            diagnostics.push(Raw2CommonDiagnostic { text: format!("type mismatch setting property '{}' in '{}', expected {:?}, found {:?}", names[i], ident_str, st.fields[assign_to], eval_ty ) });
-                            fail_at = fail_at.min(i + 1)
-                        }
-                    }
-                }
+            //     for (i, (assign_to, eval_ty)) in
+            //         assign_to.iter().copied().zip(types.into_iter()).enumerate()
+            //     {
+            //         if let Some(assign_to) = assign_to {
+            //             if eval_ty != st.fields[assign_to] {
+            //                 diagnostics.push(Raw2CommonDiagnostic { text: format!("type mismatch setting property '{}' in '{}', expected {:?}, found {:?}", names[i], ident_str, st.fields[assign_to], eval_ty ) });
+            //                 fail_at = fail_at.min(i + 1)
+            //             }
+            //         }
+            //     }
 
-                let mut assign_to_set = HashSet::new();
-                for (i, assign_to) in assign_to.iter().enumerate() {
-                    if let Some(assign_to) = assign_to {
-                        if !assign_to_set.insert(*assign_to) {
-                            diagnostics.push(Raw2CommonDiagnostic {
-                                text: format!("duplicate property key '{}'", names[i]),
-                            });
-                            fail_at = fail_at.min(i)
-                        }
-                    }
-                }
-                let all = HashSet::from_iter(0..st.fields.len());
-                let diff = all.difference(&assign_to_set).collect::<Vec<_>>();
-                if !diff.is_empty() {
-                    diagnostics.push(Raw2CommonDiagnostic {
-                        text: format!(
-                            "missing property keys {:?}",
-                            diff.into_iter()
-                                .map(|i| st
-                                    .fields_info
-                                    .iter()
-                                    .find(|(_, (id, _))| id == i)
-                                    .map(|(ident, _)| ident)
-                                    .unwrap())
-                                .collect::<Vec<_>>()
-                        ),
-                    })
-                }
-                if !diagnostics.is_empty() {
-                    for diagnostic in diagnostics {
-                        state.add_diagnostic(diagnostic);
-                    }
-                    return (
-                        CMExpression::FailAfter(data.drain(..fail_at).collect()),
-                        CMType::StructInstance(ident),
-                    );
-                }
+            //     let mut assign_to_set = HashSet::new();
+            //     for (i, assign_to) in assign_to.iter().enumerate() {
+            //         if let Some(assign_to) = assign_to {
+            //             if !assign_to_set.insert(*assign_to) {
+            //                 diagnostics.push(Raw2CommonDiagnostic {
+            //                     text: format!("duplicate property key '{}'", names[i]),
+            //                 });
+            //                 fail_at = fail_at.min(i)
+            //             }
+            //         }
+            //     }
+            //     let all = HashSet::from_iter(0..st.fields.len());
+            //     let diff = all.difference(&assign_to_set).collect::<Vec<_>>();
+            //     if !diff.is_empty() {
+            //         diagnostics.push(Raw2CommonDiagnostic {
+            //             text: format!(
+            //                 "missing property keys {:?}",
+            //                 diff.into_iter()
+            //                     .map(|i| st
+            //                         .fields_info
+            //                         .iter()
+            //                         .find(|(_, (id, _))| id == i)
+            //                         .map(|(ident, _)| ident)
+            //                         .unwrap())
+            //                     .collect::<Vec<_>>()
+            //             ),
+            //         })
+            //     }
+            //     if !diagnostics.is_empty() {
+            //         for diagnostic in diagnostics {
+            //             state.add_diagnostic(diagnostic);
+            //         }
+            //         return (
+            //             CMExpression::FailAfter(data.drain(..fail_at).collect()),
+            //             CMType::StructInstance(ident),
+            //         );
+            //     }
 
-                (
-                    CMExpression::LiteralStructInit {
-                        ident,
-                        data,
-                        assign_to: assign_to.into_iter().map(Option::unwrap).collect(),
-                    },
-                    CMType::StructInstance(ident),
-                )
-            } else {
-                state.add_diagnostic(Raw2CommonDiagnostic {
-                    text: format!("could not find struct with name '{}'", ident_str),
-                });
-                (CMExpression::FailAfter(data), CMType::Void)
-            }
+            //     (
+            //         CMExpression::LiteralStructInit {
+            //             ident,
+            //             data,
+            //             assign_to: assign_to.into_iter().map(Option::unwrap).collect(),
+            //         },
+            //         CMType::StructInstance(ident),
+            //     )
+            // } else {
+            //     state.add_diagnostic(Raw2CommonDiagnostic {
+            //         text: format!("could not find struct with name '{}'", ident_str),
+            //     });
+            //     (CMExpression::FailAfter(data), CMType::Void)
+            // }
         }
 
         RMExpression::AnonymousFunction { params, block } => todo!(),

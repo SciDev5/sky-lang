@@ -3,10 +3,10 @@ use std::{collections::HashMap, fmt::Debug};
 use num::complex::Complex64;
 
 use crate::{
-    build::module_tree::{FullId, ModuleTree, SubModuleEntryInfo},
+    build::module_tree::{FullId, ModuleTree, MultiplatformFullId, SubModuleEntryInfo},
     common::{IdentInt, IdentStr},
     math::tensor::Tensor,
-    parse::{fn_lookup::IntrinsicFnId, macros::MacroCall},
+    parse::macros::MacroCall,
 };
 
 use super::backend::PlatformInfo;
@@ -93,8 +93,8 @@ pub enum CMType {
         params: Vec<CMType>,
         return_ty: Box<CMType>,
     },
-    StructData(IdentInt),
-    StructInstance(IdentInt),
+    StructData(FullId),
+    StructInstance(FullId),
     Tuple(Vec<CMType>),
     // List(Box<RMValueType>),
     // TODO Template types
@@ -144,12 +144,8 @@ pub enum CMExpression {
         ident: IdentInt,
     },
 
-    CallIntrinsic {
-        id: IntrinsicFnId,
-        arguments: Vec<CMExpression>,
-    },
     Call {
-        function_id: FullId,
+        function_id: MultiplatformFullId,
         arguments: Vec<CMExpression>,
         always_inline: bool,
         inlined_lambdas: Option<Vec<CMInlineLambda>>,
@@ -157,7 +153,7 @@ pub enum CMExpression {
 
     CallDyn {
         trait_id: FullId,
-        function_id: FullId,
+        function_id: MultiplatformFullId,
         arguments: Vec<CMExpression>,
         always_inline: bool,
         inlined_lambdas: Option<Vec<CMInlineLambda>>,
@@ -166,7 +162,7 @@ pub enum CMExpression {
     LiteralValue(CMLiteralValue),
     LiteralArray(CMLiteralArray),
     LiteralFunctionRef {
-        function_id: FullId,
+        function_id: MultiplatformFullId,
     },
     LiteralStructInit {
         ident: IdentInt,
@@ -175,7 +171,7 @@ pub enum CMExpression {
     },
 
     Closure {
-        closure_function_id: IdentInt,
+        closure_function_id: MultiplatformFullId,
     },
 
     Conditional {

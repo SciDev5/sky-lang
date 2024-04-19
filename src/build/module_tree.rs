@@ -65,7 +65,7 @@ impl SubModuleTreeEntry {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FullId {
     Local(IdentInt),
     NonLocal { dependency_id: usize, id: IdentInt },
@@ -133,19 +133,35 @@ impl CombinedModuleExports {
             .into_iter()
             .filter_map(|id| self.0.get(id).map(|v| (*id, v)))
     }
+
+    fn iter(&self) -> impl std::iter::Iterator<Item = (BackendId, &ModuleExports)> {
+        self.0.iter().map(|(id, exports)| (*id, exports))
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct MultiplatformFullId(HashMap<BackendId, FullId>);
 impl MultiplatformFullId {
+    pub fn new_simple(platform_id: BackendId, id: FullId) -> Self {
+        Self(HashMap::from([(platform_id, id)]))
+    }
     pub fn reify_id(&self, platform_info: PlatformInfo) -> FullId {
         eprintln!("// TODO backend inheritence and mid-level compatibility");
+        dbg!(&self.0);
         for platform_id in platform_info.compat_ids {
             if let Some(out_id) = self.0.get(&platform_id) {
                 return *out_id;
             }
         }
         todo!("// TODO find some way to deal with MultiplatformFullId::reify_id not matching anything.");
+    }
+    pub fn dbg_new(id: FullId) -> Self {
+        eprintln!("// TODO handle traits/structs in the multiplatform system");
+        Self::new_simple(0, id)
+    }
+    pub fn dbg_reify_id(&self) -> FullId {
+        eprintln!("// TODO handle traits/structs in the multiplatform system");
+        return *self.0.get(&0).expect("no common impl");
     }
 }
 
@@ -171,6 +187,9 @@ impl ModuleTree {
             dependency_list: Vec::new(),
             reexport_dependency_list: Vec::new(),
         }
+    }
+    pub fn get_dependency_list(&self) -> &Vec<PackageRef> {
+        &self.dependency_list
     }
     pub fn get_dependency(&self, id: usize) -> &CommonModule {
         self.dependency_list[id].module.as_ref()
@@ -288,7 +307,9 @@ impl ModuleTree {
         let mut does_export_fn = false;
         let mut does_export_struct = false;
         let mut does_export_trait = false;
-        for (platform_id, exports) in exports.get_compatible_exports(origin_platform_info) {
+        for (platform_id, exports) in exports.iter()
+        /*exports.get_compatible_exports(origin_platform_info)*/
+        {
             if let Some(new_mod_id) = exports.modules.get(path_step) {
                 return Some(ModuleTreeLookup::Module(
                     new_mod_id.standardize_dependency_refs(mod_id),
@@ -336,6 +357,7 @@ impl ModuleTree {
                 .collect(),
         );
         Some(if does_export_fn {
+            dbg!(&new_id);
             ModuleTreeLookup::Function(new_id)
         } else if does_export_struct {
             ModuleTreeLookup::Struct(new_id)
@@ -521,7 +543,7 @@ impl<'a> ModuleTreeSubModuleHandle<'a> {
         self.is_multiplatform_common = is_multiplatform_common;
     }
     pub fn public_exports_mut(&mut self) -> &mut ModuleExports {
-        &mut self.module_tree.sub_modules[self.submodule_id]
+        self.module_tree.sub_modules[self.submodule_id]
             .exports
             .edit_for_platform(self.platform_info.id)
     }

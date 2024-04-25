@@ -19,8 +19,9 @@ pub trait BackendCompiler {
 
     // TODO more complex tasks like partial compilation and hot patching definition
 
+    type Config;
     type Output;
-    fn compile(&self, source: &Vec<Rc<CommonModule>>) -> Self::Output;
+    fn compile(&self, source: &Vec<Rc<CommonModule>>, config: Self::Config) -> Self::Output;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,8 +100,9 @@ impl BackendCompiler for CommonBackend {
         compat_ids: &[Self::ID],
     };
 
+    type Config = ();
     type Output = ();
-    fn compile(&self, source: &Vec<Rc<CommonModule>>) -> Self::Output {
+    fn compile(&self, source: &Vec<Rc<CommonModule>>, _config: ()) -> Self::Output {
         panic!("CommonBackend is not a compiler, but rather an empty common ground that all actual compilers are a superset of.");
     }
 }

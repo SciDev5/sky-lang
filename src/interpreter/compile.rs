@@ -21,8 +21,9 @@ impl BackendCompiler for InterpreterBackend {
         compat_ids: &[Self::ID, CommonBackend::ID],
     };
 
+    type Config = ();
     type Output = BytecodeModule;
-    fn compile(&self, source: &Vec<Rc<CommonModule>>) -> Self::Output {
+    fn compile(&self, source: &Vec<Rc<CommonModule>>, _config: ()) -> Self::Output {
         let mut builder_info = BuilderInfo {
             mod_zero_index_functions: Vec::with_capacity(source.len()),
             mod_zero_index_structs: Vec::with_capacity(source.len()),

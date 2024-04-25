@@ -1,7 +1,8 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, path::PathBuf, rc::Rc, str::FromStr};
 
 use skylab::{
     build::module_tree::{PackageId, PackageRef},
+    codegen::cpp::CPPCodegenBackend,
     common::{
         backend::{BackendCompiler, BackendId, BackendsIndex, CommonBackend},
         common_module::CommonModule,
@@ -47,6 +48,12 @@ fn b() = mod_a.b()
 
 pub fn c() = 3
 
+@name hello
+fn dsoods(x: int) {
+    let y = x
+    y
+}
+
 
 b()
                     ",
@@ -76,13 +83,24 @@ pub fn b() {
         ],
     );
 
-    let bytecode = InterpreterBackend.compile(&sys.modules);
-    dbg_bytecode_module_code!(bytecode);
+    let (content, header) = CPPCodegenBackend.compile(
+        &sys.modules,
+        (PathBuf::from_str("./main").unwrap(),),
+        // (PathBuf::from_str("./sketch_apr24a").unwrap(),),
+    );
 
-    let mut gc = GarbageCollector::new();
-    let return_val = execute(&bytecode, &mut gc);
+    println!("------------- main.cpp ---------------");
+    println!("{}", content);
+    println!("-------------- main.h ----------------");
+    println!("{}", header);
 
-    dbg!(return_val).unwrap();
+    // let bytecode = InterpreterBackend.compile(&sys.modules);
+    // dbg_bytecode_module_code!(bytecode);
+
+    // let mut gc = GarbageCollector::new();
+    // let return_val = execute(&bytecode, &mut gc);
+
+    // dbg!(return_val).unwrap();
 }
 
 struct TestSys {

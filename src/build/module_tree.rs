@@ -147,7 +147,6 @@ impl MultiplatformFullId {
     }
     pub fn reify_id(&self, platform_info: PlatformInfo) -> FullId {
         eprintln!("// TODO backend inheritence and mid-level compatibility");
-        dbg!(&self.0);
         for platform_id in platform_info.compat_ids {
             if let Some(out_id) = self.0.get(&platform_id) {
                 return *out_id;
@@ -161,7 +160,13 @@ impl MultiplatformFullId {
     }
     pub fn dbg_reify_id(&self) -> FullId {
         eprintln!("// TODO handle traits/structs in the multiplatform system");
-        return *self.0.get(&0).expect("no common impl");
+        // return *self.0.get(&0).expect("no common impl");
+        return *self.0.get(&0).unwrap_or(
+            self.0
+                .values()
+                .next()
+                .expect("no implementation in any backend?!"),
+        );
     }
 }
 
@@ -357,7 +362,6 @@ impl ModuleTree {
                 .collect(),
         );
         Some(if does_export_fn {
-            dbg!(&new_id);
             ModuleTreeLookup::Function(new_id)
         } else if does_export_struct {
             ModuleTreeLookup::Struct(new_id)

@@ -6,7 +6,19 @@
             "type": "node-terminal",
             "request": "launch",
             "command": "cargo run ; pause ; exit 0",
-        }
+        },
+        {
+            "name": "Example - interpreter",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "cargo run --example interpreter ; pause ; exit 0",
+        },
+        {
+            "name": "Example - arduino_codegen",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "cargo run --example arduino_codegen ; pause ; exit 0",
+        },
     ],
     "compounds": []
 }

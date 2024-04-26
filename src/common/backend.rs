@@ -1,6 +1,6 @@
 use std::{collections::HashMap, rc::Rc};
 
-use crate::interpreter::compile::InterpreterBackend;
+use crate::{codegen::cpp::CPPCodegenBackend, interpreter::compile::InterpreterBackend};
 
 use super::common_module::CommonModule;
 
@@ -61,6 +61,7 @@ impl BackendsIndex {
         Some(match id {
             CommonBackend::ID => CommonBackend::PLATFORM_INFO,
             InterpreterBackend::ID => InterpreterBackend::PLATFORM_INFO,
+            CPPCodegenBackend::ID => CPPCodegenBackend::PLATFORM_INFO,
             _ => return None,
         })
     }

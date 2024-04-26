@@ -393,6 +393,12 @@ fn transform_expr(
         ////////////////////////////////////////////
         // do literal translation
         //
+        ASTExpression::InlineMacroCall(macro_call) => RMExpression::InlineMacroCall {
+            call: macro_call
+                .lazy_map(|exprs| transform_expr_block_inner_scoped(exprs, state, false).block),
+            ty_ret: super::raw_module::RMType::Unknown,
+        },
+
         ASTExpression::VarDeclare {
             doc_comment,
             ident,

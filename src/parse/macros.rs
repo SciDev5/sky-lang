@@ -21,33 +21,43 @@ pub enum MacroObject<XExpr: Debug + Clone> {
     },
     Ident(IdentStr),
     LiteralIdent(IdentStr),
+    String(String, Option<Vec<(XExpr, String)>>),
     Expr(Vec<XExpr>),
 }
 
 impl<XExpr: Debug + Clone> MacroCall<XExpr> {
-    pub fn lazy_map<YExpr: Debug + Clone, F: Fn(Vec<XExpr>) -> Vec<YExpr>>(
+    pub fn lazy_map<YExpr: Debug + Clone, F: FnMut(Vec<XExpr>) -> Vec<YExpr>>(
         self,
-        f: F,
+        mut f: F,
     ) -> MacroCall<YExpr> {
         MacroCall {
             name: self.name,
-            object: self.object.lazy_map(&f),
+            object: self.object.lazy_map(&mut f),
         }
     }
 }
 impl<XExpr: Debug + Clone> MacroObject<XExpr> {
     pub fn lazy_map<YExpr: Debug + Clone>(
         self,
-        f: &dyn Fn(Vec<XExpr>) -> Vec<YExpr>,
+        f: &mut dyn FnMut(Vec<XExpr>) -> Vec<YExpr>,
     ) -> MacroObject<YExpr> {
         match self {
             MacroObject::Listlike { ty, children } => MacroObject::Listlike {
                 ty,
                 children: children
                     .into_iter()
-                    .map(|(child, ty)| (child.lazy_map(&|expr| f(expr)), ty))
+                    .map(|(child, ty)| (child.lazy_map(&mut |expr| f(expr)), ty))
                     .collect(),
             },
+            MacroObject::String(str, children) => MacroObject::String(
+                str,
+                children.map(|children| {
+                    children
+                        .into_iter()
+                        .map(|(expr, str)| (f(Vec::from([expr])).into_iter().next().unwrap(), str))
+                        .collect()
+                }),
+            ),
             MacroObject::Typelike { lookup } => MacroObject::Typelike { lookup },
             MacroObject::Ident(ident) => MacroObject::Ident(ident),
             MacroObject::LiteralIdent(ident) => MacroObject::LiteralIdent(ident),

@@ -176,6 +176,7 @@ pub struct RMTrait {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RMType {
     Never,
+    Unknown,
     Void,
     Int,
     Float,

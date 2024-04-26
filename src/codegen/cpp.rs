@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, path::PathBuf, rc::Rc, str::FromStr};
+use std::{collections::HashSet, marker::PhantomData, path::PathBuf, rc::Rc, str::FromStr};
 
 use crate::{
     common::{
@@ -6,7 +6,10 @@ use crate::{
         common_module::{CMExpression, CMFunction, CMLiteralValue, CMStruct, CMType, CommonModule},
     },
     define_codegen_token_enum,
-    parse::macros::MacroObject,
+    parse::{
+        macros::{MacroCall, MacroObject},
+        tokenization::{BracketType, SeparatorType},
+    },
 };
 
 use super::common::{MDLDestructure, MDLTypes, MergedDataList};
@@ -17,12 +20,16 @@ impl BackendCompiler for CPPCodegenBackend {
     const PLATFORM_INFO: PlatformInfo = PlatformInfo {
         id: Self::ID,
         name: "codegen_cpp",
-        compat_ids: &[CommonBackend::ID],
+        compat_ids: &[Self::ID, CommonBackend::ID],
     };
     type Config = (PathBuf,);
     type Output = (String, String);
     fn compile(&self, source: &Vec<Rc<CommonModule>>, config: (PathBuf,)) -> Self::Output {
         let mut list = MergedDataList::new(source);
+        let mut headers: Headers = Headers {
+            headers: HashSet::new(),
+            leading_code_injects: Vec::new(),
+        };
 
         for (i, cm) in source.iter().map(Rc::as_ref).enumerate() {
             let iters = list.iters();
@@ -30,7 +37,7 @@ impl BackendCompiler for CPPCodegenBackend {
                 iters
                     .functions()
                     .into_iter()
-                    .map(|(id, f)| convert_function(id, f, &list))
+                    .map(|(id, f)| convert_function(id, f, &list, &mut headers))
                     .collect::<Vec<_>>()
                     .into_iter(),
                 iters
@@ -46,7 +53,6 @@ impl BackendCompiler for CPPCodegenBackend {
         let MDLDestructure { functions, structs } = list.as_destructure();
 
         let file_name = config.0;
-        let headers: Vec<CPPHeader> = Vec::new();
 
         let mut buf_content = CodeBuf::new(CPPCodegenState {
             list: &list,
@@ -58,14 +64,18 @@ impl BackendCompiler for CPPCodegenBackend {
         });
 
         {
-            for header in &headers {
+            for header in &headers.headers {
                 buf_header.write(header);
             }
+
             buf_content.write(&CPPHeader::LocalOwned({
                 let mut f = file_name.clone();
                 f.set_extension("h");
                 f.file_name().unwrap().to_str().unwrap().to_string()
             }));
+            for inject in &headers.leading_code_injects {
+                buf_content.write(inject);
+            }
 
             for f in functions {
                 f.gen(&mut buf_content, &mut buf_header);
@@ -75,7 +85,12 @@ impl BackendCompiler for CPPCodegenBackend {
         (buf_content.to_string(), buf_header.to_string())
     }
 }
-fn convert_function<'a>(id: u32, f: &'a CMFunction, list: &MDL<'a>) -> CPPFunction<'a> {
+fn convert_function<'a>(
+    id: u32,
+    f: &'a CMFunction,
+    list: &MDL<'a>,
+    headers: &mut Headers<'a>,
+) -> CPPFunction<'a> {
     let mut param_i = 0;
     CPPFunction {
         generated_name: list.function_names[id as usize],
@@ -110,12 +125,14 @@ fn convert_function<'a>(id: u32, f: &'a CMFunction, list: &MDL<'a>) -> CPPFuncti
             let mut block = f
                 .block
                 .iter()
-                .map(|expr| convert_statement(expr, &list))
+                .map(|expr| convert_statement(expr, &list, headers))
                 .collect::<Vec<_>>();
 
-            if let Some(last) = block.last_mut() {
-                if let CPPStatement::Expr { expr } = last {
-                    *last = CPPStatement::Return { expr: expr.clone() };
+            if !matches!(f.info.ty_return, CMType::Void) {
+                if let Some(last) = block.last_mut() {
+                    if let CPPStatement::Expr { expr } = last {
+                        *last = CPPStatement::Return { expr: expr.clone() };
+                    }
                 }
             }
 
@@ -126,20 +143,121 @@ fn convert_function<'a>(id: u32, f: &'a CMFunction, list: &MDL<'a>) -> CPPFuncti
 fn localvar_name<'a>(id: usize) -> NameId<'a> {
     NameId::NameId("local", id as u32)
 }
-fn convert_statement<'a>(expr: &'a CMExpression, list: &MDL<'a>) -> CPPStatement<'a> {
-    dbg!(expr);
+fn convert_macro_call<'a>(
+    call: &'a MacroCall<CMExpression>,
+    list: &MDL<'a>,
+    headers: &mut Headers<'a>,
+) -> CPPExprOrStatement<'a> {
+    use CPPExprOrStatement::*;
+    fn gen_emit<'a>(
+        str: &'a String,
+        interp: &'a Option<Vec<(CMExpression, String)>>,
+        list: &MDL<'a>,
+        headers: &mut Headers<'a>,
+    ) -> CPPExpr<'a> {
+        CPPExpr::Raw {
+            token: CPPToken::Raw(str.as_str()),
+            trail: interp.as_ref().map(|interp| {
+                interp
+                    .iter()
+                    .map(|(expr, str)| {
+                        (
+                            convert_expr(&expr, list, headers),
+                            CPPToken::Raw(str.as_str()),
+                        )
+                    })
+                    .collect()
+            }),
+        }
+    }
+    match (call.name.as_str(), &call.object) {
+        (
+            "include",
+            MacroObject::Listlike {
+                ty: BracketType::Square,
+                children,
+            },
+        ) => {
+            for child in children {
+                match child {
+                    (
+                        MacroObject::Ident(str) | MacroObject::String(str, None),
+                        None | Some(SeparatorType::Comma),
+                    ) => {
+                        headers.headers.insert(CPPHeader::Library(str.as_str()));
+                    }
+                    _ => todo!("// TODO handle incorrect/unknown macros"),
+                }
+            }
+            Statement(CPPStatement::Empty)
+        }
+        ("emit_at_top", MacroObject::String(str, interp)) => {
+            let emit = gen_emit(str, interp, list, headers);
+            headers.leading_code_injects.push(emit);
+            Statement(CPPStatement::Empty)
+        }
+        ("emit_stmt", MacroObject::String(str, interp)) => Statement(CPPStatement::Expr {
+            expr: gen_emit(str, interp, list, headers),
+        }),
+        ("emit", MacroObject::String(str, interp)) => Expr(gen_emit(str, interp, list, headers)),
+        v => {
+            dbg!(v);
+            todo!("// TODO handle unknown macros")
+        }
+    }
+}
+fn convert_statement<'a>(
+    expr: &'a CMExpression,
+    list: &MDL<'a>,
+    headers: &mut Headers<'a>,
+) -> CPPStatement<'a> {
     match expr {
+        CMExpression::InlineMacroCall { call, .. } => {
+            convert_macro_call(call, list, headers).into_statement()
+        }
         CMExpression::AssignVar { ident, value } => CPPStatement::VarAssign {
             name: localvar_name(*ident),
-            expr: convert_expr(&*value, list),
+            expr: convert_expr(&*value, list, headers),
         },
+
+        CMExpression::Fail => CPPStatement::ExprVoid {
+            expr: CPPExpr::Raw {
+                token: CPPToken::Raw("while true{Serial.println(\"FAILED\");}"),
+                trail: None,
+            },
+        },
+        CMExpression::FailAfter(code) => {
+            let mut trail = code[..code.len().checked_sub(1).unwrap_or(0)]
+                .iter()
+                .map(|expr| (convert_expr(expr, list, headers), CPPToken::Raw(";")))
+                .collect::<Vec<_>>();
+            for expr in code.last().into_iter() {
+                trail.push((
+                    convert_expr(expr, list, headers),
+                    CPPToken::Raw("while true{Serial.println(\"FAILED\");}"),
+                ))
+            }
+            CPPStatement::ExprVoid {
+                expr: CPPExpr::Raw {
+                    token: CPPToken::Raw(""),
+                    trail: Some(trail),
+                },
+            }
+        }
         expr => CPPStatement::Expr {
-            expr: convert_expr(expr, list),
+            expr: convert_expr(expr, list, headers),
         },
     }
 }
-fn convert_expr<'a>(expr: &'a CMExpression, list: &MDL<'a>) -> CPPExpr<'a> {
+fn convert_expr<'a>(
+    expr: &'a CMExpression,
+    list: &MDL<'a>,
+    headers: &mut Headers<'a>,
+) -> CPPExpr<'a> {
     match expr {
+        CMExpression::InlineMacroCall { call, .. } => {
+            convert_macro_call(call, list, headers).into_expr()
+        }
         CMExpression::ReadVar { ident } => CPPExpr::VarRead {
             name: localvar_name(*ident),
         },
@@ -154,11 +272,11 @@ fn convert_expr<'a>(expr: &'a CMExpression, list: &MDL<'a>) -> CPPExpr<'a> {
                 name: list.lookup_function(id).1,
                 args: arguments
                     .iter()
-                    .map(|expr| convert_expr(expr, list))
+                    .map(|expr| convert_expr(expr, list, headers))
                     .collect(),
             }
         }
-        CMExpression::LiteralValue(literal) => CPPExpr::SingleToken {
+        CMExpression::LiteralValue(literal) => CPPExpr::Raw {
             token: match literal {
                 CMLiteralValue::Bool(v) => CPPToken::LBool(*v),
                 CMLiteralValue::Int(v) => CPPToken::LInt(*v),
@@ -166,10 +284,74 @@ fn convert_expr<'a>(expr: &'a CMExpression, list: &MDL<'a>) -> CPPExpr<'a> {
                 CMLiteralValue::String(v) => CPPToken::LString(v.as_str()),
                 CMLiteralValue::Complex(v) => todo!(),
             },
+            trail: None,
         },
+        CMExpression::Conditional {
+            condition,
+            block,
+            elifs,
+            else_block,
+        } => {
+            let else_block = else_block.as_ref().map(|it| it.as_slice()).unwrap_or(&[]);
+            let mut else_block = convert_subblock(else_block, list, headers);
+            for (condition, block) in elifs.iter().rev() {
+                else_block = CPPExpr::Ternary {
+                    condition: Box::new(convert_expr(condition, list, headers)),
+                    positive: Box::new(convert_subblock(&block[..], list, headers)),
+                    negative: Box::new(else_block),
+                };
+            }
+            CPPExpr::Ternary {
+                condition: Box::new(convert_expr(&*condition, list, headers)),
+                positive: Box::new(convert_subblock(block, list, headers)),
+                negative: Box::new(else_block),
+            }
+        }
+        CMExpression::Fail => CPPExpr::Raw {
+            token: CPPToken::Raw("({while true{Serial.println(\"FAILED\");}})"),
+            trail: None,
+        },
+        CMExpression::FailAfter(code) => {
+            let mut trail = code[..code.len().checked_sub(1).unwrap_or(0)]
+                .iter()
+                .map(|expr| (convert_expr(expr, list, headers), CPPToken::Raw(";")))
+                .collect::<Vec<_>>();
+            for expr in code.last().into_iter() {
+                trail.push((
+                    convert_expr(expr, list, headers),
+                    CPPToken::Raw(";while true{Serial.println(\"FAILED\");}})"),
+                ))
+            }
+            CPPExpr::Raw {
+                token: CPPToken::Raw("({"),
+                trail: Some(trail),
+            }
+        }
         v => {
             dbg!(v);
             todo!()
+        }
+    }
+}
+fn convert_subblock<'a>(
+    block: &'a [CMExpression],
+    list: &MDL<'a>,
+    headers: &mut Headers<'a>,
+) -> CPPExpr<'a> {
+    if block.len() == 1 {
+        let statement = convert_statement(&block[0], list, headers);
+        match statement {
+            CPPStatement::Expr { expr } => expr,
+            v => CPPExpr::StatementExpr {
+                statements: vec![v],
+            },
+        }
+    } else {
+        CPPExpr::StatementExpr {
+            statements: block
+                .iter()
+                .map(|statment| convert_statement(statment, list, headers))
+                .collect(),
         }
     }
 }
@@ -183,7 +365,7 @@ impl<'a> MDLTypes<'a> for CPPCodegenStateTypes<'a> {
         if let Some(name) = f.info.attrs.iter().find_map(|attr| {
             if attr.name == "name" {
                 match &attr.object {
-                    MacroObject::Ident(name) => Some(name.as_str()),
+                    MacroObject::String(name, None) => Some(name.as_str()),
                     _ => None,
                 }
             } else {
@@ -200,6 +382,11 @@ impl<'a> MDLTypes<'a> for CPPCodegenStateTypes<'a> {
     }
 }
 type MDL<'a> = MergedDataList<'a, CPPCodegenStateTypes<'a>>;
+
+struct Headers<'a> {
+    headers: HashSet<CPPHeader<'a>>,
+    leading_code_injects: Vec<CPPExpr<'a>>,
+}
 
 struct CPPCodegenState<'a> {
     list: &'a MergedDataList<'a, CPPCodegenStateTypes<'a>>,
@@ -231,9 +418,11 @@ define_codegen_token_enum! {
     // :::::: [S]eparators
     SSemicolon => ";",
     SComma => ",",
+    SColon => ":",
 
     // :::::: [O]perations
     OSet => "=",
+    OTernary => "?",
 
     // :::::: [P]arentheses
     PParenOpen => "(",
@@ -282,6 +471,16 @@ fn to_hex_sequence_u32(v: u32) -> [&'static str; 8] {
         }
     }
     data
+}
+#[test]
+fn k() {
+    let seq = dbg!(to_hex_sequence_u32(16));
+    let mut buf = CodeBuf::new(CPPCodegenState {
+        list: unsafe { std::mem::transmute(&()) },
+        current_locals: &[],
+    });
+    buf.write(&CPPToken::NameId(("x", seq)));
+    dbg!(buf.to_string());
 }
 
 struct CPPFunction<'a> {
@@ -339,8 +538,17 @@ enum CPPExpr<'a> {
         name: NameId<'a>,
         args: Vec<CPPExpr<'a>>,
     },
-    SingleToken {
+    StatementExpr {
+        statements: Vec<CPPStatement<'a>>,
+    },
+    Ternary {
+        condition: Box<CPPExpr<'a>>,
+        positive: Box<CPPExpr<'a>>,
+        negative: Box<CPPExpr<'a>>,
+    },
+    Raw {
         token: CPPToken<'a>,
+        trail: Option<Vec<(CPPExpr<'a>, CPPToken<'a>)>>,
     },
 }
 impl<'a> Codegen<'a> for CPPExpr<'a> {
@@ -359,31 +567,85 @@ impl<'a> Codegen<'a> for CPPExpr<'a> {
                 }
                 buf.write(&CPPToken::PParenClose);
             }
-            Self::SingleToken { token } => buf.write(token),
+            Self::Raw { token, trail } => {
+                buf.write_space_sensitive_update(true);
+                buf.write_space_sensitive_update(false);
+                buf.write(token);
+                if let Some(trail) = trail {
+                    for (expr, token) in trail {
+                        buf.write(expr);
+                        buf.write(token);
+                    }
+                }
+                buf.write_space_sensitive_update(false);
+                buf.write_space_sensitive_update(true);
+            }
+            Self::StatementExpr { statements } => {
+                buf.write_tokens([CPPToken::PParenOpen, CPPToken::PCurlyOpen]);
+                for statement in statements {
+                    buf.write(statement);
+                }
+                buf.write_tokens([CPPToken::PCurlyClose, CPPToken::PParenClose]);
+            }
+            Self::Ternary {
+                condition,
+                positive,
+                negative,
+            } => {
+                buf.write(condition.as_ref());
+                buf.write(&CPPToken::OTernary);
+                buf.write(positive.as_ref());
+                buf.write(&CPPToken::SColon);
+                buf.write(negative.as_ref());
+            }
         }
     }
 }
 #[derive(Debug, Clone)]
 enum CPPStatement<'a> {
+    Empty,
     VarAssign { name: NameId<'a>, expr: CPPExpr<'a> },
     Expr { expr: CPPExpr<'a> },
+    ExprVoid { expr: CPPExpr<'a> },
     Return { expr: CPPExpr<'a> },
 }
 impl<'a> Codegen<'a> for CPPStatement<'a> {
     fn gen(&self, buf: &mut CodeBuf<'a>) {
         match self {
+            Self::Empty => return,
             Self::VarAssign { name, expr } => {
                 buf.write(name);
                 buf.write(&CPPToken::OSet);
                 buf.write(expr);
             }
             Self::Expr { expr } => buf.write(expr),
+            Self::ExprVoid { expr } => buf.write(expr),
             Self::Return { expr } => {
                 buf.write(&CPPToken::KReturn);
                 buf.write(expr);
             }
         }
         buf.write(&CPPToken::SSemicolon);
+    }
+}
+enum CPPExprOrStatement<'a> {
+    Expr(CPPExpr<'a>),
+    Statement(CPPStatement<'a>),
+}
+impl<'a> CPPExprOrStatement<'a> {
+    fn into_expr(self) -> CPPExpr<'a> {
+        match self {
+            Self::Expr(expr) => expr,
+            Self::Statement(stmt) => CPPExpr::StatementExpr {
+                statements: vec![stmt],
+            },
+        }
+    }
+    fn into_statement(self) -> CPPStatement<'a> {
+        match self {
+            Self::Expr(expr) => CPPStatement::Expr { expr },
+            Self::Statement(stmt) => stmt,
+        }
     }
 }
 
@@ -406,7 +668,7 @@ impl<'a> CPPType<'a> {
             CMType::Float => NameId::Name("double"),
             CMType::Complex => todo!(),
             CMType::Bool => NameId::Name("bool"),
-            CMType::String => todo!(),
+            CMType::String => NameId::Name("String"),
             CMType::FunctionRef { params, return_ty } => todo!(),
             CMType::StructData(id) => list.lookup_struct(*id).1,
             CMType::StructInstance(_) => todo!(),
@@ -463,7 +725,7 @@ impl<'a> Codegen<'a> for NameId<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CPPHeader<'a> {
     Local(&'a str),
     LocalOwned(String),
@@ -490,6 +752,6 @@ impl<'a> Codegen<'a> for CPPHeader<'a> {
                 CPPToken::PAngleClose,
             ]),
         }
-        buf.write(&CPPToken::SSemicolon);
+        buf.write_tokens([CPPToken::SSemicolon, CPPToken::Raw("\n")]);
     }
 }

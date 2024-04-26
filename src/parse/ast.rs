@@ -100,6 +100,8 @@ pub enum ASTCompoundPostfixContents {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ASTExpression {
+    InlineMacroCall(MacroCall<ASTExpression>),
+
     VarDeclare {
         doc_comment: DocComment,
         ident: IdentStr,
@@ -228,11 +230,13 @@ pub enum ASTArray {
     Tensor(Tensor<ASTExpression>),
 }
 
+#[derive(Debug)]
 pub struct ASTSubModule {
     pub block: ASTBlock,
     pub mod_type: SubModuleEntryInfo,
 }
 
+#[derive(Debug)]
 pub struct ASTModule {
     pub modules: Vec<ASTSubModule>,
     pub submodule_tree: ModuleTree,

@@ -71,6 +71,8 @@ pub enum ParseDiagnostic {
     UnexpectedExtraCallbackArgument,
     DuplicateFunctions,
     ExpectedStructFunctions,
+    UnexpectedTemplateStr,
+    ExpectedTemplateStr,
 }
 
 #[derive(Debug)]
@@ -566,7 +568,19 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                 imaginary: true,
             } => Some(ASTLiteral::Complex(Complex64::new(0.0, *value as f64))),
             SLToken::Bool(value) => Some(ASTLiteral::Bool(*value)),
-            // TODO strings
+            SLToken::Str {
+                unescaped,
+                is_interp_str,
+            } => {
+                if is_interp_str.0 {
+                    None
+                } else {
+                    if is_interp_str.1 {
+                        t.diagnostics.push(ParseDiagnostic::UnexpectedTemplateStr)
+                    }
+                    Some(ASTLiteral::String({ escape_str(*unescaped) }))
+                }
+            }
             _ => None,
         })
     }
@@ -712,6 +726,8 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
 
         let mut expr = match parse_first!(self;
             ////////////// TODO macros.
+            // -- macros -- //
+            try_macro_inline => |mcro| ASTExpression::InlineMacroCall(mcro?),
 
 
             // -- imports/submodules -- //
@@ -1748,7 +1764,9 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
                 children,
             }
         } else if self.try_symbol(SLSymbol::MacroSpecial).is_some() {
+            dbg!("A");
             if self.try_bracket_open(BracketType::Curly).is_some() {
+                dbg!("b");
                 // `${ ... }`
 
                 MacroObject::Expr(
@@ -1767,11 +1785,93 @@ impl<'a, 'token_content> Tokens<'a, 'token_content> {
         } else if let Some(ident) = self.try_ident() {
             // `<ident>`
             MacroObject::Ident(ident)
+        } else if let Some(interpolated_str_or_err) = self.try_interpolated_string() {
+            // " ... "
+            let interpolated_str = interpolated_str_or_err?;
+            MacroObject::String(interpolated_str.0, interpolated_str.1)
         } else {
-            eprintln!("// TODO string things");
             return Err(true);
         })
     }
+
+    fn try_interpolated_string(
+        &mut self,
+    ) -> Option<ParseResult<(String, Option<Vec<(ASTExpression, String)>>)>> {
+        self.parse_optional_result(
+            |t| match t.try_next()? {
+                SLToken::Str {
+                    unescaped,
+                    is_interp_str,
+                } => {
+                    if is_interp_str.0 {
+                        t.diagnostics.push(ParseDiagnostic::UnexpectedTemplateStr)
+                    }
+                    Some((escape_str(*unescaped), is_interp_str.1))
+                }
+                _ => None,
+            },
+            |t, (str_first, mut is_template_next)| {
+                if !is_template_next {
+                    return Ok((str_first, None));
+                }
+                let mut out = Vec::new();
+                while is_template_next {
+                    let expr = t.parse_expr::</* allow range literal */ true, /* allow block postfix */ true>()?;
+                    let str = match t.next()? {
+                        SLToken::Str {
+                            unescaped,
+                            is_interp_str,
+                        } => {
+                            if !is_interp_str.0 {
+                                t.diagnostics.push(ParseDiagnostic::ExpectedTemplateStr)
+                            }
+                            is_template_next = is_interp_str.1;
+                            Ok(escape_str(*unescaped))
+                        }
+                        _ => Err(true),
+                    }?;
+                    out.push((expr, str));
+                }
+                Ok((str_first, Some(out)))
+            },
+        )
+    }
+}
+
+fn escape_str(unescaped: &str) -> String {
+    let mut built_str = String::with_capacity(unescaped.len());
+    let mut unescaped = unescaped.chars();
+    'outer: loop {
+        loop {
+            let Some(next) = unescaped.next() else {
+                break 'outer;
+            };
+            if next == '\\' {
+                break;
+            } else {
+                built_str.push(next);
+            }
+        }
+        match unescaped.next().unwrap(
+                        // guaranteed not to be the last character because \" is an escape sequence that prevents the string from ending.
+                    ) {
+            '\\' => built_str.push('\\'),
+            '\"' => built_str.push('\"'),
+            '\'' => built_str.push('\''),
+            '`' => built_str.push('`'),
+            'n' => built_str.push('\n'),
+            't' => built_str.push('\t'),
+            'u' => {
+                todo!("// TODO unicode escapes in strings");
+            }
+            otherwise => {
+                built_str.push('\\');
+                built_str.push(otherwise)
+            }
+        };
+    }
+
+    built_str
 }
 
 enum ExprAffix {

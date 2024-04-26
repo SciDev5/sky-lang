@@ -6,19 +6,34 @@ pub const IDENT_PARENT_MODULE: &str = "super";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SLToken<'a> {
-    Space { hard: bool },
+    Space {
+        hard: bool,
+    },
     Keyword(Keyword),
     Identifier(&'a str),
     Bool(bool),
-    Int { value: i128, imaginary: bool },
-    Float { value: f64, imaginary: bool },
+    Int {
+        value: i128,
+        imaginary: bool,
+    },
+    Float {
+        value: f64,
+        imaginary: bool,
+    },
+    Str {
+        unescaped: &'a str,
+        is_interp_str: (bool, bool),
+    },
     NumLiteralInvalid(&'a str),
     BracketOpen(BracketType),
     BracketClose(BracketType),
     Separator(SeparatorType),
     Symbol(SLSymbol),
     Unknown(&'a str),
-    Comment { content: &'a str, documenting: bool },
+    Comment {
+        content: &'a str,
+        documenting: bool,
+    },
 }
 
 pub enum SLTokenBreakType {
@@ -417,7 +432,7 @@ gen_SLSymbol! {
 
     Not ("!", op = Not),
     Xor ("~", op = Xor),
-    Or ("|", op = Or),
+    Or ("|", op = Or), //         "hello \\world// wjkkd"     "hello `world` wdjkjf"
     And ("&", op = And),
 
     Plus ("+", op = Plus),
@@ -460,18 +475,34 @@ subtokenize_bracket_sub_enum! {
     "{", "}" => BracketType::Curly,
 }
 subtokenize_fn! {
+    tokenize_str;
+    SLToken;
+    // forgive the nightmare regex, it matches not quotes surrounded by quotes.
+    r#"["`](.*?[^\\]|)["`]"# => |str| {
+        SLToken::Str {
+            is_interp_str: {
+                let mut s = str.chars();
+                (s.next().unwrap() == '`', s.last().unwrap() == '`')
+            },
+            unescaped: str.trim_end_matches('"').trim_start_matches('"').trim_end_matches('`').trim_start_matches('`'),
+        }
+    }
+}
+subtokenize_fn! {
     tokenize_number;
     SLToken;
     // forgive the nightmare regex, it matches ints and floats with an optional "i" at the end.
-    r"(\b|^)?\d*(\d|\.\d+([eE][+-]\d+)?)( ?i)?(\b|$)" => |str| {
+    r"(\b|^)?-?\d*(\d|\.\d+([eE][+-]\d+)?)( ?i)?(\b|$)" => |str| {
         let str_trimmed = str.trim_end_matches('i').trim_start_matches(&['-','+']).trim();
 
+        let negative = str.starts_with("-");
         let imaginary = str.ends_with("i");
 
         let floating_point = str.contains(".");
         if floating_point {
             // float
             if let Ok(value) = str_trimmed.parse::<f64>() {
+                let value = if negative { -value } else { value };
                 SLToken::Float { value, imaginary }
             } else {
                 SLToken::NumLiteralInvalid(str)
@@ -479,6 +510,7 @@ subtokenize_fn! {
         } else {
             // int
             if let Ok(value) = str_trimmed.parse::<i128>() {
+                let value = if negative { -value } else { value };
                 SLToken::Int { value, imaginary }
             } else {
                 SLToken::NumLiteralInvalid(str)
@@ -506,15 +538,18 @@ impl_tokenizer! {
         // comments
         tokenize_comment,
 
+        // literals
+        tokenize_boolean,
+        tokenize_number,
+        tokenize_str,
+
         // key symbols
         tokenize_brackets,
         tokenize_separators,
         tokenize_symbols,
         tokenize_keyword,
 
-        // many-valued symbols
-        tokenize_boolean,
-        tokenize_number,
+        // identifiers symbols
         tokenize_identifiers,
 
         // whitespace

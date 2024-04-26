@@ -104,6 +104,9 @@ impl CMType {
     pub fn is_never(&self) -> bool {
         matches!(self, Self::Never)
     }
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
+    }
 }
 
 #[derive(Debug, Clone)]

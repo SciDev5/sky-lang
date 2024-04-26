@@ -474,6 +474,7 @@ fn static_resolve_type(statics_scope_stack: &[ScopedStatics], ty: &RMType) -> CM
     match ty {
         RMType::Void => CMType::Void,
         RMType::Never => CMType::Never,
+        RMType::Unknown => CMType::Unknown,
 
         RMType::Identified(ident) => {
             // reverse to prioritize higher scope stack frames, which correspond to the innermost scopes.
@@ -518,13 +519,39 @@ fn static_resolve_trait(statics_scope_stack: &[ScopedStatics], ident: &IdentStr)
     }
 }
 
-fn resolve_macro(macro_call: MacroCall<RMExpression>) -> MacroCall<CMExpression> {
-    macro_call.lazy_map(|_| todo!("// TODO resolve_attrs handle exprs"))
+fn resolve_macro(
+    macro_call: MacroCall<RMExpression>,
+    locals: Option<&HashMap<IdentStr, IdentInt>>,
+) -> MacroCall<CMExpression> {
+    macro_call.lazy_map(|expr| {
+        eprintln!("// TODO resolve_attrs handle exprs");
+        if expr.len() != 1 {
+            todo!("// TODO resolve_attrs handle exprs")
+        }
+        match expr.into_iter().next().unwrap() {
+            RMExpression::LiteralValue(l) => {
+                let l = match l {
+                    RMLiteralValue::Int(v) => CMLiteralValue::Int(v),
+                    RMLiteralValue::Float(v) => CMLiteralValue::Float(v),
+                    RMLiteralValue::Complex(v) => CMLiteralValue::Complex(v),
+                    RMLiteralValue::Bool(v) => CMLiteralValue::Bool(v),
+                    RMLiteralValue::String(v) => CMLiteralValue::String(v),
+                };
+                vec![CMExpression::LiteralValue(l)]
+            }
+            RMExpression::Ident { ident } => locals
+                .and_then(|it| it.get(&ident))
+                .copied()
+                .map(|ident| vec![CMExpression::ReadVar { ident }])
+                .expect("// TODO handle other cases for ident in macro"),
+            _ => todo!("// TODO resolve_attrs handle exprs"),
+        }
+    })
 }
 fn resolve_attrs(attrs: Vec<MacroCall<RMExpression>>) -> Vec<MacroCall<CMExpression>> {
     attrs
         .into_iter()
-        .map(|macro_call| resolve_macro(macro_call))
+        .map(|macro_call| resolve_macro(macro_call, None))
         .collect()
 }
 
@@ -566,7 +593,7 @@ fn resolve_fn<'a>(
         }
         PartiallyResolvedFunctionBody::Untranslated {
             ty_return: Some(_), ..
-        } if force_translate => {
+        } if !force_translate => {
             let func = &state.functions[current_fn_id];
             return ResolvedFnInfo {
                 ty_return: func.return_ty().unwrap(),
@@ -626,7 +653,7 @@ fn resolve_fn<'a>(
         CMType::Never => unreachable!("// TODO check that this can't happen"),
         ty => {
             // if the types are mismatched and ty_eval is not never (for consistency and debugging), then fail
-            if ty_eval.is_never() {
+            if ty_eval.is_never() || ty_eval.is_unknown() {
                 // use the return statements if any to infer return type
                 ty
             } else if ty_eval != ty {
@@ -1073,16 +1100,23 @@ fn resolve_expr(
                         )),
                     };
 
+                    dbg!();
+                    eprintln!("______________________________ ##################");
                     let k = overloads.into_iter().find_map(|function_id| {
                         let info =
                             resolve_fn_full_id(state, function_id.dbg_reify_id(), current_fn_stack);
 
+                        eprintln!(
+                            " expected {:?}, found {:?}  ; {:?}",
+                            &info.ty_args, &ty_arguments, &function_id
+                        );
                         if info.ty_args == ty_arguments {
                             Some(function_id)
                         } else {
                             None
                         }
                     });
+                    eprintln!("______________________________ {:?}", &k);
                     let function_id = if let Some(function_id) = k {
                         function_id
                     } else {
@@ -1966,7 +2000,7 @@ fn resolve_expr(
 
             (
                 CMExpression::InlineMacroCall {
-                    call: resolve_macro(call),
+                    call: resolve_macro(call, Some(&locals_lookup)),
                     ty_ret: ty_ret.clone(),
                 },
                 ty_ret,

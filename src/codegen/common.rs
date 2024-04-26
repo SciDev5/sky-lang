@@ -153,17 +153,19 @@ impl<'a, Types: MDLTypes<'a>> MergedDataList<'a, Types> {
             mod_zero_index_functions.push(function_names.len());
             mod_zero_index_structs.push(struct_names.len());
 
+            let i0 = function_names.len();
             function_names.extend(
                 cm.functions
                     .iter()
                     .enumerate()
-                    .map(|(i, f)| Types::function_name(i as u32, f)),
+                    .map(|(i, f)| Types::function_name((i + i0) as u32, f)),
             );
+            let i0 = struct_names.len();
             struct_names.extend(
                 cm.structs
                     .iter()
                     .enumerate()
-                    .map(|(i, f)| Types::struct_name(i as u32, f)),
+                    .map(|(i, f)| Types::struct_name((i + i0) as u32, f)),
             );
         }
         mod_zero_index_functions.push(function_names.len());

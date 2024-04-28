@@ -31,11 +31,25 @@ fn main() {
 
     let (content, header) = CPPCodegenBackend.compile(
         &sys.modules,
-        (PathBuf::from_str("./skylang_example").unwrap(),),
+        (PathBuf::from_str("./skylang_arduino_example").unwrap(),),
     );
 
-    println!("------------- skylang_example.ino ---------------");
+    if !PathBuf::from("./examples/target/skylang_arduino_example").is_dir() {
+        std::fs::create_dir("./examples/target/skylang_arduino_example").unwrap();
+    }
+    std::fs::write(
+        "./examples/target/skylang_arduino_example/skylang_arduino_example.ino",
+        content.as_str(),
+    )
+    .unwrap();
+    std::fs::write(
+        "./examples/target/skylang_arduino_example/skylang_arduino_example.h",
+        header.as_str(),
+    )
+    .unwrap();
+
+    println!("------------- skylang_arduino_example.ino ---------------");
     println!("{}", content);
-    println!("-------------- skylang_example.h ----------------");
+    println!("-------------- skylang_arduino_example.h ----------------");
     println!("{}", header);
 }

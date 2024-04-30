@@ -40,3 +40,4 @@ pub fn deg_2_rad(deg: float) -> float = _div_f(deg, 57.29577951308232)
 pub fn millis() -> int = $emit "(int) millis()"
 pub fn delay(t: int) = $emit "delay((unsigned long)` t `)"
 pub fn delay_seconds(t: float) = delay(_f2i(_mul_f(t,1000.0)))
+pub fn seconds() -> float = $emit "((double) millis())/1000.0"

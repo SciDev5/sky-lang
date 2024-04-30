@@ -26,7 +26,17 @@ fn main() {
         "main",
         CPPCodegenBackend::ID,
         &["bind_arduino", "prizm"],
-        &[(&[], M::Common(include_str!("./arduino_codegen.sl")))],
+        &[
+            (&[], M::Common(include_str!("./arduino_codegen.sl"))),
+            (
+                &["bdbot"],
+                M::Common(include_str!("./arduino_codegen/bdbot.sl")),
+            ),
+            (
+                &["ybot"],
+                M::Common(include_str!("./arduino_codegen/ybot.sl")),
+            ),
+        ],
     );
 
     let (content, header) = CPPCodegenBackend.compile(

@@ -1112,6 +1112,13 @@ fn resolve_expr(
                         );
                         if info.ty_args == ty_arguments {
                             Some(function_id)
+                        } else if info.ty_args.len() == ty_arguments.len()
+                            && info.ty_args.iter().enumerate().all(|(i, ty_expected)| {
+                                ty_expected == &ty_arguments[i]
+                                    || ty_arguments[i].is_unknown() | ty_arguments[i].is_never()
+                            })
+                        {
+                            Some(function_id)
                         } else {
                             None
                         }

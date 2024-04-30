@@ -31,15 +31,22 @@ fn _setup_() {
     prizm.begin()
 
     let pi = 3.14159
+    let two_pi = _mul_f(2.0,pi)
+    let half_pi = _mul_f(0.5,pi)
 
-    let out_angle = 0.7
-    let turn_radius = 20.0
-    let neg_turn_radius = -20.0
+    let out_angle = 1.5
+    let turn_radius = 40.0
+    let speed = 20.0
+    let neg_turn_radius = -40.0
 
     delay_seconds(0.5)
-    bdbot_arc(out_angle, turn_radius, 10.0)
-    bdbot_arc(_sub_f(pi, _mul_f(2.0,out_angle)), neg_turn_radius, 10.0)
-    bdbot_arc(out_angle, turn_radius, 10.0)
+    bdbot_set_speed(speed, 0.0)
+    delay_seconds(1.0)
+    bdbot_arc(out_angle, turn_radius, speed)
+    bdbot_arc(_mul_f(2.0, out_angle), neg_turn_radius, speed)
+    bdbot_arc(out_angle, turn_radius, speed)
+    bdbot_set_speed(speed, 0.0)
+    delay_seconds(1.0)
     bdbot_stop()
     delay_seconds(0.5)
 }

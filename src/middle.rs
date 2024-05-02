@@ -1,6 +1,5 @@
-mod entity;
-mod memory;
-mod module;
-mod optimize;
-mod scope;
-mod types;
+pub mod entity;
+pub mod memory;
+pub mod optimize;
+pub mod scope;
+pub mod types;

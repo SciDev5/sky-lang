@@ -543,7 +543,11 @@ fn resolve_macro(
                 .and_then(|it| it.get(&ident))
                 .copied()
                 .map(|ident| vec![CMExpression::ReadVar { ident }])
-                .expect("// TODO handle other cases for ident in macro"),
+                .unwrap_or_else(|| {
+                    dbg!(ident);
+                    panic!("// TODO handle other cases for ident in macro")
+                }),
+            // .expect("// TODO handle other cases for ident in macro"),
             _ => todo!("// TODO resolve_attrs handle exprs"),
         }
     })
@@ -1441,7 +1445,8 @@ fn resolve_expr(
 
         RMExpression::AnonymousFunction { params, block } => todo!(),
 
-        RMExpression::OpUnary { .. } | RMExpression::OpBinary { .. } => {
+        RMExpression::OpUnary { op, .. } | RMExpression::OpBinary { op, .. } => {
+            dbg!(op);
             todo!("// TODO [raw_2_common] operator overloading as trait implementation")
         }
         /*

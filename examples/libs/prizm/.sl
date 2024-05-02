@@ -1,4 +1,4 @@
-import bind_arduino.[_f2i, _mul_f, rad_2_deg]
+import bind_arduino.[_f2i, _i2f, _mul_f, rad_2_deg, deg_2_rad]
 
 pub fn begin() {
     $include ["PRIZM.h"]
@@ -20,7 +20,7 @@ pub fn set_motor_speeds(rad_per_sec_0: float, rad_per_sec_1: float) {
     $emit "prizm.setMotorSpeeds(`speed_0`,`speed_1`)"
 }
 
- pub fn set_motor_speeds_ext(id: int, rad_per_sec_0: float, rad_per_sec_1: float) {
+pub fn set_motor_speeds_ext(id: int, rad_per_sec_0: float, rad_per_sec_1: float) {
     let speed_0 = _f2i(rad_2_deg(rad_per_sec_0))
     let speed_1 = _f2i(rad_2_deg(rad_per_sec_1))
 
@@ -30,3 +30,6 @@ pub fn set_motor_speeds(rad_per_sec_0: float, rad_per_sec_1: float) {
     
     $emit "prizm_ext.setMotorSpeeds(`id`,`speed_0`,`speed_1`)"
 }
+
+pub fn get_encoder_deg(i: int) -> int = $emit "prizm.readEncoderDegrees(`i`)"
+pub fn get_encoder_deg_ext(ch: int, i: int) -> int = $emit "prizm_ext.readEncoderDegrees(`ch`, `i`)"

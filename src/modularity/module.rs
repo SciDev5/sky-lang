@@ -12,7 +12,10 @@
 //! code to be reused between platforms.
 
 use super::Id;
-use crate::back::{BackendId, BackendInfo};
+use crate::{
+    back::{BackendId, BackendInfo},
+    TODO_entities,
+};
 use std::{collections::HashMap, ops::Index};
 
 /// Generic form for data that exists for each module in the package.
@@ -45,7 +48,7 @@ pub fn import_lookup<'src, 'a, F: Fn(usize, ExportType) -> Option<&'a Exports>>(
     exports_local: &ModuleExports<'src>,
     entity_exports_local: F,
     nonlocal: &[(&ModuleExports<'src>, &ModuleEntities<'src>)],
-) -> Result<Export, ModuleTreeLookupError> {
+) -> Result<Export, ImportLookupError> {
     let mut current = from;
     for (i, path_step) in path.iter().copied().enumerate() {
         let next = match (current.id, current.ty) {
@@ -68,16 +71,16 @@ pub fn import_lookup<'src, 'a, F: Fn(usize, ExportType) -> Option<&'a Exports>>(
             {
                 current = *next;
             } else {
-                return Err(ModuleTreeLookupError { matched_count: i });
+                return Err(ImportLookupError { matched_count: i });
             }
         } else {
-            return Err(ModuleTreeLookupError { matched_count: i });
+            return Err(ImportLookupError { matched_count: i });
         }
     }
     Ok(current)
 }
-pub struct ModuleTreeLookupError {
-    /// The number of steps successfully matched from [`ModuleTree::lookup`] path
+pub struct ImportLookupError {
+    /// The number of steps successfully matched from [`import_lookup`] path
     /// before a failed match.
     matched_count: usize,
 }

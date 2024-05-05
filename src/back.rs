@@ -4,7 +4,7 @@
 //! for lookup.
 //!
 
-use crate::macros::MacroSpec;
+use crate::{macros::MacroSpec, TODO_common_source};
 
 mod common;
 mod common_garbage_collected;
@@ -22,7 +22,7 @@ pub trait Backend {
     type Config<'a>;
     type Output;
 
-    fn compile<'a>(src: &TODO_source, config: &Self::Config<'a>) -> Self::Output;
+    fn compile<'a>(src: &TODO_common_source, config: &Self::Config<'a>) -> Self::Output;
 }
 
 pub struct BackendInfo {

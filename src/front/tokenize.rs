@@ -2,7 +2,7 @@ mod tokenize_iter;
 
 use std::{fmt::Debug, usize};
 
-use self::tokenize_iter::TokenizeIter;
+use self::tokenize_iter::{CharIndex, TokenizeIter};
 
 pub enum TBracketType {
     Square,
@@ -19,6 +19,7 @@ pub enum TSeparatorType {
 }
 pub enum TPrefixOperatorType {
     // ---- Arithmetic ---- //
+    Neg,
     Inverse,
 
     // ---- Boolean and Bitwise ---- //
@@ -92,7 +93,7 @@ macro_rules! gen_TSymbol {
             )
         )*
     ) => {
-        #[derive(Debug, Clone, Copy)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum TSymbol {
             $(
                 $(#[doc = $doc])?
@@ -186,7 +187,7 @@ gen_TSymbol! {
     AddAssign("+="; assign_op[Some(Add)])
     Add("+"; op[Add])
     SubtractAssign("-="; assign_op[Some(Subtract)])
-    Subtract("-"; op[Subtract])
+    Subtract("-"; op[Subtract]; prefix_op[Neg])
     MultiplyAssign("*="; assign_op[Some(Multiply)])
     // asterisk is special and comes later
     RemainderAssign("/%="; assign_op[Some(Remainder)])
@@ -199,7 +200,7 @@ gen_TSymbol! {
     Exponentiate("^"; op[Exponentiate])
 
     AndAssign("&="; assign_op[Some(And)])
-    And("&"; op[And])
+    // ampersand is special and comes later
     OrAssign("|="; assign_op[Some(Or)])
     Or("|"; op[Or])
     XorAssign("~="; assign_op[Some(Xor)])
@@ -225,7 +226,7 @@ gen_TSymbol! {
 
     Range(":"; separator[Colon]; op[RangeFromTo]; prefix_op[RangeTo]; postfix_op[RangeFrom])
 
-    Ref("&"; prefix_op[Ref])
+    Ampersand("&"; op[And]; prefix_op[Ref])
     Asterisk("*"; op[Multiply]; prefix_op[Deref]; postfix_op[Conjugate])
     MacroInline("$")
     MacroAttr("@")
@@ -239,7 +240,7 @@ macro_rules! gen_TKeyword {
             ( $text: expr )
         )*
     ) => {
-        #[derive(Debug, Clone, Copy)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum TKeyword {
             $(
                 $(#[doc = $doc])?
@@ -279,6 +280,12 @@ gen_TKeyword! {
     Export ("export")
 }
 
+impl CorrespondingTokenStr for bool {
+    fn str() -> &'static [(&'static str, Self)] {
+        &[("true", true), ("false", false)]
+    }
+}
+
 /// A range of char indices in the source code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Loc {
@@ -286,13 +293,13 @@ struct Loc {
     length: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Token<'src> {
     loc: Loc,
     content: TokenContent<'src>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenContent<'src> {
     Space {
         has_linebreak: bool,
@@ -301,21 +308,29 @@ pub enum TokenContent<'src> {
     Symbol(TSymbol),
     Identifier(&'src str),
     Bool(bool),
-    /// Integer literal. Contents are None if the number is too big.
-    Int(Option<u128>),
-    /// Float literal. Contents are None if the number is too big / small.
-    Float(Option<f64>),
+    Number {
+        decimal: bool,
+        exp: bool,
+        base: u8,
+        unparsed: &'src str,
+    },
     Str {
         unescaped: &'src str,
         /// If the string is initiated or followed by ``` ` ``` instead of
         /// `"`, then we are exiting or entering a string interpolation.
         interpolation: (bool, bool),
+        /// True if the closing quote of this string was missing, should be
+        /// reported as an error by the parser.
+        missing_closing: bool,
     },
     Comment {
         content: &'src str,
         /// Whether this is a documenting comment (like this comment here lol)
         /// or not.
         documenting: bool,
+        /// True if the closing sequence (like `*/`) of this comment was
+        /// missing, should be reported as an error by the parser.
+        missing_closing: bool,
     },
     Unknown,
 }
@@ -326,7 +341,10 @@ pub enum TokenContent<'src> {
 fn tokenize_matches_str_exact(state: &mut TokenizeIter, str: &'static str) -> bool {
     state.push();
     for chr_expected in str.chars() {
-        if let Some((_, (_, chr_found))) = state.char_iter.next() {
+        if let Some(CharIndex {
+            char: chr_found, ..
+        }) = state.char_iter.next()
+        {
             if chr_found == chr_expected {
                 continue;
             }
@@ -355,18 +373,278 @@ fn tokenize_matches_any<T: CorrespondingTokenStr>(state: &mut TokenizeIter) -> O
     return None;
 }
 
+/// Read in a token representing an identifier which starts with a letter or
+/// underscore and is followed by zero or more letters, numbers, or underscores.
+fn tokenize_ident<'src>(state: &mut TokenizeIter<'src>) -> Option<&'src str> {
+    state.push();
+    if !state
+        .char_iter
+        .next()
+        .is_some_and(|ci| ci.char.is_alphabetic() || ci.char == '_')
+    {
+        state.pop_rewind();
+        return None;
+    }
+    while state
+        .next_if(|chr| chr.is_alphanumeric() || chr == '_')
+        .is_some()
+    {
+        continue;
+    }
+
+    Some(state.pop_continue_as_str())
+}
+
+/// Read in all of the upcoming whitespace, returning None if no whitespace is
+/// founde, otherwise returning with whether there was a newline in the space.
+fn tokenize_whitespace(state: &mut TokenizeIter) -> Option<bool> {
+    if !state.peek_next().is_some_and(|ci| ci.char.is_whitespace()) {
+        return None;
+    }
+    let mut has_newline = false;
+    while let Some(chr) = state.next_if(|char| char.is_whitespace()) {
+        has_newline |= chr == '\n';
+    }
+    Some(has_newline)
+}
+
+/// Tokenize numbers of all kind,
+fn tokenize_numeric<'src>(state: &mut TokenizeIter<'src>) -> Option<TokenContent<'src>> {
+    state.push();
+    macro_rules! fail {
+        () => {{
+            state.pop_rewind();
+            return None;
+        }};
+    }
+    macro_rules! unwrap_or_fail {
+        ($x:expr) => {
+            if let Some(x) = $x {
+                x
+            } else {
+                fail!()
+            }
+        };
+    }
+    let zero = {
+        let next = unwrap_or_fail!(state.char_iter.next());
+        if next.char.is_ascii_digit() {
+            next.char == '0'
+        } else {
+            fail!();
+        }
+    };
+    let mut matching = true;
+    let mut decimal;
+    let mut exp;
+    let base: u8;
+    let allow_exp;
+
+    // second digit
+    if let Some(c) = state.next_if(|chr| chr.is_ascii_alphanumeric() || chr == '.') {
+        base = match (zero, c) {
+            (true, 'x') => 16,
+            (true, 'o') => 8,
+            (true, 'b') => 2,
+            _ => 10,
+        };
+        decimal = c == '.';
+        exp = c == 'e' || c == 'E';
+        allow_exp = c.is_ascii_digit() || c == '.';
+    } else {
+        matching = false;
+        base = 10;
+
+        decimal = false;
+        exp = false;
+        allow_exp = false;
+    };
+
+    // integer part
+    while matching && !exp && !decimal {
+        if let Some(c) = state.next_if(|c| c.is_ascii_alphanumeric() || c == '.') {
+            if c == '.' {
+                decimal = true;
+            }
+            if allow_exp && (c == 'e' || c == 'E') {
+                exp = true;
+            }
+        } else {
+            matching = false;
+        }
+    }
+    // decimal part
+    if decimal {
+        while matching && !exp {
+            if let Some(c) = state.next_if(|c| c.is_ascii_alphanumeric()) {
+                if allow_exp && (c == 'e' || c == 'E') {
+                    exp = true;
+                }
+            } else {
+                matching = false;
+            }
+        }
+    }
+    // exponential part (the `e+123` in `1.23e+123`)
+    if exp {
+        if state
+            .next_if(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-')
+            .is_some()
+        {
+            while state.next_if(|c| c.is_alphanumeric()).is_some() {
+                continue;
+            }
+        }
+    }
+
+    Some(TokenContent::Number {
+        decimal,
+        exp,
+        base,
+        unparsed: state.pop_continue_as_str(),
+    })
+}
+
+/// Parse string literals.
+fn tokenize_string<'src>(state: &mut TokenizeIter<'src>) -> Option<TokenContent<'src>> {
+    let start_interpolation = state.next_if(|c| c == '"' || c == '`')? == '`';
+    state.push();
+    let mut had_escape = false;
+    let mut missing_closing = false;
+    let (unescaped, end_interpolation) = loop {
+        if had_escape {
+            had_escape = false;
+            if state.char_iter.next().is_none() {
+                missing_closing = true;
+                break (state.pop_continue_as_str(), false);
+            }
+        } else {
+            if let Some(CharIndex { char, .. }) = state.char_iter.peek_next() {
+                match char {
+                    '`' | '"' => {
+                        let str = state.pop_continue_as_str();
+                        let is_interp = char == '`';
+                        let _ = state.char_iter.next();
+                        break (str, is_interp);
+                    }
+                    '\\' => {
+                        had_escape = true;
+                    }
+                    _ => {}
+                }
+                let _ = state.char_iter.next();
+            } else {
+                missing_closing = true;
+                break (state.pop_continue_as_str(), false);
+            }
+        }
+    };
+
+    Some(TokenContent::Str {
+        unescaped,
+        interpolation: (start_interpolation, end_interpolation),
+        missing_closing,
+    })
+}
+
+/// Tokenize inline (`// ...`) and multiline (`/* */`) comments.
+fn tokenize_comment<'src>(state: &mut TokenizeIter<'src>) -> Option<TokenContent<'src>> {
+    state.push();
+    if state.next_if(|c| c == '/').is_none() {
+        state.pop_rewind();
+        return None;
+    }
+    fn multiline<'src>(state: &mut TokenizeIter<'src>) -> Option<TokenContent<'src>> {
+        state.next_if(|c| c == '*')?;
+        let documenting = state.next_if(|c| c == '*').is_some();
+        if documenting && state.next_if(|c| c == '/').is_some() {
+            // special case!
+            // comment was actually /**/, which is empty, and is not actually a doc comment.
+            return Some(TokenContent::Comment {
+                content: "",
+                documenting: false,
+                missing_closing: false,
+            });
+        }
+
+        let mut depth: u32 = 1;
+        let mut just_slash = false;
+        let mut just_star = false;
+        state.push();
+        while let Some(CharIndex { char, .. }) = state.char_iter.next() {
+            if just_slash {
+                if char == '*' {
+                    // `/*`
+                    depth += 1;
+                }
+                just_slash = false;
+            } else if just_star {
+                if char == '/' {
+                    //  `*/`
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                just_star = false;
+            } else {
+                just_slash = char == '/';
+                just_star = char == '*';
+            }
+        }
+        Some(TokenContent::Comment {
+            content: state.pop_continue_as_str().trim_end_matches("*/"),
+            documenting,
+            missing_closing: depth != 0,
+        })
+    }
+    fn inline<'src>(state: &mut TokenizeIter<'src>) -> Option<TokenContent<'src>> {
+        state.next_if(|c| c == '/')?;
+        let documenting = state.next_if(|c| c == '/').is_some();
+
+        state.push();
+        while state.next_if(|c| c != '\n').is_some() {
+            // consume until we hit a newline
+        }
+
+        Some(TokenContent::Comment {
+            content: state.pop_continue_as_str(),
+            documenting,
+            missing_closing: false,
+        })
+    }
+    if let Some(res) = multiline(state).or_else(|| inline(state)) {
+        let _ = state.pop_continue();
+        Some(res)
+    } else {
+        state.pop_rewind();
+        None
+    }
+}
+
 /// Match the next token in the source file.
-fn tokenize_next<'src>(state: &mut TokenizeIter) -> Option<TokenContent<'src>> {
+fn tokenize_next<'src>(state: &mut TokenizeIter<'src>) -> Option<TokenContent<'src>> {
+    macro_rules! switch {
+        ( [$($pos:tt)+] else [ $($neg:tt)* ] ) => {
+            $($pos)*
+        };
+        ( [  ] else [ $($neg:tt)* ] ) => {
+            $($neg)*
+        };
+    }
     macro_rules! first_match {
         (
             [$state:expr]
             $(
-                $try_tokenize:expr => | $arg:tt | $to_token_content:expr
+                $try_tokenize:expr $( => | $arg:tt | $to_token_content:expr )?
             ),* $(,)?
         ) => {
             $(
-                if let Some($arg) = $try_tokenize ( $state ) {
-                    Some($to_token_content)
+                if let Some(x) = $try_tokenize ( $state ) {
+                    switch! {
+                        [$( let $arg = x; Some($to_token_content) )?]
+                        else [ Some(x) ]
+                    }
                 } else
             )* {
                 None
@@ -375,17 +653,97 @@ fn tokenize_next<'src>(state: &mut TokenizeIter) -> Option<TokenContent<'src>> {
     }
     first_match! {
         [state]
+        tokenize_whitespace => |has_linebreak| TokenContent::Space { has_linebreak },
+        tokenize_comment,
         tokenize_matches_any::<TKeyword> => |keyword| TokenContent::Keyword(keyword),
         tokenize_matches_any::<TSymbol> => |symbol| TokenContent::Symbol(symbol),
-        // TODO
+        tokenize_matches_any::<bool> => |bool| TokenContent::Bool(bool),
+        tokenize_numeric,
+        tokenize_string,
+        tokenize_ident => |ident| TokenContent::Identifier(ident),
+
     }
 }
 
+#[allow(unused)]
 pub fn tokenize<'src>(src: &'src str) -> Vec<Token<'src>> {
     TokenizeIter::new(src, tokenize_next).collect()
 }
 
-#[test]
-fn t() {
-    dbg!(tokenize("for+=while/%let_/ jhdkdhk *"));
+#[cfg(test)]
+mod test {
+    use crate::front::tokenize::{tokenize, Loc, TKeyword, TSymbol, TokenContent};
+
+    #[test]
+    fn string_literals() {
+        assert_eq!(
+            &tokenize("\"hello`")
+                .into_iter()
+                .map(|v| v.content)
+                .collect::<Vec<_>>()[..],
+            &[TokenContent::Str {
+                unescaped: "hello",
+                interpolation: (false, true),
+                missing_closing: false
+            },][..]
+        );
+    }
+
+    #[test]
+    fn general_tokenization_test() {
+        assert_eq!(
+            &tokenize("for+=while/%let/* /* */ */true jhdkdhk *")
+                .into_iter()
+                .map(|v| v.content)
+                .collect::<Vec<_>>()[..],
+            &[
+                TokenContent::Keyword(TKeyword::For),
+                TokenContent::Symbol(TSymbol::AddAssign),
+                TokenContent::Keyword(TKeyword::While),
+                TokenContent::Symbol(TSymbol::Remainder),
+                TokenContent::Keyword(TKeyword::Let),
+                TokenContent::Comment {
+                    content: " /* */ ",
+                    documenting: false,
+                    missing_closing: false
+                },
+                TokenContent::Bool(true),
+                TokenContent::Space {
+                    has_linebreak: false
+                },
+                TokenContent::Identifier("jhdkdhk"),
+                TokenContent::Space {
+                    has_linebreak: false
+                },
+                TokenContent::Symbol(TSymbol::Asterisk),
+            ][..]
+        );
+    }
+    #[test]
+    fn loc() {
+        assert_eq!(
+            &tokenize("+abc+=\"def\"")
+                .into_iter()
+                .map(|v| v.loc)
+                .collect::<Vec<_>>()[..],
+            &[
+                Loc {
+                    start: 0,
+                    length: 1
+                },
+                Loc {
+                    start: 1,
+                    length: 3
+                },
+                Loc {
+                    start: 4,
+                    length: 2
+                },
+                Loc {
+                    start: 6,
+                    length: 5
+                },
+            ][..]
+        )
+    }
 }

@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    iter::Enumerate,
+    iter::{Enumerate, Map},
     ops::{Deref, DerefMut},
     str::CharIndices,
 };
@@ -51,15 +51,22 @@ impl<Iter: Iterator + Clone + Debug> Iterator for Rewindable<Iter> {
 }
 
 type TokenizeNext<'src> = fn(&mut TokenizeIter<'src>) -> Option<TokenContent<'src>>;
+pub(super) struct CharIndex {
+    pub char: char,
+    pub byte_i: usize,
+    pub char_i: usize,
+}
 
+type K<'src> =
+    Rewindable<Map<Enumerate<CharIndices<'src>>, fn((usize, (usize, char))) -> CharIndex>>;
 pub(super) struct TokenizeIter<'src> {
-    pub(super) char_iter: Rewindable<Enumerate<CharIndices<'src>>>,
+    pub(super) char_iter: K<'src>,
     src: &'src str,
     chars_len: usize,
     tokenize_next: TokenizeNext<'src>,
 }
 impl<'src> Deref for TokenizeIter<'src> {
-    type Target = Rewindable<Enumerate<CharIndices<'src>>>;
+    type Target = K<'src>;
     fn deref(&self) -> &Self::Target {
         &self.char_iter
     }
@@ -72,32 +79,59 @@ impl<'src> DerefMut for TokenizeIter<'src> {
 impl<'src> TokenizeIter<'src> {
     pub fn new(src: &'src str, tokenize_next: TokenizeNext<'src>) -> Self {
         Self {
-            char_iter: Rewindable::new(src.char_indices().enumerate()),
+            char_iter: Rewindable::new(src.char_indices().enumerate().map(
+                |(char_i, (byte_i, char))| CharIndex {
+                    char,
+                    byte_i,
+                    char_i,
+                },
+            )),
             src,
             chars_len: src.chars().count(),
             tokenize_next,
         }
     }
-    fn pop_continue_as_str(&mut self) -> &'src str {
+    /// Increments the current iterator if the provided function returns true.
+    /// Returns Some(char)  or None, if the end
+    /// of the source was reached.
+    pub fn next_if(&mut self, f: fn(char) -> bool) -> Option<char> {
+        self.push();
+        if let Some(next) = self.char_iter.next() {
+            if f(next.char) {
+                let _ = self.pop_continue();
+                Some(next.char)
+            } else {
+                self.pop_rewind();
+                None
+            }
+        } else {
+            self.pop_rewind();
+            None
+        }
+    }
+    pub fn pop_continue_as_str(&mut self) -> &'src str {
         let start = self
             .pop_continue()
             .next()
-            .map(|(_, (i, _))| i)
+            .map(|CharIndex { byte_i, .. }| byte_i)
             .unwrap_or(self.src.len());
         let end = self
             .peek_next()
-            .map(|(_, (i, _))| i)
-            .unwrap_or(self.src.len())
-            - start;
+            .map(|CharIndex { byte_i, .. }| byte_i)
+            .unwrap_or(self.src.len());
         unsafe { self.src.get_unchecked(start..end) }
     }
     fn pop_continue_as_loc(&mut self) -> Loc {
         let start = self
             .pop_continue()
             .next()
-            .map(|(i, _)| i)
+            .map(|CharIndex { char_i, .. }| char_i)
             .unwrap_or(self.chars_len);
-        let length = self.peek_next().map(|(i, _)| i).unwrap_or(self.chars_len) - start;
+        let length = self
+            .peek_next()
+            .map(|CharIndex { char_i, .. }| char_i)
+            .unwrap_or(self.chars_len)
+            - start;
         Loc { start, length }
     }
 }

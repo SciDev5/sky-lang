@@ -33,3 +33,6 @@ pub fn set_motor_speeds_ext(id: int, rad_per_sec_0: float, rad_per_sec_1: float)
 
 pub fn get_encoder_deg(i: int) -> int = $emit "prizm.readEncoderDegrees(`i`)"
 pub fn get_encoder_deg_ext(ch: int, i: int) -> int = $emit "prizm_ext.readEncoderDegrees(`ch`, `i`)"
+
+
+pub fn read_sonic_sensor_cm(port: int) -> int = $emit "prizm.readSonicSensorCM(`port`)"

@@ -1,11 +1,11 @@
-import bind_arduino.[_f2i, _i2f, _add_f, _sub_f, _mul_f, _div_f, delay_seconds, abs, sqrt, sin, cos]
+import bind_arduino.[_f2i, _i2f, _add_f, _sub_f, _mul_f, _div_f, delay_seconds, abs, sqrt, sin, cos, clip]
 import prizm
 
 
-fn cm_to_wheel_deg(speed: float) =
+fn cm_to_wheel_rad(speed: float) -> float =
     // wheel radius is 5\[cm/rad]
     // speed_out\[deg/s] = speed\[cm/s] / (5\[cm/rad]) * (180\deg / PI\rad)
-    _f2i(clip($emit " `speed` / 5 * (180 / PI)", -720.0, 720.0))
+    $emit "(`speed` / 5)"
 
 fn wheel_deg_to_cm(speed: int) =
     // wheel radius is 5\[cm/rad]
@@ -13,19 +13,14 @@ fn wheel_deg_to_cm(speed: int) =
     clip(_i2f($emit " `speed` * 5 / (180 / PI)"), -720.0, 720.0)
 
 
-fn coerceGE(x: float, min: float) -> float = $emit "max(`x`, `min`)"
-fn coerceLE(x: float, max: float) -> float = $emit "min(`x`, `max`)"
-fn clip(x: float, min: float, max: float) = coerceGE(coerceLE(x, max), min)
-
 // Set the speed of Y bot
 pub fn ybot_set_vel(x: float, y: float, xy: float) {
-    let wx = cm_to_wheel_deg(x)
-    let wy = cm_to_wheel_deg(y)
-
+    let wx = cm_to_wheel_rad(x)
+    let wy = cm_to_wheel_rad(y)
 
     prizm.set_motor_speeds(
-        $emit "-`wx` + (M0_R * `xy`)",
-        $emit "-`wy` + (M1_R * `xy`)",
+        $emit "(-`wx` + (M0_R * `xy`))",
+        $emit "(-`wy` + (M1_R * `xy`))",
     )
     prizm.set_motor_speeds_ext(
         1,
@@ -78,23 +73,16 @@ pub fn ybot_update(tx: float, ty: float, txy: float, t: float) {
     $emit_stmt "Serial.println(`tvx`)"
 
 
-    let lin_kcorrect = 0.1 // (cm/s)/cm
-    let rot_kcorrect = 0.1 // (rad/s)/rad
+    let lin_kcorrect = 1.0 // (cm/s)/cm
+    let rot_kcorrect = 0.5 // (rad/s)/rad
     let corrective_vxy = _mul_f(sub_xy(txy, $emit"XY"), rot_kcorrect)
     let corrective_vx = _mul_f(_sub_f(tx, $emit"X"), lin_kcorrect)
     let corrective_vy = _mul_f(_sub_f(ty, $emit"Y"), lin_kcorrect)
 
-    // let vx = tvx
-    // let vy = tvy
-    // let vxy = tvxy
 
-    let vx = corrective_vx
-    let vy = corrective_vy
-    let vxy = corrective_vxy
-
-    // let vx = _add_f(tvx, corrective_vx)
-    // let vy = _add_f(tvy, corrective_vy)
-    // let vxy = _add_f(tvxy, corrective_vxy)
+    let vx = _add_f(tvx, corrective_vx)
+    let vy = _add_f(tvy, corrective_vy)
+    let vxy = _add_f(tvxy, corrective_vxy)
 
     // ybot_set_vel(
     //     vx,

@@ -34,6 +34,10 @@ pub fn sqrt(x: float) -> float = $emit "sqrt(` x `)"
 pub fn rad_2_deg(rad: float) -> float = _mul_f(rad, 57.29577951308232)
 pub fn deg_2_rad(deg: float) -> float = _div_f(deg, 57.29577951308232)
 
+pub fn coerceGE(x: float, min: float) -> float = $emit "max(`x`, `min`)"
+pub fn coerceLE(x: float, max: float) -> float = $emit "min(`x`, `max`)"
+pub fn clip(x: float, min: float, max: float) = coerceGE(coerceLE(x, max), min)
+
 //-------------- Arduino --------------//
 
 // :: Time :: //

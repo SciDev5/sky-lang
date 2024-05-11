@@ -8,7 +8,7 @@
 //! - Inline macro invocations are type-safe, and have known eval type before
 //! the type-solving step.
 
-use crate::front::{TBracketType, TSeparatorType};
+use crate::front::tokenize::{TBracketType, TSeparatorType};
 
 /// Defines the layout for a macro.
 ///

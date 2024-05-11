@@ -1,8 +1,10 @@
 mod tokenize_iter;
 
-use std::{fmt::Debug, usize};
+use std::fmt::Debug;
 
 use self::tokenize_iter::{CharIndex, TokenizeIter};
+
+use super::source::Loc;
 
 pub enum TBracketType {
     Square,
@@ -284,13 +286,6 @@ impl CorrespondingTokenStr for bool {
     fn str() -> &'static [(&'static str, Self)] {
         &[("true", true), ("false", false)]
     }
-}
-
-/// A range of char indices in the source code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Loc {
-    start: usize,
-    length: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

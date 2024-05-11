@@ -5,7 +5,9 @@ use std::{
     str::CharIndices,
 };
 
-use super::{Loc, Token, TokenContent};
+use crate::front::source::Loc;
+
+use super::{Token, TokenContent};
 
 /// Iterator with a small state stack for rewinding to past states.
 pub(super) struct Rewindable<Iter: Iterator + Clone + Debug> {

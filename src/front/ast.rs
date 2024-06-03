@@ -1,39 +1,44 @@
-use std::collections::HashMap;
+use super::source::Loc;
 
 #[derive(Debug, Clone)]
-enum ASTDeclr<'src> {
+pub struct ASTSourceFile<'src> {
+    pub body: Vec<ASTStmt<'src>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ASTDeclr<'src> {
     Function(ASTFunction<'src>),
+    Const(ASTConst<'src>),
     Trait(ASTTrait<'src>),
     Data(ASTData<'src>),
     FreeImpl(ASTFreeImpl<'src>),
+    Import(ASTImport<'src>),
 }
 #[derive(Debug, Clone)]
-enum ASTStmt<'src> {
+pub enum ASTStmt<'src> {
     StaticDeclare(Box<ASTDeclr<'src>>),
-    VarDeclare {
-        declr: Option<ASTTypedDestructure<'src>>,
-        initializer: Option<Expr<'src>>,
-    },
+    VarDeclare(ASTVarDeclare<'src>),
     SubBlocked(ASTSubBlocked<'src>),
     Expr(ASTExpr<'src>),
 }
 #[derive(Debug, Clone)]
-enum ASTExpr<'src> {
+pub enum ASTExpr<'src> {
     Literal {
+        loc: Loc,
         value: ASTLiteral,
     },
     Lambda(ASTLambda<'src>),
     SubBlocked(ASTSubBlocked<'src>),
     PostfixBlock {
         inner: Expr<'src>,
-        postfix: ASTPostfixBlock<'src>,
+        postfix: (ASTPostfixBlock<'src>, Loc),
     },
 }
-type Block<'src> = Vec<ASTStmt<'src>>;
+type Block<'src> = (Vec<ASTStmt<'src>>, Loc);
 type Expr<'src> = Box<ASTExpr<'src>>;
 
 #[derive(Debug, Clone)]
-enum ASTPostfixBlock<'src> {
+pub enum ASTPostfixBlock<'src> {
     /// `x ( a, b, c )`
     Call { args: Vec<ASTExpr<'src>> },
     /// `x [ a, b, c ]`
@@ -42,17 +47,18 @@ enum ASTPostfixBlock<'src> {
     Lambda { func: ASTLambda<'src> },
     /// `x.{ a = b, c }`
     DataStructInit {
-        entries: HashMap<&'src str, ASTExpr<'src>>,
+        entries: Vec<((&'src str, Loc), ASTExpr<'src>)>,
     },
     /// `x.( a, b, c)`
     DataTupleInit { entries: Vec<ASTExpr<'src>> },
 }
 #[derive(Debug, Clone)]
-enum ASTSubBlocked<'src> {
+pub enum ASTSubBlocked<'src> {
     /// `{ ... }`
     Block { block: Block<'src> },
     /// `if x { ... }`
     If {
+        loc: Loc,
         condition: Option<Expr<'src>>,
         block: Option<Block<'src>>,
         /// `else if y { ... }`
@@ -61,9 +67,13 @@ enum ASTSubBlocked<'src> {
         else_block: Option<Block<'src>>,
     },
     /// `loop { ... }`
-    Loop { block: Option<Block<'src>> },
+    Loop {
+        loc: Loc,
+        block: Option<Block<'src>>,
+    },
     /// `while x { ... }`
     While {
+        loc: Loc,
         condition: Option<Expr<'src>>,
         block: Option<Block<'src>>,
         /// Optional else block which allows this to return
@@ -72,6 +82,7 @@ enum ASTSubBlocked<'src> {
     },
     /// `for x in y { ... }`
     For {
+        loc: Loc,
         var_destruct: Option<ASTVarDestructure<'src>>,
         var_ty: Option<ASTType<'src>>,
         block: Option<Block<'src>>,
@@ -82,14 +93,15 @@ enum ASTSubBlocked<'src> {
 }
 
 #[derive(Debug, Clone)]
-struct ASTTemplateBound<'src> {
-    name: &'src str,
-    bounds: Vec<ASTType<'src>>,
+pub struct ASTTemplateBound<'src> {
+    pub loc: Loc,
+    pub name: &'src str,
+    pub bounds: Vec<(ASTType<'src>, Loc)>,
 }
 type Templates<'src> = Vec<ASTTemplateBound<'src>>;
 
 #[derive(Debug, Clone)]
-enum ASTLiteral {
+pub enum ASTLiteral {
     /// Integer of any size (up to `2^128-1`).
     Int(u128),
     /// Negative integer of any size (stored as negative, down to `-2^63`)
@@ -103,41 +115,81 @@ enum ASTLiteral {
     String(String),
 }
 
+#[derive(Debug, Clone)]
+pub struct ASTVarDeclare<'src> {
+    pub loc: Loc,
+    pub declr: Option<ASTTypedDestructure<'src>>,
+    pub initializer: Option<Expr<'src>>,
+}
+
 /// `\(a: ty0) -> ty1 { ... }` or `x { \a: ty0 -> ... }`
 #[derive(Debug, Clone)]
-struct ASTLambda<'src> {
-    has_self_arg: bool,
-    args: Vec<ASTTypedDestructure<'src>>,
-    return_ty: Option<ASTType<'src>>,
-    block: Option<Block<'src>>,
+pub struct ASTLambda<'src> {
+    pub loc: Loc,
+    pub has_self_arg: bool,
+    pub args: Vec<ASTTypedDestructure<'src>>,
+    pub return_ty: Option<ASTType<'src>>,
+    pub block: Option<Block<'src>>,
 }
 
 #[derive(Debug, Clone)]
-struct ASTFunction<'src> {
-    name: Option<&'src str>,
-    doc: Option<ASTDoc>,
-    lambda: ASTLambda<'src>,
+pub struct ASTFunction<'src> {
+    pub name: Option<&'src str>,
+    pub doc: Option<ASTDoc>,
+    pub lambda: ASTLambda<'src>,
 }
 
 #[derive(Debug, Clone)]
-struct ASTDoc {
-    processed_text: String,
+pub struct ASTImport<'src> {
+    pub loc: Loc,
+    pub tree: ASTImportTree<'src>,
+}
+#[derive(Debug, Clone)]
+pub enum ASTImportTree<'src> {
+    /// `abc` or `abc.<...>`
+    Name {
+        loc: Loc,
+        name: &'src str,
+        child: Option<Box<ASTImportTree<'src>>>,
+    },
+    /// `abc.[ ... ]`
+    Group {
+        loc: Loc,
+        name: &'src str,
+        children: Vec<(Loc, ASTImportTree<'src>)>,
+    },
+    /// `*`
+    ToAll(Loc),
+    /// `self`
+    ToSelf(Loc),
+    /// `super`
+    ToSuper(Loc),
+    /// `root`
+    ToRoot(Loc),
 }
 
 #[derive(Debug, Clone)]
-enum ASTType<'src> {
+pub struct ASTDoc {
+    pub loc: Loc,
+    pub processed_text: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum ASTType<'src> {
     /// A simple named type, like `int` or `BinaryTree`.
-    Named { name: &'src str },
+    Named { name: &'src str, loc: Loc },
     /// Types of the form `Inner.Name`
     Access {
+        name_loc: Loc,
         name: &'src str,
         inner: Box<ASTType<'src>>,
     },
     /// types of the form `A<B,C,D=E>
     TypeParam {
+        loc: Loc,
         inner: Box<ASTType<'src>>,
         params: Vec<ASTType<'src>>,
-        named_params: Option<Vec<(Option<&'src str>, Option<ASTType<'src>>)>>,
+        named_params: Option<Vec<((&'src str, Loc), Option<ASTType<'src>>)>>,
     },
     //// not included for the time being, as they are aliases for other types
     //// and I need to decide how to handle that:
@@ -156,30 +208,43 @@ enum ASTType<'src> {
 }
 
 #[derive(Debug, Clone)]
-enum ASTVarDestructure<'src> {
-    Name(&'src str),
+pub enum ASTVarDestructure<'src> {
+    Name { loc: Loc, name: &'src str },
 }
 #[derive(Debug, Clone)]
-struct ASTTypedDestructure<'src> {
-    destructure: ASTVarDestructure<'src>,
-    ty: Option<ASTType<'src>>,
-}
-
-#[derive(Debug, Clone)]
-struct ASTTrait<'src> {
-    name: Option<&'src str>,
-    doc: Option<ASTDoc>,
-    templates: Templates<'src>,
-    bounds: Option<ASTType<'src>>,
-    functions: Vec<ASTFunction<'src>>,
+pub struct ASTTypedDestructure<'src> {
+    pub destructure: ASTVarDestructure<'src>,
+    pub ty: Option<ASTType<'src>>,
 }
 
 #[derive(Debug, Clone)]
-struct ASTData<'src> {
-    name: Option<&'src str>,
-    doc: Option<ASTDoc>,
-    templates: Templates<'src>,
-    attatched_impls: Vec<ASTImpl<'src>>,
+pub struct ASTConst<'src> {
+    pub loc: Loc,
+    pub name: Option<&'src str>,
+    pub ty: Option<ASTType<'src>>,
+    pub value: Option<ASTExpr<'src>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTTrait<'src> {
+    pub loc: Loc,
+    pub name: Option<&'src str>,
+    pub doc: Option<ASTDoc>,
+    pub templates: Templates<'src>,
+    pub bounds: Option<ASTType<'src>>,
+    pub functions: Vec<ASTFunction<'src>>,
+    pub consts: Vec<ASTConst<'src>>,
+    // [TODO:0000] type aliases
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTData<'src> {
+    pub loc: Loc,
+    pub name: Option<&'src str>,
+    pub doc: Option<ASTDoc>,
+    pub templates: Templates<'src>,
+    pub attatched_impls: Vec<ASTImpl<'src>>,
+    pub consts: Vec<ASTConst<'src>>,
 }
 #[derive(Debug, Clone)]
 enum ASTDataContents<'src> {
@@ -196,9 +261,10 @@ enum ASTDataContents<'src> {
 }
 #[derive(Debug, Clone)]
 struct ASTEnumVariant<'src> {
-    name: &'src str,
-    doc: Option<ASTDoc>,
-    which: ASTEnumVariantType<'src>,
+    pub loc: Loc,
+    pub name: &'src str,
+    pub doc: Option<ASTDoc>,
+    pub which: ASTEnumVariantType<'src>,
 }
 #[derive(Debug, Clone)]
 enum ASTEnumVariantType<'src> {
@@ -211,21 +277,23 @@ enum ASTEnumVariantType<'src> {
     },
 }
 #[derive(Debug, Clone)]
-struct ASTFreeImpl<'src> {
-    target: ASTType<'src>,
-    attatched_impl: ASTImpl<'src>,
+pub struct ASTFreeImpl<'src> {
+    pub target: ASTType<'src>,
+    pub attatched_impl: ASTImpl<'src>,
 }
 
 #[derive(Debug, Clone)]
-struct ASTDataProperty<'src> {
-    name: &'src str,
-    ty: ASTType<'src>,
-    doc: Option<ASTDoc>,
+pub struct ASTDataProperty<'src> {
+    pub loc: Loc,
+    pub name: &'src str,
+    pub ty: ASTType<'src>,
+    pub doc: Option<ASTDoc>,
 }
 
 #[derive(Debug, Clone)]
-struct ASTImpl<'src> {
-    templates: Templates<'src>,
-    target_trait: Option<ASTType<'src>>,
-    functions: Vec<ASTFunction<'src>>,
+pub struct ASTImpl<'src> {
+    pub loc: Loc,
+    pub templates: Templates<'src>,
+    pub target_trait: Option<ASTType<'src>>,
+    pub functions: Vec<ASTFunction<'src>>,
 }

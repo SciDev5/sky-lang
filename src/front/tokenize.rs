@@ -6,12 +6,14 @@ use self::tokenize_iter::{CharIndex, TokenizeIter};
 
 use super::source::Loc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TBracketType {
     Square,
     Curly,
     Paren,
     Angle,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TSeparatorType {
     Comma,
     Semicolon,
@@ -19,6 +21,7 @@ pub enum TSeparatorType {
     ThinArrow,
     WideArrow,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TPrefixOperatorType {
     // ---- Arithmetic ---- //
     Neg,
@@ -34,6 +37,7 @@ pub enum TPrefixOperatorType {
     // ---- Range ---- //
     RangeTo,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TPostfixOperatorType {
     // ---- Compare ---- //
     CompareGreater,
@@ -49,6 +53,7 @@ pub enum TPostfixOperatorType {
     // ---- Range ---- //
     RangeFrom,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TInfixOperatorType {
     // ---- Compare ---- //
     CompareGreater,
@@ -183,8 +188,8 @@ gen_TSymbol! {
     ParenClose(")"; bracket_close[Paren])
     SquareBracketOpen("["; bracket_open[Square])
     SquareBracketClose("]"; bracket_close[Square])
-    CurlyBracketOpen("["; bracket_open[Curly])
-    CurlyBracketClose("]"; bracket_close[Curly])
+    CurlyBracketOpen("{"; bracket_open[Curly])
+    CurlyBracketClose("}"; bracket_close[Curly])
 
     AddAssign("+="; assign_op[Some(Add)])
     Add("+"; op[Add])
@@ -212,8 +217,8 @@ gen_TSymbol! {
     ShrAssign(">>="; assign_op[Some(Shr)])
     Shr(">>"; op[Shr])
 
-    LessThan("<"; bracket_close[Angle]; op[CompareLess])
-    GreaterThan(">"; bracket_open[Angle]; op[CompareGreater])
+    LessThan("<"; bracket_open[Angle]; op[CompareLess])
+    GreaterThan(">"; bracket_close[Angle]; op[CompareGreater])
     LessThanEqual("<="; op[CompareLessEqual])
     GreaterThanEqual(">="; op[CompareGreaterEqual])
     Equal("=="; op[CompareEqual])
@@ -290,8 +295,8 @@ impl CorrespondingTokenStr for bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Token<'src> {
-    loc: Loc,
-    content: TokenContent<'src>,
+    pub loc: Loc,
+    pub content: TokenContent<'src>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

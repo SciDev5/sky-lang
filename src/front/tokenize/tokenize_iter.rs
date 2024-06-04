@@ -12,7 +12,7 @@ use super::{Token, TokenContent};
 /// Iterator with a small state stack for rewinding to past states.
 pub(super) struct Rewindable<Iter: Iterator + Clone + Debug> {
     current: Iter,
-    stack: heapless::Vec<Iter, 3>,
+    stack: heapless::Vec<Iter, 5>,
 }
 impl<Iter: Iterator + Clone + Debug> Rewindable<Iter> {
     fn new(iter: Iter) -> Self {

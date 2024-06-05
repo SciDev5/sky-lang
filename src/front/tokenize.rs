@@ -16,6 +16,7 @@ pub enum TBracketType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TSeparatorType {
     Comma,
+    Period,
     Semicolon,
     Colon,
     ThinArrow,
@@ -227,6 +228,7 @@ gen_TSymbol! {
     Assign("="; assign_op[None])
 
     Comma(","; separator[Comma])
+    Period("."; separator[Period])
     Semicolon(";"; separator[Semicolon])
     ThinArrow("->"; separator[ThinArrow])
     WideArrow("=>"; separator[WideArrow])

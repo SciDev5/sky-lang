@@ -1,4 +1,9 @@
-use super::source::Loc;
+use crate::impl_hasloc_simple;
+
+use super::{
+    source::{HasLoc, Loc},
+    tokenize::{TInfixOperatorType, TPostfixOperatorType, TPrefixOperatorType},
+};
 
 #[derive(Debug, Clone)]
 pub struct ASTSourceFile<'src> {
@@ -18,6 +23,11 @@ pub enum ASTDeclr<'src> {
 pub enum ASTStmt<'src> {
     StaticDeclare(Box<ASTDeclr<'src>>),
     VarDeclare(ASTVarDeclare<'src>),
+    VarAssign {
+        loc: Loc,
+        lhs: Option<Expr<'src>>,
+        rhs: Option<Expr<'src>>,
+    },
     SubBlocked(ASTSubBlocked<'src>),
     Expr(ASTExpr<'src>),
 }
@@ -27,15 +37,67 @@ pub enum ASTExpr<'src> {
         loc: Loc,
         value: ASTLiteral,
     },
+    Name {
+        loc: Loc,
+        name: &'src str,
+    },
     Lambda(ASTLambda<'src>),
     SubBlocked(ASTSubBlocked<'src>),
     PostfixBlock {
         inner: Expr<'src>,
         postfix: (ASTPostfixBlock<'src>, Loc),
     },
+    OpPrefix {
+        loc: Loc,
+        inner: Expr<'src>,
+        op: (TPrefixOperatorType, Loc),
+    },
+    OpPostfix {
+        loc: Loc,
+        inner: Expr<'src>,
+        op: (TPostfixOperatorType, Loc),
+    },
+    OpInfix {
+        loc: Loc,
+        inner: Expr<'src>,
+        op: (TInfixOperatorType, Loc),
+    },
+    Parentheses {
+        loc: Loc,
+        inner: Expr<'src>,
+    },
+    Array {
+        loc: Loc,
+        elements: Vec<ASTExpr<'src>>,
+        /// `true` &rarr; `(a,b,c)`, represents a tuple.
+        /// `false` &rarr; `[a,b,c]`, represents an array ref.
+        is_tuple: bool,
+    },
 }
-type Block<'src> = (Vec<ASTStmt<'src>>, Loc);
+impl<'src> HasLoc for ASTExpr<'src> {
+    fn loc(&self) -> Loc {
+        match self {
+            Self::Literal { loc, .. }
+            | Self::Name { loc, .. }
+            | Self::OpInfix { loc, .. }
+            | Self::OpPrefix { loc, .. }
+            | Self::OpPostfix { loc, .. }
+            | Self::Parentheses { loc, .. }
+            | Self::Array { loc, .. } => *loc,
+            Self::PostfixBlock { inner, postfix } => inner.loc().merge(postfix.1),
+            Self::Lambda(lambda) => lambda.loc(),
+            Self::SubBlocked(sb) => sb.loc(),
+        }
+    }
+}
 type Expr<'src> = Box<ASTExpr<'src>>;
+
+#[derive(Debug, Clone)]
+pub struct ASTBlock<'src> {
+    pub loc: Loc,
+    pub body: Vec<ASTStmt<'src>>,
+}
+impl_hasloc_simple!(ASTBlock<'src>);
 
 #[derive(Debug, Clone)]
 pub enum ASTPostfixBlock<'src> {
@@ -55,41 +117,54 @@ pub enum ASTPostfixBlock<'src> {
 #[derive(Debug, Clone)]
 pub enum ASTSubBlocked<'src> {
     /// `{ ... }`
-    Block { block: Block<'src> },
+    Block { block: ASTBlock<'src> },
     /// `if x { ... }`
     If {
         loc: Loc,
         condition: Option<Expr<'src>>,
-        block: Option<Block<'src>>,
+        block: Option<ASTBlock<'src>>,
         /// `else if y { ... }`
-        elifs: Option<Vec<(Option<Expr<'src>>, Option<Block<'src>>)>>,
+        elifs: Option<Vec<(Option<Expr<'src>>, Option<ASTBlock<'src>>)>>,
         /// `else { ... }`
-        else_block: Option<Block<'src>>,
+        else_block: Option<ASTBlock<'src>>,
     },
     /// `loop { ... }`
     Loop {
         loc: Loc,
-        block: Option<Block<'src>>,
+        block: Option<ASTBlock<'src>>,
     },
     /// `while x { ... }`
     While {
         loc: Loc,
         condition: Option<Expr<'src>>,
-        block: Option<Block<'src>>,
+        block: Option<ASTBlock<'src>>,
         /// Optional else block which allows this to return
         /// a value when used as an expression.
-        else_block: Option<Block<'src>>,
+        else_block: Option<ASTBlock<'src>>,
     },
     /// `for x in y { ... }`
     For {
         loc: Loc,
-        var_destruct: Option<ASTVarDestructure<'src>>,
-        var_ty: Option<ASTType<'src>>,
-        block: Option<Block<'src>>,
+        var: Option<ASTTypedDestructure<'src>>,
+        iterator: Option<Expr<'src>>,
+        block: Option<ASTBlock<'src>>,
         /// Optional else block which allows this to return
         /// a value when used as an expression.
-        else_block: Option<Block<'src>>,
+        else_block: Option<ASTBlock<'src>>,
     },
+}
+impl<'src> HasLoc for ASTSubBlocked<'src> {
+    fn loc(&self) -> Loc {
+        match self {
+            Self::If { loc, .. }
+            | Self::Loop { loc, .. }
+            | Self::While { loc, .. }
+            | Self::For { loc, .. }
+            | Self::Block {
+                block: ASTBlock { loc, .. },
+            } => *loc,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +196,7 @@ pub struct ASTVarDeclare<'src> {
     pub declr: Option<ASTTypedDestructure<'src>>,
     pub initializer: Option<Expr<'src>>,
 }
+impl_hasloc_simple!(ASTVarDeclare<'src>);
 
 /// `\(a: ty0) -> ty1 { ... }` or `x { \a: ty0 -> ... }`
 #[derive(Debug, Clone)]
@@ -129,8 +205,9 @@ pub struct ASTLambda<'src> {
     pub has_self_arg: bool,
     pub args: Vec<ASTTypedDestructure<'src>>,
     pub return_ty: Option<ASTType<'src>>,
-    pub block: Option<Block<'src>>,
+    pub block: Option<ASTBlock<'src>>,
 }
+impl_hasloc_simple!(ASTLambda<'src>);
 
 #[derive(Debug, Clone)]
 pub struct ASTFunction<'src> {
@@ -180,7 +257,7 @@ pub enum ASTType<'src> {
     Named { name: &'src str, loc: Loc },
     /// Types of the form `Inner.Name`
     Access {
-        name_loc: Loc,
+        loc_name: Loc,
         name: &'src str,
         inner: Box<ASTType<'src>>,
     },
@@ -191,30 +268,72 @@ pub enum ASTType<'src> {
         params: Vec<ASTType<'src>>,
         named_params: Option<Vec<((&'src str, Loc), Option<ASTType<'src>>)>>,
     },
-    //// not included for the time being, as they are aliases for other types
+    /// Types of the form `(A,B,C)`
+    Tuple { loc: Loc, inner: Vec<ASTType<'src>> },
+    /// Parentheses in types. Used for disambiguation.
+    Paren { loc: Loc, inner: Box<ASTType<'src>> },
+    //// TODO not included for the time being, as they are aliases for other types
     //// and I need to decide how to handle that:
     // Ref {
     //     name: &'src str,
     //     mutable: bool,
     //     inner: Box<ASTType<'src>>,
     // },
-    // Tuple {
-    //     name: &'src str,
-    //     inner: Vec<ASTType<'src>>,
-    // },
     // Array {
     //     inner: Box<ASTType<'src>>,
     // },
 }
+impl<'src> HasLoc for ASTType<'src> {
+    fn loc(&self) -> Loc {
+        match self {
+            Self::Named { loc, .. }
+            | Self::TypeParam { loc, .. }
+            | Self::Tuple { loc, .. }
+            | Self::Paren { loc, .. } => *loc,
+            Self::Access {
+                loc_name: name_loc,
+                inner,
+                ..
+            } => name_loc.merge(inner.loc()),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
-pub enum ASTVarDestructure<'src> {
-    Name { loc: Loc, name: &'src str },
+pub enum ASTDestructure<'src> {
+    Name {
+        loc: Loc,
+        name: &'src str,
+    },
+    Paren {
+        loc: Loc,
+        inner: Box<ASTDestructure<'src>>,
+    },
+    Tuple {
+        loc: Loc,
+        inner: Vec<ASTDestructure<'src>>,
+    },
+    // TODO Struct destructures not included because they're rare and a pain to implement
 }
+impl<'src> HasLoc for ASTDestructure<'src> {
+    fn loc(&self) -> Loc {
+        match self {
+            Self::Name { loc, .. } | Self::Tuple { loc, .. } | Self::Paren { loc, .. } => *loc,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ASTTypedDestructure<'src> {
-    pub destructure: ASTVarDestructure<'src>,
+    pub destructure: ASTDestructure<'src>,
     pub ty: Option<ASTType<'src>>,
+}
+impl<'src> HasLoc for ASTTypedDestructure<'src> {
+    fn loc(&self) -> Loc {
+        self.destructure
+            .loc()
+            .merge_some(self.ty.as_ref().map(HasLoc::loc))
+    }
 }
 
 #[derive(Debug, Clone)]

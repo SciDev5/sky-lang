@@ -25,6 +25,12 @@ impl Loc {
             length: 0,
         }
     }
+    pub fn new_from_start(self) -> Self {
+        Self {
+            start: self.start,
+            length: 0,
+        }
+    }
 }
 /// A range of char indices in the source code in a specific file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,5 +55,10 @@ macro_rules! impl_hasloc_simple {
 impl HasLoc for Loc {
     fn loc(&self) -> Loc {
         *self
+    }
+}
+impl<T> HasLoc for (T, Loc) {
+    fn loc(&self) -> Loc {
+        self.1
     }
 }

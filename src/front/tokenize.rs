@@ -233,7 +233,7 @@ gen_TSymbol! {
     ThinArrow("->"; separator[ThinArrow])
     WideArrow("=>"; separator[WideArrow])
 
-    Range(":"; separator[Colon]; op[RangeFromTo]; prefix_op[RangeTo]; postfix_op[RangeFrom])
+    Colon(":"; separator[Colon]; op[RangeFromTo]; prefix_op[RangeTo]; postfix_op[RangeFrom])
 
     Ampersand("&"; op[And]; prefix_op[Ref])
     Asterisk("*"; op[Multiply]; prefix_op[Deref]; postfix_op[Conjugate])
@@ -268,6 +268,7 @@ macro_rules! gen_TKeyword {
     };
 }
 gen_TKeyword! {
+    Const ("const")
     Let ("let")
     Del ("del")
     Return ("return")
@@ -280,13 +281,20 @@ gen_TKeyword! {
     If ("if")
     Else ("else")
     Fn ("fn")
+    Type ("type")
+    Data ("data")
     Struct ("struct")
     Tuple ("tuple")
     Enum ("enum")
+    Unit ("unit")
     Trait ("trait")
     Impl ("impl")
     Import ("import")
     Export ("export")
+    SelfVar ("self")
+    SelfTy ("Self")
+    Root ("root")
+    Super ("super")
 }
 
 impl CorrespondingTokenStr for bool {

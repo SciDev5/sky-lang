@@ -18,6 +18,7 @@ pub enum ASTDeclr<'src> {
     Data(ASTData<'src>),
     FreeImpl(ASTFreeImpl<'src>),
     Import(ASTImport<'src>),
+    TypeAlias(ASTTypeAlias<'src>),
 }
 #[derive(Debug, Clone)]
 pub enum ASTStmt<'src> {
@@ -25,6 +26,7 @@ pub enum ASTStmt<'src> {
     VarDeclare(ASTVarDeclare<'src>),
     VarAssign {
         loc: Loc,
+        assign_op: Option<TInfixOperatorType>,
         lhs: Option<Expr<'src>>,
         rhs: Option<Expr<'src>>,
     },
@@ -37,10 +39,7 @@ pub enum ASTExpr<'src> {
         loc: Loc,
         value: ASTLiteral,
     },
-    Name {
-        loc: Loc,
-        name: &'src str,
-    },
+    Ident(ASTIdent<'src>),
     Lambda(ASTLambda<'src>),
     SubBlocked(ASTSubBlocked<'src>),
     PostfixBlock {
@@ -73,16 +72,31 @@ pub enum ASTExpr<'src> {
         /// `false` &rarr; `[a,b,c]`, represents an array ref.
         is_tuple: bool,
     },
+
+    Return {
+        loc: Loc,
+        inner: Option<Expr<'src>>,
+    },
+    Break {
+        loc: Loc,
+        inner: Option<Expr<'src>>,
+    },
+    Continue {
+        loc: Loc,
+    },
 }
 impl<'src> HasLoc for ASTExpr<'src> {
     fn loc(&self) -> Loc {
         match self {
             Self::Literal { loc, .. }
-            | Self::Name { loc, .. }
+            | Self::Ident(ASTIdent { loc, .. })
             | Self::OpInfix { loc, .. }
             | Self::OpPrefix { loc, .. }
             | Self::OpPostfix { loc, .. }
             | Self::Parentheses { loc, .. }
+            | Self::Return { loc, .. }
+            | Self::Break { loc, .. }
+            | Self::Continue { loc }
             | Self::Array { loc, .. } => *loc,
             Self::PostfixBlock { inner, postfix } => inner.loc().merge(postfix.1),
             Self::Lambda(lambda) => lambda.loc(),
@@ -109,7 +123,7 @@ pub enum ASTPostfixBlock<'src> {
     Lambda { func: ASTLambda<'src> },
     /// `x.{ a = b, c }`
     DataStructInit {
-        entries: Vec<((&'src str, Loc), ASTExpr<'src>)>,
+        entries: Vec<(ASTName<'src>, ASTExpr<'src>)>,
     },
     /// `x.( a, b, c)`
     DataTupleInit { entries: Vec<ASTExpr<'src>> },
@@ -170,10 +184,10 @@ impl<'src> HasLoc for ASTSubBlocked<'src> {
 #[derive(Debug, Clone)]
 pub struct ASTTemplateBound<'src> {
     pub loc: Loc,
-    pub name: &'src str,
-    pub bounds: Vec<(ASTType<'src>, Loc)>,
+    pub name: ASTName<'src>,
+    pub bounds: Option<Vec<ASTType<'src>>>,
 }
-type Templates<'src> = Vec<ASTTemplateBound<'src>>;
+type TemplateBounds<'src> = Option<(Vec<ASTTemplateBound<'src>>, Loc)>;
 
 #[derive(Debug, Clone)]
 pub enum ASTLiteral {
@@ -202,49 +216,90 @@ impl_hasloc_simple!(ASTVarDeclare<'src>);
 #[derive(Debug, Clone)]
 pub struct ASTLambda<'src> {
     pub loc: Loc,
-    pub has_self_arg: bool,
+    pub templates: TemplateBounds<'src>,
     pub args: Vec<ASTTypedDestructure<'src>>,
-    pub return_ty: Option<ASTType<'src>>,
+    pub ty_return: Option<ASTType<'src>>,
     pub block: Option<ASTBlock<'src>>,
 }
 impl_hasloc_simple!(ASTLambda<'src>);
 
 #[derive(Debug, Clone)]
 pub struct ASTFunction<'src> {
-    pub name: Option<&'src str>,
-    pub doc: Option<ASTDoc>,
+    pub annot: ASTAnnot,
+    pub name: Option<ASTName<'src>>,
     pub lambda: ASTLambda<'src>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ASTImport<'src> {
     pub loc: Loc,
-    pub tree: ASTImportTree<'src>,
+    pub tree: Option<ASTImportTree<'src>>,
 }
 #[derive(Debug, Clone)]
 pub enum ASTImportTree<'src> {
     /// `abc` or `abc.<...>`
     Name {
         loc: Loc,
-        name: &'src str,
-        child: Option<Box<ASTImportTree<'src>>>,
+        ident: ASTIdent<'src>,
+        inner: Option<Box<ASTImportTree<'src>>>,
     },
     /// `abc.[ ... ]`
     Group {
         loc: Loc,
-        name: &'src str,
-        children: Vec<(Loc, ASTImportTree<'src>)>,
+        ident: ASTIdent<'src>,
+        inner: Vec<ASTImportTree<'src>>,
     },
     /// `*`
     ToAll(Loc),
-    /// `self`
-    ToSelf(Loc),
-    /// `super`
-    ToSuper(Loc),
-    /// `root`
-    ToRoot(Loc),
+}
+impl<'src> HasLoc for ASTImportTree<'src> {
+    fn loc(&self) -> Loc {
+        match self {
+            Self::Name { loc, .. } | Self::Group { loc, .. } | Self::ToAll(loc) => *loc,
+        }
+    }
 }
 
+/// Raw names, like [`ASTIdent`], but doesn't match keywords like `self`, `super`, etc.
+#[derive(Debug, Clone)]
+pub struct ASTName<'src> {
+    pub loc: Loc,
+    pub value: &'src str,
+}
+impl_hasloc_simple!(ASTName<'src>);
+/// Identifiers, including some keywords like `self`, `super`, etc.
+#[derive(Debug, Clone)]
+pub struct ASTIdent<'src> {
+    pub loc: Loc,
+    pub value: ASTIdentValue<'src>,
+}
+impl_hasloc_simple!(ASTIdent<'src>);
+#[derive(Debug, Clone)]
+pub enum ASTIdentValue<'src> {
+    Name(&'src str),
+    Super,
+    Root,
+    SelfVar,
+    SelfTy,
+}
+
+#[derive(Debug, Clone)]
+pub struct ASTAnnot {
+    /// If public keyword, this is the location of that keyword.
+    pub is_public: Option<Loc>,
+    pub doc: Option<Vec<ASTDoc>>,
+    // TODO attr macros
+}
+impl ASTAnnot {
+    pub fn take(&mut self) -> Self {
+        let mut replacement = Self {
+            doc: None,
+            is_public: None,
+        };
+        std::mem::swap(self, &mut replacement);
+        replacement
+    }
+}
 #[derive(Debug, Clone)]
 pub struct ASTDoc {
     pub loc: Loc,
@@ -254,11 +309,10 @@ pub struct ASTDoc {
 #[derive(Debug, Clone)]
 pub enum ASTType<'src> {
     /// A simple named type, like `int` or `BinaryTree`.
-    Named { name: &'src str, loc: Loc },
+    Ident(ASTIdent<'src>),
     /// Types of the form `Inner.Name`
     Access {
-        loc_name: Loc,
-        name: &'src str,
+        ident: ASTIdent<'src>,
         inner: Box<ASTType<'src>>,
     },
     /// types of the form `A<B,C,D=E>
@@ -266,16 +320,18 @@ pub enum ASTType<'src> {
         loc: Loc,
         inner: Box<ASTType<'src>>,
         params: Vec<ASTType<'src>>,
-        named_params: Option<Vec<((&'src str, Loc), Option<ASTType<'src>>)>>,
+        named_params: Option<Vec<(ASTName<'src>, Option<ASTType<'src>>)>>,
     },
     /// Types of the form `(A,B,C)`
     Tuple { loc: Loc, inner: Vec<ASTType<'src>> },
     /// Parentheses in types. Used for disambiguation.
-    Paren { loc: Loc, inner: Box<ASTType<'src>> },
+    Paren {
+        loc: Loc,
+        inner: Option<Box<ASTType<'src>>>,
+    },
     //// TODO not included for the time being, as they are aliases for other types
     //// and I need to decide how to handle that:
     // Ref {
-    //     name: &'src str,
     //     mutable: bool,
     //     inner: Box<ASTType<'src>>,
     // },
@@ -286,28 +342,21 @@ pub enum ASTType<'src> {
 impl<'src> HasLoc for ASTType<'src> {
     fn loc(&self) -> Loc {
         match self {
-            Self::Named { loc, .. }
+            Self::Ident(ASTIdent { loc, .. })
             | Self::TypeParam { loc, .. }
             | Self::Tuple { loc, .. }
             | Self::Paren { loc, .. } => *loc,
-            Self::Access {
-                loc_name: name_loc,
-                inner,
-                ..
-            } => name_loc.merge(inner.loc()),
+            Self::Access { ident, inner, .. } => ident.loc().merge(inner.loc()),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum ASTDestructure<'src> {
-    Name {
-        loc: Loc,
-        name: &'src str,
-    },
+    Name(ASTName<'src>),
     Paren {
         loc: Loc,
-        inner: Box<ASTDestructure<'src>>,
+        inner: Option<Box<ASTDestructure<'src>>>,
     },
     Tuple {
         loc: Loc,
@@ -318,7 +367,9 @@ pub enum ASTDestructure<'src> {
 impl<'src> HasLoc for ASTDestructure<'src> {
     fn loc(&self) -> Loc {
         match self {
-            Self::Name { loc, .. } | Self::Tuple { loc, .. } | Self::Paren { loc, .. } => *loc,
+            Self::Name(ASTName { loc, .. }) | Self::Tuple { loc, .. } | Self::Paren { loc, .. } => {
+                *loc
+            }
         }
     }
 }
@@ -339,7 +390,8 @@ impl<'src> HasLoc for ASTTypedDestructure<'src> {
 #[derive(Debug, Clone)]
 pub struct ASTConst<'src> {
     pub loc: Loc,
-    pub name: Option<&'src str>,
+    pub annot: ASTAnnot,
+    pub name: Option<ASTName<'src>>,
     pub ty: Option<ASTType<'src>>,
     pub value: Option<ASTExpr<'src>>,
 }
@@ -347,26 +399,24 @@ pub struct ASTConst<'src> {
 #[derive(Debug, Clone)]
 pub struct ASTTrait<'src> {
     pub loc: Loc,
-    pub name: Option<&'src str>,
-    pub doc: Option<ASTDoc>,
-    pub templates: Templates<'src>,
-    pub bounds: Option<ASTType<'src>>,
-    pub functions: Vec<ASTFunction<'src>>,
-    pub consts: Vec<ASTConst<'src>>,
-    // [TODO:0000] type aliases
+    pub annot: ASTAnnot,
+    pub name: Option<ASTName<'src>>,
+    pub templates: TemplateBounds<'src>,
+    pub bounds: Option<Vec<ASTType<'src>>>,
+    pub contents: ASTImplContents<'src>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ASTData<'src> {
     pub loc: Loc,
-    pub name: Option<&'src str>,
-    pub doc: Option<ASTDoc>,
-    pub templates: Templates<'src>,
+    pub annot: ASTAnnot,
+    pub name: Option<ASTName<'src>>,
+    pub templates: TemplateBounds<'src>,
+    pub contents: ASTDataContents<'src>,
     pub attatched_impls: Vec<ASTImpl<'src>>,
-    pub consts: Vec<ASTConst<'src>>,
 }
 #[derive(Debug, Clone)]
-enum ASTDataContents<'src> {
+pub enum ASTDataContents<'src> {
     Unit,
     Struct {
         properties: Vec<ASTDataProperty<'src>>,
@@ -379,14 +429,14 @@ enum ASTDataContents<'src> {
     },
 }
 #[derive(Debug, Clone)]
-struct ASTEnumVariant<'src> {
+pub struct ASTEnumVariant<'src> {
     pub loc: Loc,
-    pub name: &'src str,
-    pub doc: Option<ASTDoc>,
-    pub which: ASTEnumVariantType<'src>,
+    pub annot: ASTAnnot,
+    pub name: ASTName<'src>,
+    pub contents: ASTEnumVariantType<'src>,
 }
 #[derive(Debug, Clone)]
-enum ASTEnumVariantType<'src> {
+pub enum ASTEnumVariantType<'src> {
     Unit,
     Struct {
         properties: Vec<ASTDataProperty<'src>>,
@@ -396,23 +446,41 @@ enum ASTEnumVariantType<'src> {
     },
 }
 #[derive(Debug, Clone)]
+pub struct ASTTypeAlias<'src> {
+    pub loc: Loc,
+    pub annot: ASTAnnot,
+    pub templates: TemplateBounds<'src>,
+    pub name: Option<ASTName<'src>>,
+    pub value: Option<ASTType<'src>>,
+}
+#[derive(Debug, Clone)]
 pub struct ASTFreeImpl<'src> {
-    pub target: ASTType<'src>,
+    pub target: Option<ASTType<'src>>,
     pub attatched_impl: ASTImpl<'src>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ASTDataProperty<'src> {
     pub loc: Loc,
-    pub name: &'src str,
-    pub ty: ASTType<'src>,
-    pub doc: Option<ASTDoc>,
+    pub annot: ASTAnnot,
+    pub name: ASTName<'src>,
+    pub ty: Option<ASTType<'src>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ASTImpl<'src> {
     pub loc: Loc,
-    pub templates: Templates<'src>,
+    pub templates: TemplateBounds<'src>,
     pub target_trait: Option<ASTType<'src>>,
-    pub functions: Vec<ASTFunction<'src>>,
+    pub contents: ASTImplContents<'src>,
 }
+impl_hasloc_simple!(ASTImpl<'src>);
+
+#[derive(Debug, Clone)]
+pub struct ASTImplContents<'src> {
+    pub loc: Loc,
+    pub functions: Vec<ASTFunction<'src>>,
+    pub consts: Option<Vec<ASTConst<'src>>>,
+    pub types: Option<Vec<ASTTypeAlias<'src>>>,
+}
+impl_hasloc_simple!(ASTImplContents<'src>);

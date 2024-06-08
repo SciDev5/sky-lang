@@ -38,21 +38,35 @@ pub enum TPrefixOperatorType {
     // ---- Range ---- //
     RangeTo,
 }
+impl TPrefixOperatorType {
+    /// higher precedence -> evaluated first
+    pub fn precedence(self) -> u8 {
+        match self {
+            Self::Ref => 100,
+            Self::Deref => 100,
+            Self::Inverse => 71,
+            Self::Neg => 61,
+            Self::Not => 36,
+            Self::RangeTo => 10,
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TPostfixOperatorType {
-    // ---- Compare ---- //
-    CompareGreater,
-    CompareLess,
-    CompareGreaterEqual,
-    CompareLessEqual,
-    CompareEqual,
-    CompareNotEqual,
-
     // ---- Arithmetic ---- //
     Conjugate,
 
     // ---- Range ---- //
     RangeFrom,
+}
+impl TPostfixOperatorType {
+    /// higher precedence -> evaluated first
+    pub fn precedence(self) -> u8 {
+        match self {
+            Self::Conjugate => 80,
+            Self::RangeFrom => 10,
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TInfixOperatorType {
@@ -82,6 +96,45 @@ pub enum TInfixOperatorType {
 
     // ---- Range ---- //
     RangeFromTo,
+}
+impl TInfixOperatorType {
+    /// higher precedence -> evaluated first
+    pub fn precedence(self) -> u8 {
+        match self {
+            Self::Exponentiate => 70,
+
+            Self::Multiply => 60,
+            Self::Divide => 60,
+            Self::Modulo => 60,
+            Self::Remainder => 60,
+
+            Self::Add => 50,
+            Self::Subtract => 50,
+
+            Self::Shl => 40,
+            Self::Shr => 40,
+
+            Self::CompareGreater => 35,
+            Self::CompareLess => 35,
+            Self::CompareGreaterEqual => 35,
+            Self::CompareLessEqual => 35,
+
+            Self::CompareEqual => 30,
+            Self::CompareNotEqual => 30,
+
+            Self::Or => 20,
+            Self::And => 20,
+            Self::Xor => 20,
+
+            Self::RangeFromTo => 10,
+        }
+    }
+    /// whether for any given operator `;`, `a ; b ; c` is read as
+    /// `(a ; b) ; c` (left associative), or `a ; (b ; c)` (right
+    /// associative).
+    pub fn right_associative(self) -> bool {
+        matches!(self, Self::Exponentiate)
+    }
 }
 
 macro_rules! gen_TSymbol {
@@ -321,7 +374,7 @@ pub enum TokenContent<'src> {
     Number {
         decimal: bool,
         exp: bool,
-        base: u8,
+        radix: u8,
         unparsed: &'src str,
     },
     Str {
@@ -510,7 +563,7 @@ fn tokenize_numeric<'src>(state: &mut TokenizeIter<'src>) -> Option<TokenContent
     Some(TokenContent::Number {
         decimal,
         exp,
-        base,
+        radix: base,
         unparsed: state.pop_continue_as_str(),
     })
 }

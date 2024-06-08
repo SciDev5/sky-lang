@@ -1,5 +1,10 @@
+use std::num::IntErrorKind;
+
 use crate::{
-    front::{ast::ASTEnumVariant, tokenize::TSymbol},
+    front::{
+        ast::{ASTEnumVariant, ASTLiteral},
+        tokenize::{TInfixOperatorType, TPostfixOperatorType, TPrefixOperatorType, TSymbol},
+    },
     lint::diagnostic::{DiagnosticContent, ToDiagnostic},
 };
 
@@ -8,8 +13,8 @@ use super::{
         ASTAnnot, ASTBlock, ASTConst, ASTData, ASTDataContents, ASTDataProperty, ASTDeclr,
         ASTDestructure, ASTDoc, ASTEnumVariantType, ASTExpr, ASTFreeImpl, ASTFunction, ASTIdent,
         ASTIdentValue, ASTImpl, ASTImplContents, ASTImport, ASTImportTree, ASTLambda, ASTName,
-        ASTSourceFile, ASTStmt, ASTSubBlocked, ASTTemplateBound, ASTTrait, ASTType, ASTTypeAlias,
-        ASTTypedDestructure, ASTVarDeclare,
+        ASTPostfixBlock, ASTSourceFile, ASTStmt, ASTSubBlocked, ASTTemplateBound, ASTTrait,
+        ASTType, ASTTypeAlias, ASTTypedDestructure, ASTVarDeclare,
     },
     source::{HasLoc, Loc},
     tokenize::{TBracketType, TKeyword, Token, TokenContent},
@@ -19,6 +24,13 @@ use super::{
 pub enum ParseDiagnostic {
     // comment syntax //
     CommentMissingClosing,
+
+    // expr syntax //
+    IntOverflowPos,
+    IntOverflowNeg,
+    StringMissingClosing,
+    StringIllegalInterpolation,
+    ExpectedExpr,
 
     // grouping syntax //
     ExpectedClosing,
@@ -275,8 +287,8 @@ impl<'a, 'src> Parser<'a, 'src> {
     /// Peeks the next token using [`Self::next`], and calls the given lambda on it.
     /// If either [`Self::next`] or the lambda return `None`, reverts state. Otherwise, returns the resultant value.
     ///
-    /// ```
-    /// let loc = super::source::Loc { start: 0, length: 0 };
+    /// ```ignore
+    /// let loc = Loc { start: 0, length: 0 };
     /// let tokens = [
     ///     TokenContent::Identifier("a"),
     ///     TokenContent::Space { has_linebreak: true },
@@ -349,6 +361,25 @@ impl<'a, 'src> Parser<'a, 'src> {
             self.i = i_prev;
             None
         }
+    }
+
+    /// Peeks ahead to see if there is a linebreak coming up before the next non-empty token.
+    fn peek_has_linebreak(&mut self) -> bool {
+        let mut has_newline = false;
+        let mut i = self.i;
+        while let Some(newline) = self
+            .tokens
+            .get(i)
+            .and_then(|Token { content, .. }| match content {
+                TokenContent::Comment { content, .. } => Some(content.contains('\n')),
+                TokenContent::Space { has_linebreak } => Some(*has_linebreak),
+                _ => None,
+            })
+        {
+            has_newline |= newline;
+            i += 1;
+        }
+        has_newline
     }
 
     /// Reverts the state to as it was at the beginning of this call if the given function
@@ -614,7 +645,7 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
 
     fn parse_stmt(&mut self) -> Option<ASTStmt<'src>> {
-        if let Some(expr) = self.parse_expr() {
+        if let Some(expr) = self.parse_expr_non_greedy() {
             if let Some((assign_op, assign_symbol_loc)) =
                 self.next_if_peek_and(|token, _| match token {
                     TokenContent::Symbol(symbol) => symbol.as_assign_op(),
@@ -622,7 +653,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                 })
             {
                 // ASTStmt::VarAssign //
-                let rhs = self.parse_expr();
+                let rhs = self.parse_expr_non_greedy();
                 if rhs.is_none() {
                     self.raise(
                         ParseDiagnostic::ExpectedAssignValue,
@@ -663,19 +694,887 @@ impl<'a, 'src> Parser<'a, 'src> {
             .map(|(body, loc)| ASTBlock { loc, body })
     }
 
-    #[inline]
-    fn _parse_expr_generic<const BEFORE_BLOCK: bool>(&mut self) -> Option<ASTExpr<'src>> {
-        todo!();
-    }
     fn parse_expr_before_block(&mut self) -> Option<ASTExpr<'src>> {
-        self._parse_expr_generic::<true>()
+        self._parse_expr_generic::<true, true>()
     }
-    fn parse_expr(&mut self) -> Option<ASTExpr<'src>> {
-        self._parse_expr_generic::<false>()
+    fn parse_expr_non_greedy(&mut self) -> Option<ASTExpr<'src>> {
+        self._parse_expr_generic::<false, false>()
+    }
+    fn parse_expr_greedy(&mut self) -> Option<ASTExpr<'src>> {
+        self._parse_expr_generic::<false, true>()
+    }
+    #[inline]
+    fn _parse_expr_generic<const BEFORE_BLOCK: bool, const GREEDY_MATCH: bool>(
+        &mut self,
+    ) -> Option<ASTExpr<'src>> {
+        // ASTExpr::OpPrefix //
+        // ASTExpr::OpPostfix //
+        // ASTExpr::OpInfix //
+
+        /*
+
+
+        a + b
+
+        a +
+        b
+
+        a
+        + b
+
+
+        a * b
+
+        a *
+        b
+
+        a
+        * b
+
+        a : * : b
+        ( sip sip sip ) -> ipp
+        a : ( *( :b) )
+
+        * - *
+        ( si ip si )
+
+
+        ( si si [si ip] ip ip)
+
+
+        ( [si sip sip ip] ip ip)
+
+        ( s si s [i] pi p )  -> (sssipp)
+
+        ( si pi )  -> si | (ip)
+
+         */
+        type TS = TPostfixOperatorType;
+        type TI = TInfixOperatorType;
+        type TP = TPrefixOperatorType;
+
+        let mut p: Vec<(TP, Loc)> = std::iter::repeat(())
+            .map_while(|_| {
+                self.next_if_peek_and(|token, _| match token {
+                    TokenContent::Symbol(s) => s.as_prefix_op(),
+                    _ => None,
+                })
+            })
+            .collect();
+        let mut expr_prev = if let Some(expr) =
+            self._parse_expr_with_postfix_blocks::<GREEDY_MATCH>()
+        {
+            expr
+        } else if p.is_empty() {
+            // nothing matched, fail.
+            return None;
+        } else {
+            self.raise(todo!("DIAGNOSTIC HERE !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"), p.first().unwrap().loc().merge(p.last().unwrap().loc()));
+            todo!("error expressions");
+        };
+        let mut s: Vec<(TS, Loc)> = Vec::new();
+
+        let mut si: Option<((TS, TI), Loc)> = None;
+        let mut i: Option<(TI, Loc)> = None;
+        let mut sip: Vec<((TS, TI, TP), Loc)> = Vec::new();
+
+        #[derive(Debug)]
+        enum MSYOp {
+            S(TS),
+            I(TI),
+            P(TP),
+        }
+        #[derive(Debug)]
+        enum MSYObj<'src> {
+            Expr(ASTExpr<'src>),
+            Op(MSYOp, Loc),
+        }
+        let mut msy_in: Vec<MSYObj<'src>> =
+            Vec::from_iter(p.drain(..).map(|(op, loc)| MSYObj::Op(MSYOp::P(op), loc)));
+
+        fn drain_si_to_s(
+            s: &mut Vec<(TS, Loc)>,
+            si: &mut Option<((TS, TI), Loc)>,
+            sip: &mut Vec<((TS, TI, TP), Loc)>,
+        ) {
+            s.extend(si.take().map(|((s, _), loc)| (s, loc)).into_iter());
+            s.extend(sip.drain(..).map(|((s, _, _), loc)| (s, loc)).into_iter());
+        }
+        fn choose_i(
+            s: &mut Vec<(TS, Loc)>,
+            i: &mut Option<(TI, Loc)>,
+            p: &mut Vec<(TP, Loc)>,
+            si: &mut Option<((TS, TI), Loc)>,
+            ip: Option<((TI, TP), Loc)>,
+            sip: &mut Vec<((TS, TI, TP), Loc)>,
+        ) -> bool {
+            fn si_to_s(((s, _), loc): ((TS, TI), Loc)) -> (TS, Loc) {
+                (s, loc)
+            }
+            fn si_to_i(((_, i), loc): ((TS, TI), Loc)) -> (TI, Loc) {
+                (i, loc)
+            }
+            fn ip_to_i(((i, _), loc): ((TI, TP), Loc)) -> (TI, Loc) {
+                (i, loc)
+            }
+            fn ip_to_p(((_, p), loc): ((TI, TP), Loc)) -> (TP, Loc) {
+                (p, loc)
+            }
+            fn sip_to_s(((s, _, _), loc): ((TS, TI, TP), Loc)) -> (TS, Loc) {
+                (s, loc)
+            }
+            fn sip_to_i(((_, i, _), loc): ((TS, TI, TP), Loc)) -> (TI, Loc) {
+                (i, loc)
+            }
+            fn sip_to_p(((_, _, p), loc): ((TS, TI, TP), Loc)) -> (TP, Loc) {
+                (p, loc)
+            }
+            assert!(p.is_empty());
+            assert!(i.is_none());
+            let si = si.take().map(|si| (si.0 .1.precedence(), si));
+            let ip = ip.map(|ip| (ip.0 .0.precedence(), ip));
+            let sip_i = sip
+                .iter()
+                .map(|((_, i_, _), _)| i_.precedence())
+                .enumerate()
+                .min_by_key(|(_, pr)| *pr);
+
+            macro_rules! sip_to_s_i_and_p {
+                ($sip_i: expr) => {
+                    s.extend(sip.drain(..$sip_i).map(sip_to_s));
+                    *i = Some(sip_to_i(sip.remove(0)));
+                    p.extend(sip.drain(..).map(sip_to_p));
+                };
+            }
+
+            match (si, ip, sip_i) {
+                (Some((pr_si, si)), Some((pr_ip, ip)), Some((sip_i, pr_sip))) => {
+                    if pr_si < pr_ip && pr_si < pr_sip {
+                        // s[i] sip ip
+                        *i = Some(si_to_i(si));
+                        p.extend(sip.drain(..).map(sip_to_p));
+                        p.push(ip_to_p(ip));
+                    } else if pr_ip < pr_si && pr_ip < pr_sip {
+                        // si sip [i]p
+                        s.push(si_to_s(si));
+                        s.extend(sip.drain(..).map(sip_to_s));
+                        *i = Some(ip_to_i(ip));
+                    } else {
+                        // si s[i]p ip
+                        s.push(si_to_s(si));
+                        sip_to_s_i_and_p!(sip_i);
+                        p.push(ip_to_p(ip));
+                    }
+                }
+                (Some((pr_si, si)), Some((pr_ip, ip)), None) => {
+                    if pr_si < pr_ip {
+                        // s[i] ip
+                        *i = Some(si_to_i(si));
+                        p.push(ip_to_p(ip));
+                    } else {
+                        // si [i]p
+                        s.push(si_to_s(si));
+                        *i = Some(ip_to_i(ip));
+                    }
+                }
+                (Some((pr_si, si)), None, Some((sip_i, pr_sip))) => {
+                    if pr_si < pr_sip {
+                        // s[i] sip
+                        *i = Some(si_to_i(si));
+                        p.extend(sip.drain(..).map(sip_to_p));
+                    } else {
+                        // si s[i]p
+                        s.push(si_to_s(si));
+                        sip_to_s_i_and_p!(sip_i);
+                    }
+                }
+                (Some((_, si)), None, None) => {
+                    // s[i]
+                    *i = Some(si_to_i(si));
+                }
+                (None, Some((pr_ip, ip)), Some((sip_i, pr_sip))) => {
+                    if pr_ip < pr_sip {
+                        // sip [i]p
+                        s.extend(sip.drain(..).map(sip_to_s));
+
+                        *i = Some(ip_to_i(ip));
+                    } else {
+                        // s[i]p ip
+                        sip_to_s_i_and_p!(sip_i);
+                        p.push(ip_to_p(ip));
+                    }
+                }
+                (None, Some((_, ip)), None) => {
+                    // [i]p
+                    *i = Some(ip_to_i(ip));
+                }
+                (None, None, Some((sip_i, _))) => {
+                    // s[i]p
+                    sip_to_s_i_and_p!(sip_i);
+                }
+                (None, None, None) => return false,
+            }
+            true
+        }
+
+        loop {
+            let expr = if i.is_some() || si.is_some() || !sip.is_empty() {
+                self._parse_expr_with_postfix_blocks::<GREEDY_MATCH>()
+            } else {
+                None
+            };
+
+            if let Some(expr) = expr {
+                ///////// received an expression /////////
+
+                if i.is_none() {
+                    choose_i(&mut s, &mut i, &mut p, &mut si, None, &mut sip);
+                }
+
+                msy_in.push(MSYObj::Expr(expr_prev));
+                msy_in.extend(s.drain(..).map(|(op, loc)| MSYObj::Op(MSYOp::S(op), loc)));
+                msy_in.push(
+                    i.take()
+                        .map(|(op, loc)| MSYObj::Op(MSYOp::I(op), loc))
+                        .unwrap(),
+                );
+                msy_in.extend(p.drain(..).map(|(op, loc)| MSYObj::Op(MSYOp::P(op), loc)));
+                expr_prev = expr;
+            } else if let Some((s_, i_, p_, loc)) = self.guard_state(|parser| {
+                ///////// try for an operator /////////
+                let (sy, newline_before, loc) = match parser.next()? {
+                    (
+                        Token {
+                            content: TokenContent::Symbol(sy),
+                            loc,
+                        },
+                        newline,
+                    ) => (sy, newline, loc),
+                    _ => return None,
+                };
+
+                let mut s_ = sy.as_postfix_op();
+                let mut i_ = sy.as_infix_op();
+                let mut p_ = sy.as_prefix_op();
+
+                // handle linebreaks for non-greedy mode
+                if !GREEDY_MATCH {
+                    let newline_after = parser.peek_has_linebreak();
+                    match (newline_before, newline_after) {
+                        (false, false) => {}
+                        (true, false) => {
+                            s_ = None;
+                            if p_.is_some() {
+                                i_ = None;
+                            }
+                        }
+                        (false, true) => {
+                            p_ = None;
+                            if s_.is_some() {
+                                i_ = None;
+                            }
+                        }
+                        (true, true) => {
+                            if s_.is_some() || p_.is_some() {
+                                return None;
+                            }
+                        }
+                    }
+                }
+                if s_.is_none() && i_.is_none() && p_.is_none() {
+                    return None;
+                }
+
+                // constrain from state
+                if i.is_some() || p.len() > 0 {
+                    // definitely passed infix
+                    // >> only allow prefix for next expr now.
+                    s_ = None;
+                    i_ = None;
+
+                    if GREEDY_MATCH {
+                        if newline_before && p_.is_none() {
+                            return None;
+                        }
+                    }
+                } else {
+                    // may or may not have passed infix
+                    // >> still allow anything
+                }
+                Some((s_, i_, p_, loc))
+            }) {
+                ///////// received an operator /////////
+
+                // update state
+                if i.is_some() {
+                    // definitely passed infix
+
+                    if let Some(p_) = p_ {
+                        p.push((p_, loc));
+                    } else {
+                        self.raise(todo!("DIAGNOSTIC HERE !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"), loc);
+                    }
+                } else {
+                    // may or may not have passed infix
+
+                    match (s_, i_, p_) {
+                        (Some(s_), Some(i_), Some(p_)) => {
+                            // sip
+                            sip.push(((s_, i_, p_), loc));
+                        }
+                        (Some(s_), Some(i_), None) => {
+                            // si
+                            drain_si_to_s(&mut s, &mut si, &mut sip);
+                            si = Some(((s_, i_), loc));
+                        }
+                        (Some(s_), None, Some(p_)) => {
+                            // sp
+                            dbg!("TODO what to do with `sp` operator case, defaulting to treating it like `s`");
+                            {
+                                let _ = p_;
+                                // as: s
+                                drain_si_to_s(&mut s, &mut si, &mut sip);
+                                s.push((s_, loc));
+                            }
+                        }
+                        (Some(s_), None, None) => {
+                            // s
+                            drain_si_to_s(&mut s, &mut si, &mut sip);
+                            s.push((s_, loc));
+                        }
+                        (None, Some(i_), Some(p_)) => {
+                            // ip
+                            choose_i(
+                                &mut s,
+                                &mut i,
+                                &mut p,
+                                &mut si,
+                                Some(((i_, p_), loc)),
+                                &mut sip,
+                            );
+                        }
+                        (None, Some(i_), None) => {
+                            // i
+                            drain_si_to_s(&mut s, &mut si, &mut sip);
+                            i = Some((i_, loc))
+                        }
+                        (None, None, Some(p_)) => {
+                            // p
+                            choose_i(&mut s, &mut i, &mut p, &mut si, None, &mut sip);
+                            p.push((p_, loc))
+                        }
+                        (None, None, None) => {
+                            // -
+                            self.raise(todo!("DIAGNOSTIC HERE !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"), loc);
+                        }
+                    }
+                }
+                continue;
+            } else {
+                // no match, break
+                break;
+            }
+        }
+
+        if let Some((i, loc)) = i {
+            self.raise(todo!("DIAGNOSTIC HERE !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"), loc);
+        }
+        drain_si_to_s(&mut s, &mut si, &mut sip);
+        if msy_in.is_empty() && s.is_empty() {
+            return Some(expr_prev);
+        }
+        msy_in.push(MSYObj::Expr(expr_prev));
+        msy_in.extend(s.into_iter().map(|(op, loc)| MSYObj::Op(MSYOp::S(op), loc)));
+
+        /// I don't remember how shunting yard goes so I'm reinventing it lol.
+        ///
+        /// msy -> "[m]odified [s]hunting [y]ard"
+        fn msy(msy_in: Vec<MSYObj>) -> ASTExpr {
+            // how the algorithm should work:
+            //   ( format is "input | value ; op_stack" )
+
+            // a |  a ;
+            // + |  _ ; (a+_)
+            // b |  b ; (a+_)
+            // + |  _ ; ((a+b)+_)
+            // c |  c ; ((a+b)+_)
+            //   |  ((a+b)+c) ;
+
+            // - |  _ ; (-_)
+            // - |  _ ; (-_) (-_)
+            // a |  a ; (-_) (-_)
+            // + |  _ ; ((-(-a))+_)
+            // b |  b ; ((-(-a))+_)
+            // + |  _ ; (((-(-a))+b)+_)
+            // c |  c ; (((-(-a))+b)+_)
+            //   |  (((-(-a))+b)+c) ;
+
+            // a |  a ;
+            // + |  _ ; (a+_)
+            // b |  b ; (a+_)
+            // + |  _ ; ((a+b)+_)
+            // c |  c ; ((a+b)+_)
+            // : |  (((a+b)+c):) ;
+
+            // a |  a ;
+            // + |  _ ; (a+_)
+            // b |  b ; (a+_)
+            // * |  _ ; (a+_) (b*_)
+            // c |  c ; (a+_) (b*_)
+            //   |  (b*c) ; (a+_)
+            //   |  (a+(b*c)) ;
+
+            // a |  a ;
+            // ^ |  _ ; (a^_)
+            // b |  b ; (a^_)
+            // ^ |  _ ; (a^_) (b^_)
+            // c |  c ; (a^_) (b^_)
+            //   |  (b^c) ; (a^_)
+            //   |  (a^(b^c)) ;
+
+            let mut value = None;
+            let mut op_stack: Vec<(OpStackEnt, u8)> = Vec::new();
+            enum OpStackEnt<'src> {
+                I((TI, Loc), ASTExpr<'src>),
+                P((TP, Loc)),
+            }
+            impl<'src> OpStackEnt<'src> {
+                fn apply(self, rhs: ASTExpr<'src>) -> ASTExpr<'src> {
+                    match self {
+                        OpStackEnt::I(op, lhs) => ASTExpr::OpInfix {
+                            loc: lhs.loc().merge(rhs.loc()),
+                            inner: (Box::new(lhs), Box::new(rhs)),
+                            op,
+                        },
+                        OpStackEnt::P(op) => ASTExpr::OpPrefix {
+                            loc: op.1.merge(rhs.loc()),
+                            inner: Box::new(rhs),
+                            op,
+                        },
+                    }
+                }
+            }
+
+            for obj in msy_in {
+                match (obj, value) {
+                    (MSYObj::Expr(expr), None) => {
+                        value = Some(expr);
+                    }
+                    (MSYObj::Op(MSYOp::I(op), loc), Some(mut v)) => {
+                        // [ prev_value ; ... ]   "... <op>"
+                        let precedence_self = op.precedence();
+
+                        loop {
+                            match op_stack.pop() {
+                                None => break,
+                                Some((popped_op, precedence_other)) => {
+                                    if precedence_self > precedence_other
+                                        || (precedence_self == precedence_other
+                                            && op.right_associative())
+                                    {
+                                        // right hand side associates "a * (b * c)"
+                                        // [ b ; (a^_) ]  ->  [ _ ; (a^_) (b^_) ]
+
+                                        // put it back and break
+                                        op_stack.push((popped_op, precedence_other));
+                                        break;
+                                    } else {
+                                        // left hand side associates "(a * b) * c"
+                                        // [ b ; (a+_) (-_) ]  ->  [ _ ; ((a+(-b))+_) ]
+
+                                        // CONSUME
+                                        v = popped_op.apply(v);
+                                    }
+                                }
+                            }
+                        }
+
+                        op_stack.push((OpStackEnt::I((op, loc), v), precedence_self));
+
+                        value = None;
+                    }
+                    (MSYObj::Op(MSYOp::P(op), loc), None) => {
+                        // prefix, push it to the operator stack
+                        op_stack.push((OpStackEnt::P((op, loc)), op.precedence()));
+                        value = None;
+                    }
+                    (MSYObj::Op(MSYOp::S(op), loc), Some(mut v)) => {
+                        // [ prev_value ; ... ]   "... <op>"
+                        let precedence_self = op.precedence();
+
+                        loop {
+                            match op_stack.pop() {
+                                None => break,
+                                Some((popped_op, precedence_other)) => {
+                                    if precedence_self > precedence_other {
+                                        // right hand side associates "a * (b * c)"
+                                        // [ b ; (a^_) ]  ->  [ _ ; (a^_) (b^_) ]
+
+                                        // put it back and break
+                                        op_stack.push((popped_op, precedence_other));
+                                        break;
+                                    } else {
+                                        // left hand side associates "(a * b) * c"
+                                        // [ b ; (a+_) (-_) ]  ->  [ _ ; ((a+(-b))+_) ]
+
+                                        // CONSUME
+                                        v = popped_op.apply(v);
+                                    }
+                                }
+                            }
+                        }
+
+                        value = Some(ASTExpr::OpPostfix {
+                            loc: v.loc().merge(loc),
+                            inner: Box::new(v),
+                            op: (op, loc),
+                        });
+                    }
+                    _ => panic!(
+                        "[{}:{}] should be unreachable, this means invalid input in `msy_in`",
+                        file!(),
+                        line!(),
+                    ),
+                }
+            }
+
+            let mut value = if let Some(value) = value {
+                value
+            } else {
+                panic!(
+                    "[{}:{}] should be unreachable, this means invalid input in `msy_in`",
+                    file!(),
+                    line!(),
+                )
+            };
+
+            while let Some((popped_op, _)) = op_stack.pop() {
+                value = popped_op.apply(value);
+            }
+
+            value
+        }
+
+        Some(msy(msy_in))
     }
 
-    fn parse_type_optional(&mut self) -> (Option<ASTType<'src>>, Option<Loc>) {
-        if let Some(loc_colon) = self.next_if_eq(TokenContent::Symbol(TSymbol::Colon)) {
+    fn _parse_expr_with_postfix_blocks<const GREEDY_MATCH: bool>(
+        &mut self,
+    ) -> Option<ASTExpr<'src>> {
+        let mut current = self._parse_expr_simple()?;
+        while let Some(postfix) = self.parse_postfix_block::<GREEDY_MATCH>() {
+            // ASTExpr::PostfixBlock //
+            current = ASTExpr::PostfixBlock {
+                inner: Box::new(current),
+                postfix,
+            };
+        }
+        Some(current)
+    }
+    fn parse_postfix_block<const GREEDY_MATCH: bool>(
+        &mut self,
+    ) -> Option<(ASTPostfixBlock<'src>, Loc)> {
+        todo!()
+    }
+
+    fn _parse_expr_simple(&mut self) -> Option<ASTExpr<'src>> {
+        Some(if let Some((value, loc)) = self.parse_literal() {
+            // ASTExpr::Literal //
+            ASTExpr::Literal { loc, value }
+        } else if let Some(ident) = self.parse_ident() {
+            // ASTExpr::Ident //
+            ASTExpr::Ident(ident)
+        } else if let Some(lambda) = self.parse_inline_lambda() {
+            // ASTExpr::Lambda //
+            ASTExpr::Lambda(lambda)
+        } else if let Some((inner, loc)) = self.parse_keyword_then_optional_expr(TKeyword::Return) {
+            // ASTExpr::Return //
+            ASTExpr::Return {
+                loc,
+                inner: inner.map(Box::new),
+            }
+        } else if let Some((inner, loc)) = self.parse_keyword_then_optional_expr(TKeyword::Break) {
+            // ASTExpr::Break //
+            ASTExpr::Break {
+                loc,
+                inner: inner.map(Box::new),
+            }
+        } else if let Some(loc) = self.next_if_eq(TokenContent::Keyword(TKeyword::Continue)) {
+            // ASTExpr::Continue //
+            ASTExpr::Continue { loc }
+        } else if let Some(x) = self.parse_subblocked() {
+            // ASTExpr::SubBlocked //
+            ASTExpr::SubBlocked(x)
+        } else if let Some((inner, loc)) =
+            self.parse_paren_or_tuple(Self::parse_expr_greedy, &ParseDiagnostic::ExpectedExpr)
+        {
+            match inner {
+                // ASTExpr::Parentheses //
+                HelperParenOrTuple::Paren(inner) => ASTExpr::Parentheses { loc, inner },
+                // ASTExpr::Array [tuple] //
+                HelperParenOrTuple::Tuple(inner) => ASTExpr::Array {
+                    loc,
+                    inner,
+                    is_tuple: true,
+                },
+            }
+        } else if let Some((inner, loc)) = self.parse_brackets(TBracketType::Square, true, |p| {
+            p.parse_list_commasep(Self::parse_expr_greedy, &ParseDiagnostic::ExpectedExpr)
+        }) {
+            // ASTExpr::Array [array] //
+            ASTExpr::Array {
+                loc,
+                inner,
+                is_tuple: false,
+            }
+        } else {
+            return None;
+        })
+    }
+
+    fn parse_keyword_then_optional_expr(
+        &mut self,
+        keyword: TKeyword,
+    ) -> Option<(Option<ASTExpr<'src>>, Loc)> {
+        let loc_start = self.next_if_eq(TokenContent::Keyword(keyword))?;
+
+        let expr = self.parse_expr_greedy();
+        let loc = loc_start.merge_some(loc_of!(expr));
+        Some((expr, loc))
+    }
+    fn parse_literal(&mut self) -> Option<(ASTLiteral<'src>, Loc)> {
+        self.guard_state(|p| {
+            let Token { loc, content } = p.next()?.0;
+            Some((
+                match content {
+                    TokenContent::Bool(v) => {
+                        // bool //
+                        ASTLiteral::Bool(v)
+                    }
+
+                    TokenContent::Number {
+                        decimal,
+                        exp,
+                        radix,
+                        unparsed,
+                    } => {
+                        if decimal || exp {
+                            // float //
+                            if radix == 10 {
+                                ASTLiteral::Float(
+                                    unparsed
+                                        .parse()
+                                        .expect("TODO invalid floats / error expressions"),
+                                    unparsed
+                                        .parse()
+                                        .expect("TODO invalid floats / error expressions"),
+                                )
+                            } else {
+                                todo!("parsing non-decimal floats")
+                            }
+                        } else {
+                            match if unparsed.starts_with('-') {
+                                // negative integer //
+                                i128::from_str_radix(unparsed, radix as u32)
+                                    .map(|n| ASTLiteral::NInt(n))
+                            } else {
+                                // integer //
+                                u128::from_str_radix(unparsed, radix as u32)
+                                    .map(|n| ASTLiteral::Int(n))
+                            } {
+                                Ok(int) => int,
+                                Err(err) => {
+                                    let diagnostic = match err.kind() {
+                                        IntErrorKind::PosOverflow => {
+                                            ParseDiagnostic::IntOverflowPos
+                                        }
+                                        IntErrorKind::NegOverflow => {
+                                            ParseDiagnostic::IntOverflowNeg
+                                        }
+                                        _ => unreachable!(),
+                                    };
+                                    p.raise(diagnostic, loc);
+                                    ASTLiteral::IntInvalid(unparsed)
+                                }
+                            }
+                        }
+                    }
+                    TokenContent::Str {
+                        unescaped,
+                        interpolation,
+                        missing_closing,
+                    } => {
+                        // string //
+                        if interpolation.0 || interpolation.1 {
+                            p.raise(ParseDiagnostic::StringIllegalInterpolation, loc);
+                        }
+                        if missing_closing {
+                            p.raise(ParseDiagnostic::StringMissingClosing, loc);
+                        }
+                        ASTLiteral::String(Self::flee_from_string(unescaped))
+                    }
+                    _ => return None,
+                },
+                loc,
+            ))
+        })
+    }
+
+    fn parse_inline_lambda(&mut self) -> Option<ASTLambda<'src>> {
+        todo!()
+    }
+
+    fn flee_from_string(unescaped: &'src str) -> String {
+        fn next(unescaped: &mut std::str::Chars, escaped: &mut String) -> bool {
+            let ch = if let Some(ch) = unescaped.next() {
+                ch
+            } else {
+                return false;
+            };
+
+            match ch {
+                '\\' => {
+                    let ch = unescaped.next().unwrap(); // a string cannot end with an escape because then the terminator would have been escaped and we'd keep going.
+                    let ch = match ch {
+                        '0' => '\0',
+                        '\'' => '\'',
+                        '"' => '\"',
+                        '\\' => '\\',
+                        'n' => '\n',
+                        'r' => '\r',
+                        't' => '\t',
+                        '\n' => return true, // reduces to empty string
+                        'x' => {
+                            let u = unescaped
+                                .clone()
+                                .take(2)
+                                .map_while(|ch| match ch {
+                                    '0' => Some(0),
+                                    '1' => Some(1),
+                                    '2' => Some(2),
+                                    '3' => Some(3),
+                                    '4' => Some(4),
+                                    '5' => Some(5),
+                                    '6' => Some(6),
+                                    '7' => Some(7),
+                                    '8' => Some(8),
+                                    '9' => Some(9),
+                                    'a' | 'A' => Some(10),
+                                    'b' | 'B' => Some(11),
+                                    'c' | 'C' => Some(12),
+                                    'd' | 'D' => Some(13),
+                                    'e' | 'E' => Some(14),
+                                    'f' | 'F' => Some(15),
+                                    _ => None,
+                                })
+                                .collect::<heapless::Vec<u8, 2>>();
+                            if u.len() == 2 {
+                                let _ = unescaped.next();
+                                let _ = unescaped.next();
+                                (u[0] << 4 + u[1]) as char
+                            } else {
+                                // failed to match, reemit `\x`
+                                escaped.push('\\');
+                                'x'
+                            }
+                        }
+                        'u' => {
+                            let mut u = unescaped.clone();
+                            let mut output = None;
+                            if u.next() == Some('{') {
+                                let mut chrs = heapless::Vec::<char, 5>::new();
+                                let mut hit_end = false;
+                                while let Some(ch) = u.next() {
+                                    if ch.is_ascii_hexdigit() {
+                                        if chrs.push(ch).is_err() {
+                                            break;
+                                        }
+                                    } else if ch == '}' {
+                                        hit_end = true;
+                                        break;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                if hit_end {
+                                    let n_consumed = chrs.len() + 2;
+                                    let mut i = 0;
+                                    for ch in chrs {
+                                        i <<= 4;
+                                        i |= match ch {
+                                            '0' => 0,
+                                            '1' => 1,
+                                            '2' => 2,
+                                            '3' => 3,
+                                            '4' => 4,
+                                            '5' => 5,
+                                            '6' => 6,
+                                            '7' => 7,
+                                            '8' => 8,
+                                            '9' => 9,
+                                            'a' | 'A' => 10,
+                                            'b' | 'B' => 11,
+                                            'c' | 'C' => 12,
+                                            'd' | 'D' => 13,
+                                            'e' | 'E' => 14,
+                                            'f' | 'F' => 15,
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                    output = char::from_u32(i).map(|ch| (ch, n_consumed));
+                                }
+                            }
+
+                            if let Some((ch, n_consumed)) = output {
+                                escaped.push(ch);
+                                for _ in 0..n_consumed {
+                                    let _ = unescaped.next();
+                                }
+                            } else {
+                                escaped.push('\\');
+                                escaped.push('u');
+                            }
+                            return true;
+                        }
+                        ch => {
+                            escaped.push('\\');
+                            ch
+                        }
+                    };
+                    escaped.push(ch);
+                }
+                _ => escaped.push(ch),
+            }
+
+            true
+        }
+
+        let mut escaped = String::with_capacity(unescaped.len());
+        let mut unescaped = unescaped.chars();
+        while next(&mut unescaped, &mut escaped) {}
+
+        escaped.shrink_to_fit();
+        escaped
+    }
+
+    fn parse_type_optional(
+        &mut self,
+        allow_leading_newline: bool,
+    ) -> (Option<ASTType<'src>>, Option<Loc>) {
+        // `: void` as `~` shorthand
+        if let Some((_, loc)) = self.next_if_peek_and(|token, had_newline| match token {
+            TokenContent::Symbol(TSymbol::Xor) if allow_leading_newline || !had_newline => Some(()),
+            _ => None,
+        }) {
+            return (Some(ASTType::Unit { loc }), Some(loc));
+        }
+        // main parser
+        if let Some((_, loc_colon)) = self.next_if_peek_and(|token, had_newline| match token {
+            TokenContent::Symbol(TSymbol::Colon) if allow_leading_newline || !had_newline => {
+                Some(())
+            }
+            _ => None,
+        }) {
             let ty_return = self.parse_type();
             if ty_return.is_none() {
                 self.raise(
@@ -764,6 +1663,12 @@ impl<'a, 'src> Parser<'a, 'src> {
         if let Some(ident) = self.parse_ident() {
             // ASTType::Ident //
             Some(ASTType::Ident(ident))
+        } else if let Some(loc) = self
+            .next_if_eq(TokenContent::Keyword(TKeyword::Unit))
+            .or_else(|| self.next_if_eq(TokenContent::Symbol(TSymbol::Xor)))
+        {
+            // ASTType::Unit //
+            Some(ASTType::Unit { loc })
         } else if let Some((inner, loc)) =
             self.parse_paren_or_tuple(|p| p.parse_type(), &ParseDiagnostic::ExpectedTypeInner)
         {
@@ -832,7 +1737,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         let (args, loc_args) = self
             .parse_brackets(TBracketType::Paren, true, |p| {
                 p.parse_list_commasep(
-                    Self::parse_typed_destructure,
+                    |p| p.parse_typed_destructure(true),
                     &ParseDiagnostic::ExpectedFunctionArgument,
                 )
             })
@@ -846,13 +1751,13 @@ impl<'a, 'src> Parser<'a, 'src> {
             });
 
         // return ty
-        let (ty_return, loc_ty_return) = self.parse_type_optional();
+        let (ty_return, loc_ty_return) = self.parse_type_optional(false);
 
         // block
         let block = self
             .parse_either(Self::parse_block, |p| {
                 p.next_if_eq(TokenContent::Symbol(TSymbol::Assign))
-                    .map(|loc| (loc, p.parse_expr()))
+                    .map(|loc| (loc, p.parse_expr_greedy())) // TODO: cascading expr greediness
             })
             .map(|block| match block {
                 AorB::A(block) => block,
@@ -865,7 +1770,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                     }
                     ASTBlock {
                         loc: loc_eq.merge_some(loc_of!(expr)),
-                        body: expr.into_iter().map(|expr| ASTStmt::Expr(expr)).collect(), // TODO: implicit return or no?
+                        body: expr.into_iter().map(|expr| ASTStmt::Expr(expr)).collect(),
                     }
                 }
             });
@@ -890,11 +1795,11 @@ impl<'a, 'src> Parser<'a, 'src> {
         if name.is_none() {
             self.raise(ParseDiagnostic::ExpectedConstName, loc_start);
         }
-        let (ty, loc_ty) = self.parse_type_optional();
+        let (ty, loc_ty) = self.parse_type_optional(true);
 
         let (value, loc_eq) =
             if let Some(loc_eq) = self.next_if_eq(TokenContent::Symbol(TSymbol::Assign)) {
-                let value = self.parse_expr();
+                let value = self.parse_expr_greedy(); // TODO: cascading expr greediness
                 if value.is_none() {
                     self.raise(ParseDiagnostic::ExpectedAssignValue, loc_eq.new_from_end());
                 }
@@ -1098,7 +2003,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             let annot = p.parse_annot();
             let name = p.parse_name()?;
 
-            let (ty, loc_ty) = p.parse_type_optional();
+            let (ty, loc_ty) = p.parse_type_optional(true);
 
             Some(ASTDataProperty {
                 loc: name.loc().merge_some(loc_ty),
@@ -1561,7 +2466,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                 TKeyword::For => {
                     // ASTSubBlocked::For //
 
-                    let var = self.parse_typed_destructure();
+                    let var = self.parse_typed_destructure(true);
                     let keyword_in = self.next_if_eq(TokenContent::Keyword(TKeyword::In));
                     let iterator = self.parse_expr_before_block();
                     let block = self.parse_block();
@@ -1666,14 +2571,14 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_var_declare(&mut self) -> Option<ASTVarDeclare<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Let))?;
 
-        let declr = self.parse_typed_destructure();
+        let declr = self.parse_typed_destructure(false);
         if declr.is_none() {
             self.raise(ParseDiagnostic::ExpectedDestructure, loc_start);
         }
         let (initializer, loc_assign_symbol) = if let Some(loc_assign_symbol) =
             self.next_if_eq(TokenContent::Symbol(TSymbol::Assign))
         {
-            let expr = self.parse_expr();
+            let expr = self.parse_expr_non_greedy();
             if expr.is_none() {
                 self.raise(ParseDiagnostic::ExpectedAssignValue, loc_assign_symbol);
             }
@@ -1689,9 +2594,12 @@ impl<'a, 'src> Parser<'a, 'src> {
         })
     }
 
-    fn parse_typed_destructure(&mut self) -> Option<ASTTypedDestructure<'src>> {
+    fn parse_typed_destructure(
+        &mut self,
+        allow_leading_newline: bool,
+    ) -> Option<ASTTypedDestructure<'src>> {
         let destructure = self.parse_destructure()?;
-        let (ty, _) = self.parse_type_optional();
+        let (ty, _) = self.parse_type_optional(allow_leading_newline);
         Some(ASTTypedDestructure { destructure, ty })
     }
     fn parse_destructure(&mut self) -> Option<ASTDestructure<'src>> {
@@ -1783,10 +2691,24 @@ pub fn parse_from_source<'src>(src: &'src str) -> ASTSourceFile<'src> {
 #[cfg(test)]
 mod test {
     use crate::front::{
+        ast::{ASTExpr, ASTIdent, ASTIdentValue},
         parse::{ParseDiagnostic, Parser},
         source::Loc,
-        tokenize::{tokenize, TBracketType, TokenContent},
+        tokenize::{tokenize, TBracketType, TInfixOperatorType, TPrefixOperatorType, TokenContent},
     };
+
+    fn loc(s: usize, l: usize) -> Loc {
+        Loc {
+            start: s,
+            length: l,
+        }
+    }
+    fn var(n: &'static str, loc: Loc) -> ASTExpr<'static> {
+        ASTExpr::Ident(ASTIdent {
+            loc,
+            value: ASTIdentValue::Name(n),
+        })
+    }
 
     #[test]
     fn mismatched_brackets_automatically_close() {
@@ -1803,7 +2725,7 @@ mod test {
             Some(Some(Some(TokenContent::Number {
                 decimal: false,
                 exp: false,
-                base: 10,
+                radix: 10,
                 unparsed: "3"
             })))
         );
@@ -1813,12 +2735,37 @@ mod test {
                 ParseDiagnostic::MissingClosing {
                     expected: TBracketType::Paren
                 },
-                Loc {
-                    start: 6,
-                    length: 0
-                }
+                loc(6, 0),
             )]
             .as_slice()
+        );
+    }
+    #[test]
+    fn expression_operator_parsing_works_0() {
+        let t = crate::front::tokenize::tokenize("a + b * * c");
+        let mut p = Parser::new(&t);
+        assert_eq!(
+            p.parse_expr_greedy(),
+            // -> (a + (b * (*c)))
+            Some(ASTExpr::OpInfix {
+                loc: loc(0, 11),
+                op: (TInfixOperatorType::Add, loc(2, 1)),
+                inner: (
+                    Box::new(var("a", loc(0, 1))),
+                    Box::new(ASTExpr::OpInfix {
+                        loc: loc(4, 7),
+                        op: (TInfixOperatorType::Multiply, loc(6, 1)),
+                        inner: (
+                            Box::new(var("b", loc(4, 1))),
+                            Box::new(ASTExpr::OpPrefix {
+                                loc: loc(8, 3),
+                                op: (TPrefixOperatorType::Deref, loc(8, 1)),
+                                inner: Box::new(var("c", loc(10, 1))),
+                            }),
+                        ),
+                    }),
+                ),
+            })
         );
     }
 }

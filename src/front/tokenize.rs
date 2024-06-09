@@ -245,6 +245,12 @@ gen_TSymbol! {
     CurlyBracketOpen("{"; bracket_open[Curly])
     CurlyBracketClose("}"; bracket_close[Curly])
 
+    Comma(","; separator[Comma])
+    Period("."; separator[Period])
+    Semicolon(";"; separator[Semicolon])
+    ThinArrow("->"; separator[ThinArrow])
+    WideArrow("=>"; separator[WideArrow])
+
     AddAssign("+="; assign_op[Some(Add)])
     Add("+"; op[Add])
     SubtractAssign("-="; assign_op[Some(Subtract)])
@@ -280,18 +286,13 @@ gen_TSymbol! {
 
     Assign("="; assign_op[None])
 
-    Comma(","; separator[Comma])
-    Period("."; separator[Period])
-    Semicolon(";"; separator[Semicolon])
-    ThinArrow("->"; separator[ThinArrow])
-    WideArrow("=>"; separator[WideArrow])
-
     Colon(":"; separator[Colon]; op[RangeFromTo]; prefix_op[RangeTo]; postfix_op[RangeFrom])
 
     Ampersand("&"; op[And]; prefix_op[Ref])
     Asterisk("*"; op[Multiply]; prefix_op[Deref]; postfix_op[Conjugate])
     MacroInline("$")
     MacroAttr("@")
+    Lambda("\\")
 }
 
 macro_rules! gen_TKeyword {

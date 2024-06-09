@@ -31,6 +31,14 @@ pub enum ParseDiagnostic {
     StringMissingClosing,
     StringIllegalInterpolation,
     ExpectedExpr,
+    ExpectedFunctionCallArgument,
+    ExpectedIndexCallArgument,
+    ExpectedPostfixAfterDot,
+    ExpectedValueStructInit,
+    ExpectedValueTupleInit,
+    ExpectedValueStructInitAssign,
+    ExpectedValueStructInitValue,
+    UnexpectedOperator,
 
     // grouping syntax //
     ExpectedClosing,
@@ -74,6 +82,9 @@ pub enum ParseDiagnostic {
     ExpectedImportTreeAfterDot,
 
     // function syntax //
+    ExpectedLambdaArgument,
+    ExpectedLambdaBody,
+    ExpectedLambdaArgsArrow,
     ExpectedFunctionName,
     ExpectedFunctionArgument,
     ExpectedFunctionArgumentList,
@@ -353,14 +364,11 @@ impl<'a, 'src> Parser<'a, 'src> {
 
     /// Consumes the next token if it matches the given content.
     fn next_if_eq(&mut self, target: TokenContent) -> Option<Loc> {
-        let i_prev = self.i;
-        if let Some(Token { loc, .. }) = self.next_simple().filter(|token| token.content == target)
-        {
-            Some(loc)
-        } else {
-            self.i = i_prev;
-            None
-        }
+        self.guard_state(|p| {
+            p._next_internal()
+                .filter(|(token, _)| token.content == target)
+                .map(|(Token { loc, .. }, _)| loc)
+        })
     }
 
     /// Peeks ahead to see if there is a linebreak coming up before the next non-empty token.
@@ -753,25 +761,18 @@ impl<'a, 'src> Parser<'a, 'src> {
         type TI = TInfixOperatorType;
         type TP = TPrefixOperatorType;
 
-        let mut p: Vec<(TP, Loc)> = std::iter::repeat(())
-            .map_while(|_| {
-                self.next_if_peek_and(|token, _| match token {
-                    TokenContent::Symbol(s) => s.as_prefix_op(),
-                    _ => None,
+        let (mut p, mut expr_prev): (Vec<(TP, Loc)>, ASTExpr) = self.guard_state(|parser| {
+            let p = std::iter::repeat(())
+                .map_while(|_| {
+                    parser.next_if_peek_and(|token, _| match token {
+                        TokenContent::Symbol(s) => s.as_prefix_op(),
+                        _ => None,
+                    })
                 })
-            })
-            .collect();
-        let mut expr_prev = if let Some(expr) =
-            self._parse_expr_with_postfix_blocks::<GREEDY_MATCH>()
-        {
-            expr
-        } else if p.is_empty() {
-            // nothing matched, fail.
-            return None;
-        } else {
-            self.raise(todo!("DIAGNOSTIC HERE !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"), p.first().unwrap().loc().merge(p.last().unwrap().loc()));
-            todo!("error expressions");
-        };
+                .collect();
+            let expr_prev = parser._parse_expr_with_postfix_blocks::<GREEDY_MATCH>()?;
+            Some((p, expr_prev))
+        })?;
         let mut s: Vec<(TS, Loc)> = Vec::new();
 
         let mut si: Option<((TS, TI), Loc)> = None;
@@ -1012,7 +1013,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                     if let Some(p_) = p_ {
                         p.push((p_, loc));
                     } else {
-                        self.raise(todo!("DIAGNOSTIC HERE !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"), loc);
+                        self.raise(ParseDiagnostic::UnexpectedOperator, loc);
                     }
                 } else {
                     // may or may not have passed infix
@@ -1065,7 +1066,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                         }
                         (None, None, None) => {
                             // -
-                            self.raise(todo!("DIAGNOSTIC HERE !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"), loc);
+                            self.raise(ParseDiagnostic::UnexpectedOperator, loc);
                         }
                     }
                 }
@@ -1076,8 +1077,11 @@ impl<'a, 'src> Parser<'a, 'src> {
             }
         }
 
-        if let Some((i, loc)) = i {
-            self.raise(todo!("DIAGNOSTIC HERE !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"), loc);
+        if let Some((_, loc)) = i {
+            self.raise(
+                ParseDiagnostic::UnexpectedOperator,
+                loc.merge_some(p.last().map(HasLoc::loc)),
+            );
         }
         drain_si_to_s(&mut s, &mut si, &mut sip);
         if msy_in.is_empty() && s.is_empty() {
@@ -1089,7 +1093,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         /// I don't remember how shunting yard goes so I'm reinventing it lol.
         ///
         /// msy -> "[m]odified [s]hunting [y]ard"
-        fn msy(msy_in: Vec<MSYObj>) -> ASTExpr {
+        fn modified_shunting_yard(msy_in: Vec<MSYObj>) -> ASTExpr {
             // how the algorithm should work:
             //   ( format is "input | value ; op_stack" )
 
@@ -1255,7 +1259,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             value
         }
 
-        Some(msy(msy_in))
+        Some(modified_shunting_yard(msy_in))
     }
 
     fn _parse_expr_with_postfix_blocks<const GREEDY_MATCH: bool>(
@@ -1274,7 +1278,89 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_postfix_block<const GREEDY_MATCH: bool>(
         &mut self,
     ) -> Option<(ASTPostfixBlock<'src>, Loc)> {
-        todo!()
+        Some(
+            if let Some((args, loc)) = self.parse_brackets(TBracketType::Paren, GREEDY_MATCH, |p| {
+                p.parse_list_commasep(
+                    Self::parse_expr_greedy,
+                    &ParseDiagnostic::ExpectedFunctionCallArgument,
+                )
+            }) {
+                // ASTPostfixBlock::Call //
+                (ASTPostfixBlock::Call { args }, loc)
+            } else if let Some((args, loc)) =
+                self.parse_brackets(TBracketType::Square, GREEDY_MATCH, |p| {
+                    p.parse_list_commasep(
+                        Self::parse_expr_greedy,
+                        &ParseDiagnostic::ExpectedIndexCallArgument,
+                    )
+                })
+            {
+                // ASTPostfixBlock::Index //
+                (ASTPostfixBlock::Index { args }, loc)
+            } else if let Some(lambda) = self.parse_lambda_postfix() {
+                // ASTPostfixBlock::Lambda //
+                let loc = lambda.loc;
+                (ASTPostfixBlock::Lambda { lambda }, loc)
+            } else if let Some((block, loc)) = self.guard_state(|p| {
+                let loc_start = p.next_if_eq(TokenContent::Symbol(TSymbol::Period))?;
+                if !GREEDY_MATCH && p.peek_has_linebreak() {
+                    p.raise(
+                        ParseDiagnostic::ExpectedPostfixAfterDot,
+                        loc_start.new_from_end(),
+                    );
+                    todo!("error expressions");
+                }
+                if let Some(name) = p.parse_name() {
+                    // ASTPostfixBlock::PropertyAccess //
+                    let loc = loc_start.merge(name.loc());
+                    Some((ASTPostfixBlock::PropertyAccess { name }, loc))
+                } else if let Some(x) = p.parse_brackets(TBracketType::Curly, true, |p| {
+                    ASTPostfixBlock::DataStructInit {
+                        entries: p.parse_list_commasep(
+                            |p| {
+                                let name = p.parse_name()?;
+                                if p.next_if_eq(TokenContent::Symbol(TSymbol::Assign))
+                                    .is_none()
+                                {
+                                    p.raise(
+                                        ParseDiagnostic::ExpectedValueStructInitAssign,
+                                        name.loc.new_from_end(),
+                                    );
+                                }
+                                let expr = p.parse_expr_greedy();
+                                if expr.is_none() {
+                                    p.raise(
+                                        ParseDiagnostic::ExpectedValueStructInitValue,
+                                        name.loc.new_from_end(),
+                                    );
+                                }
+                                Some((name, expr))
+                            },
+                            &ParseDiagnostic::ExpectedValueStructInit,
+                        ),
+                    }
+                }) {
+                    // ASTPostfixBlock::DataStructInit //
+                    Some(x)
+                } else if let Some(x) = p.parse_brackets(TBracketType::Paren, true, |p| {
+                    ASTPostfixBlock::DataTupleInit {
+                        entries: p.parse_list_commasep(
+                            Self::parse_expr_greedy,
+                            &ParseDiagnostic::ExpectedValueTupleInit,
+                        ),
+                    }
+                }) {
+                    // ASTPostfixBlock::DataTupleInit //
+                    Some(x)
+                } else {
+                    None
+                }
+            }) {
+                (block, loc)
+            } else {
+                return None;
+            },
+        )
     }
 
     fn _parse_expr_simple(&mut self) -> Option<ASTExpr<'src>> {
@@ -1284,7 +1370,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         } else if let Some(ident) = self.parse_ident() {
             // ASTExpr::Ident //
             ASTExpr::Ident(ident)
-        } else if let Some(lambda) = self.parse_inline_lambda() {
+        } else if let Some(lambda) = self.parse_lambda_expr() {
             // ASTExpr::Lambda //
             ASTExpr::Lambda(lambda)
         } else if let Some((inner, loc)) = self.parse_keyword_then_optional_expr(TKeyword::Return) {
@@ -1420,8 +1506,95 @@ impl<'a, 'src> Parser<'a, 'src> {
         })
     }
 
-    fn parse_inline_lambda(&mut self) -> Option<ASTLambda<'src>> {
-        todo!()
+    fn parse_lambda_expr(&mut self) -> Option<ASTLambda<'src>> {
+        self.guard_state(|p| {
+            let loc_start = p.next_if_eq(TokenContent::Symbol(TSymbol::Lambda))?;
+
+            let (args, loc_args) = p
+                .parse_brackets(TBracketType::Paren, true, |p| {
+                    p.parse_list_commasep(
+                        |p| p.parse_typed_destructure(true),
+                        &ParseDiagnostic::ExpectedLambdaArgument,
+                    )
+                })
+                .unzip();
+            let (ty_return, loc_ty_return) = if args.is_some() {
+                p.parse_type_optional(true)
+            } else {
+                (None, None)
+            };
+            let block = p.parse_block().unwrap_or_else(|| {
+                p.raise(
+                    ParseDiagnostic::ExpectedLambdaBody,
+                    loc_start.merge_some(loc_of!(loc_ty_return, loc_args)),
+                );
+                ASTBlock {
+                    body: Vec::new(),
+                    loc: loc_of!(loc_ty_return, loc_args)
+                        .unwrap_or(loc_start)
+                        .new_from_end(),
+                }
+            });
+
+            Some(ASTLambda {
+                loc: loc_start.merge(block.loc()),
+                args,
+                ty_return,
+                block,
+            })
+        })
+    }
+    fn parse_lambda_postfix(&mut self) -> Option<ASTLambda<'src>> {
+        // `... { \ a: i32, b -> ... }`
+        self.parse_brackets(TBracketType::Curly, true, |p| {
+            let args = p
+                .next_if_eq(TokenContent::Symbol(TSymbol::Lambda))
+                .map(|loc_args_start| {
+                    let mut args = Vec::new();
+                    loop {
+                        match p.fail_until_parse(
+                            |p| {
+                                p.next_if_peek_and::<(), _>(|token, _| {
+                                    dbg!(token);
+                                    None
+                                });
+                                p.parse_either(
+                                    |p| p.next_if_eq(TokenContent::Symbol(TSymbol::ThinArrow)),
+                                    |p| {
+                                        let destructure = p.parse_typed_destructure(true)?;
+                                        let _ = p.next_if_eq(TokenContent::Symbol(TSymbol::Comma)); // optional commas
+                                        Some(destructure)
+                                    },
+                                )
+                            },
+                            &ParseDiagnostic::ExpectedLambdaArgument,
+                        ) {
+                            Some(AorB::B(arg_ent)) => args.push(arg_ent),
+                            Some(AorB::A(_)) => {
+                                // found `->`, done matching arguments.
+                                break;
+                            }
+                            None => {
+                                // end of section, no matches / no `->` found, raise and break.
+                                p.raise(
+                                    ParseDiagnostic::ExpectedLambdaArgsArrow,
+                                    loc_args_start.merge_some(args.last().map(HasLoc::loc)),
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    args
+                });
+            let block = p.parse_stmt_list();
+            (args, block)
+        })
+        .map(|((args, block), loc)| ASTLambda {
+            loc,
+            args,
+            ty_return: None, // must be inferred by type system
+            block: ASTBlock { loc, body: block },
+        })
     }
 
     fn flee_from_string(unescaped: &'src str) -> String {
@@ -1777,14 +1950,11 @@ impl<'a, 'src> Parser<'a, 'src> {
 
         Some(ASTFunction {
             annot: annot.take(),
-            lambda: ASTLambda {
-                loc: loc_start
-                    .merge_some(loc_of!(block, loc_ty_return, loc_args, templates, name,)),
-                templates,
-                args,
-                block,
-                ty_return,
-            },
+            loc: loc_start.merge_some(loc_of!(block, loc_ty_return, loc_args, templates, name,)),
+            templates,
+            args,
+            block,
+            ty_return,
             name,
         })
     }
@@ -2681,8 +2851,14 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
 }
 
-pub fn parse_from_source<'src>(src: &'src str) -> ASTSourceFile<'src> {
-    Parser::new(&super::tokenize::tokenize(src)).parse_source_file()
+#[allow(unused)]
+pub fn parse_from_source<'src>(
+    src: &'src str,
+) -> (ASTSourceFile<'src>, Vec<(ParseDiagnostic, Loc)>) {
+    let tokens = super::tokenize::tokenize(src);
+    let mut parser = Parser::new(&tokens);
+    let source_file = parser.parse_source_file();
+    (source_file, parser.diagnostics)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2692,7 +2868,7 @@ pub fn parse_from_source<'src>(src: &'src str) -> ASTSourceFile<'src> {
 mod test {
     use crate::front::{
         ast::{ASTExpr, ASTIdent, ASTIdentValue},
-        parse::{ParseDiagnostic, Parser},
+        parse::{parse_from_source, ParseDiagnostic, Parser},
         source::Loc,
         tokenize::{tokenize, TBracketType, TInfixOperatorType, TPrefixOperatorType, TokenContent},
     };

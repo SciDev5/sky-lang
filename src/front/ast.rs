@@ -120,13 +120,15 @@ pub enum ASTPostfixBlock<'src> {
     /// `x [ a, b, c ]`
     Index { args: Vec<ASTExpr<'src>> },
     /// `x { a, b -> c }``
-    Lambda { func: ASTLambda<'src> },
+    Lambda { lambda: ASTLambda<'src> },
     /// `x.{ a = b, c }`
     DataStructInit {
-        entries: Vec<(ASTName<'src>, ASTExpr<'src>)>,
+        entries: Vec<(ASTName<'src>, Option<ASTExpr<'src>>)>,
     },
     /// `x.( a, b, c)`
     DataTupleInit { entries: Vec<ASTExpr<'src>> },
+    /// `x.abc`
+    PropertyAccess { name: ASTName<'src> },
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ASTSubBlocked<'src> {
@@ -220,18 +222,22 @@ impl_hasloc_simple!(ASTVarDeclare<'src>);
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTLambda<'src> {
     pub loc: Loc,
-    pub templates: TemplateBounds<'src>,
-    pub args: Vec<ASTTypedDestructure<'src>>,
+    // pub templates: TemplateBounds<'src>,
+    pub args: Option<Vec<ASTTypedDestructure<'src>>>,
     pub ty_return: Option<ASTType<'src>>,
-    pub block: Option<ASTBlock<'src>>,
+    pub block: ASTBlock<'src>,
 }
 impl_hasloc_simple!(ASTLambda<'src>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTFunction<'src> {
+    pub loc: Loc,
     pub annot: ASTAnnot,
     pub name: Option<ASTName<'src>>,
-    pub lambda: ASTLambda<'src>,
+    pub templates: TemplateBounds<'src>,
+    pub args: Vec<ASTTypedDestructure<'src>>,
+    pub ty_return: Option<ASTType<'src>>,
+    pub block: Option<ASTBlock<'src>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -23,6 +23,9 @@ impl<Iter: Iterator + Clone + Debug> Rewindable<Iter> {
     }
 }
 impl<Iter: Iterator + Clone + Debug> Rewindable<Iter> {
+    pub fn clone_iter(&self) -> Iter {
+        self.current.clone()
+    }
     /// Saves the current state to the stack.
     pub fn push(&mut self) {
         self.stack.push(self.current.clone()).unwrap()

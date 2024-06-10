@@ -12,6 +12,7 @@ pub enum TBracketType {
     Curly,
     Paren,
     Angle,
+    LambdaArgs,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TSeparatorType {
@@ -55,6 +56,7 @@ impl TPrefixOperatorType {
 pub enum TPostfixOperatorType {
     // ---- Arithmetic ---- //
     Conjugate,
+    Factorial,
 
     // ---- Range ---- //
     RangeFrom,
@@ -64,6 +66,7 @@ impl TPostfixOperatorType {
     pub fn precedence(self) -> u8 {
         match self {
             Self::Conjugate => 80,
+            Self::Factorial => 80,
             Self::RangeFrom => 10,
         }
     }
@@ -169,6 +172,9 @@ macro_rules! gen_TSymbol {
                     ),*
                 ]
             }
+            fn tokenize_matches_str_exact(state: &mut TokenizeIter, str: &'static str) -> bool {
+                tokenize_matches_str_exact::<false>(state, str)
+            }
         }
         impl TSymbol {
             pub fn as_separator(&self) -> Option<TSeparatorType> {
@@ -248,7 +254,7 @@ gen_TSymbol! {
     Comma(","; separator[Comma])
     Period("."; separator[Period])
     Semicolon(";"; separator[Semicolon])
-    ThinArrow("->"; separator[ThinArrow])
+    ThinArrow("->"; separator[ThinArrow]; bracket_close[LambdaArgs])
     WideArrow("=>"; separator[WideArrow])
 
     AddAssign("+="; assign_op[Some(Add)])
@@ -284,6 +290,8 @@ gen_TSymbol! {
     Equal("=="; op[CompareEqual])
     NotEqual("!="; op[CompareNotEqual])
 
+    ExclamationPoint("!"; prefix_op[Not]; postfix_op[Factorial])
+
     Assign("="; assign_op[None])
 
     Colon(":"; separator[Colon]; op[RangeFromTo]; prefix_op[RangeTo]; postfix_op[RangeFrom])
@@ -292,7 +300,7 @@ gen_TSymbol! {
     Asterisk("*"; op[Multiply]; prefix_op[Deref]; postfix_op[Conjugate])
     MacroInline("$")
     MacroAttr("@")
-    Lambda("\\")
+    Lambda("\\"; bracket_open[LambdaArgs])
 }
 
 macro_rules! gen_TKeyword {
@@ -318,6 +326,10 @@ macro_rules! gen_TKeyword {
                     ),*
                 ]
             }
+            fn tokenize_matches_str_exact(state: &mut TokenizeIter, str: &'static str) -> bool {
+                tokenize_matches_str_exact::<true>(state, str)
+            }
+
         }
     };
 }
@@ -354,6 +366,9 @@ gen_TKeyword! {
 impl CorrespondingTokenStr for bool {
     fn str() -> &'static [(&'static str, Self)] {
         &[("true", true), ("false", false)]
+    }
+    fn tokenize_matches_str_exact(state: &mut TokenizeIter, str: &'static str) -> bool {
+        tokenize_matches_str_exact::<true>(state, str)
     }
 }
 
@@ -402,7 +417,10 @@ pub enum TokenContent<'src> {
 /// Returns true and consumes part of the state char iterator if the
 /// next sequence in the source is precisely equal to `str`. Otherwise
 /// rewinds and returns false.
-fn tokenize_matches_str_exact(state: &mut TokenizeIter, str: &'static str) -> bool {
+fn tokenize_matches_str_exact<const REQUIRE_WORD_BREAK_AFTER: bool>(
+    state: &mut TokenizeIter,
+    str: &'static str,
+) -> bool {
     state.push();
     for chr_expected in str.chars() {
         if let Some(CharIndex {
@@ -417,12 +435,30 @@ fn tokenize_matches_str_exact(state: &mut TokenizeIter, str: &'static str) -> bo
         state.pop_rewind();
         return false;
     }
-    let _ = state.pop_continue();
-    return true;
+    if REQUIRE_WORD_BREAK_AFTER {
+        // must match non-word char
+        let word_break = if let Some(next_char) = state.clone_iter().next() {
+            !next_char.char.is_alphanumeric() && next_char.char != '_'
+        } else {
+            true
+        };
+        if word_break {
+            let _ = state.pop_continue();
+            return true;
+        } else {
+            state.pop_rewind();
+            return false;
+        }
+    } else {
+        // doesnt matter what comes after
+        let _ = state.pop_continue();
+        return true;
+    }
 }
 
 trait CorrespondingTokenStr: Sized + Copy + 'static {
     fn str() -> &'static [(&'static str, Self)];
+    fn tokenize_matches_str_exact(state: &mut TokenizeIter, str: &'static str) -> bool;
 }
 /// Checks all strings outputted by [`CorrespondingTokenStr`] to see if any
 /// exactly match the next sequence in the char iter. If a match is found,
@@ -430,7 +466,7 @@ trait CorrespondingTokenStr: Sized + Copy + 'static {
 /// returned, otherwise None is returned.
 fn tokenize_matches_any<T: CorrespondingTokenStr>(state: &mut TokenizeIter) -> Option<T> {
     for (str, v) in T::str() {
-        if tokenize_matches_str_exact(state, *str) {
+        if T::tokenize_matches_str_exact(state, *str) {
             return Some(*v);
         }
     }

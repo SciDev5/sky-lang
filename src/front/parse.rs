@@ -11,10 +11,11 @@ use crate::{
 use super::{
     ast::{
         ASTAnnot, ASTBlock, ASTConst, ASTData, ASTDataContents, ASTDataProperty, ASTDeclr,
-        ASTDestructure, ASTDoc, ASTEnumVariantType, ASTExpr, ASTFreeImpl, ASTFunction, ASTIdent,
-        ASTIdentValue, ASTImpl, ASTImplContents, ASTImport, ASTImportTree, ASTLambda, ASTName,
-        ASTPostfixBlock, ASTSourceFile, ASTStmt, ASTSubBlocked, ASTTemplateBound, ASTTrait,
-        ASTType, ASTTypeAlias, ASTTypedDestructure, ASTVarDeclare,
+        ASTDestructure, ASTDiagnosticRef, ASTDoc, ASTEnumVariantType, ASTExpr, ASTFallible,
+        ASTFreeImpl, ASTFunction, ASTIdent, ASTIdentValue, ASTImpl, ASTImplContents, ASTImport,
+        ASTImportTree, ASTLambda, ASTName, ASTPostfixBlock, ASTSourceFile, ASTStmt, ASTSubBlocked,
+        ASTTemplateBound, ASTTemplates, ASTTrait, ASTType, ASTTypeAlias, ASTTypedDestructure,
+        ASTVarDeclare,
     },
     source::{HasLoc, Loc},
     tokenize::{TBracketType, TKeyword, Token, TokenContent},
@@ -84,7 +85,6 @@ pub enum ParseDiagnostic {
     // function syntax //
     ExpectedLambdaArgument,
     ExpectedLambdaBody,
-    ExpectedLambdaArgsArrow,
     ExpectedFunctionName,
     ExpectedFunctionArgument,
     ExpectedFunctionArgumentList,
@@ -116,7 +116,8 @@ impl ToDiagnostic for ParseDiagnostic {
 /// For example because `{` has higher priority than `(`, `{ ( } )` is treated like `{ () }`.
 fn bracket_priority(which: TBracketType) -> u8 {
     match which {
-        TBracketType::Curly => 3,
+        TBracketType::LambdaArgs => 3,
+        TBracketType::Curly => 4,
         TBracketType::Angle => 2,
         TBracketType::Paren => 1,
         TBracketType::Square => 0,
@@ -124,23 +125,28 @@ fn bracket_priority(which: TBracketType) -> u8 {
 }
 
 enum HelperParenOrTuple<T> {
-    Paren(Option<Box<T>>),
-    Tuple(Vec<T>),
+    Paren(ASTFallible<Box<T>>),
+    Tuple(Vec<ASTFallible<T>>),
 }
 enum AorB<A, B> {
     A(A),
     B(B),
 }
 
-macro_rules! loc_of {
-    (
-        $has_loc_0: expr
-        $(, $has_loc: expr)* $(,)?
-    ) => {
-        $has_loc_0.as_ref().map(HasLoc::loc)
-        $(
-            .or_else(|| $has_loc.as_ref().map(HasLoc::loc))
-        )*
+macro_rules! merge {
+    ($x_0:expr $(, $x:expr )* $(,)?) => {
+        $x_0
+        $( .or_else(|| $x) )*
+    };
+}
+macro_rules! loco {
+    ($x:expr) => {
+        $x.as_ref().map(HasLoc::loc)
+    };
+}
+macro_rules! locr {
+    ($x:expr) => {
+        $x.as_ref().ok().map(HasLoc::loc)
     };
 }
 
@@ -409,6 +415,23 @@ impl<'a, 'src> Parser<'a, 'src> {
         }
         value
     }
+    /// Reverts the state to as it was at the beginning of this call if the given function
+    /// returns `None`, undoing all side effects (iterator state and raised diagnostics).
+    #[inline]
+    fn peek<T, F: Fn(&mut Self) -> T>(&mut self, f: F) -> T {
+        self.state_stack.push((self.i, self.diagnostics.len()));
+        let value = f(self);
+        let popped_state = self
+            .state_stack
+            .pop()
+            .expect("state_stack was drained! should not be possible");
+        let (revert_i, revert_diagnostics_len) = popped_state;
+        self.i = revert_i;
+        self.diagnostics.resize_with(revert_diagnostics_len, || {
+            unreachable!("somehow diagnostics were drained");
+        });
+        value
+    }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Helper parsers
@@ -449,7 +472,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         while self.next().is_some() {}
         if self.i > i0 {
             let loc = self.tokens[i0].loc.merge(self.tokens[self.i - 1].loc);
-            self.raise(ParseDiagnostic::ExpectedClosing, loc)
+            self.raise(ParseDiagnostic::ExpectedClosing, loc);
         }
         self.consume_whitespace();
 
@@ -513,6 +536,36 @@ impl<'a, 'src> Parser<'a, 'src> {
         };
         self.raise(*fail_diagnostic, loc_start.merge(loc_end));
         Some(res)
+    }
+    /// Parses the inner parser, marking all tokens that it didnt match beforehand as invalid.
+    ///
+    /// If this matches nothing, it will return `Err()`, if the remaining sequence in the region is empty it will panic.
+    fn fail_until_parse_nonempty<T, F: Fn(&mut Self) -> Option<T>>(
+        &mut self,
+        parse_inner: F,
+        fail_diagnostic: &'static ParseDiagnostic,
+    ) -> ASTFallible<T> {
+        if let Some(res) = parse_inner(self) {
+            return Ok(res);
+        }
+        let loc_start = self
+            .next()
+            .expect("fail_until_parse_nonempty used in empty region")
+            .0
+            .loc;
+        let mut loc_end = loc_start;
+        let res = loop {
+            if let Some(res) = parse_inner(self) {
+                break res;
+            }
+            loc_end = self
+                .next()
+                .ok_or_else(|| self.raise(*fail_diagnostic, loc_start.merge(loc_end)))?
+                .0
+                .loc;
+        };
+        self.raise(*fail_diagnostic, loc_start.merge(loc_end));
+        Ok(res)
     }
 
     /// Parses `T`s until it hits EOF or closing bracket. Sequences that don't match will be
@@ -601,7 +654,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         &mut self,
         parse_inner: F,
         fail_diagnostic: &'static ParseDiagnostic,
-    ) -> Vec<T> {
+    ) -> Vec<ASTFallible<T>> {
         let mut out = Vec::new();
         let mut expecting_comma = false;
         for aorb in self.parse_list(
@@ -619,7 +672,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                     // .. always ok
                     // missing commas are ignored, as commas are optional
                     expecting_comma = true;
-                    out.push(inner)
+                    out.push(Ok(inner))
                 }
                 (AorB::B(_), true) => {
                     // expected comma found comma
@@ -629,7 +682,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                 (AorB::B(loc_comma), false) => {
                     // expected inner found comma
                     // !! this is not allowed and the writer should feel bad
-                    self.raise(*fail_diagnostic, loc_comma.new_from_start());
+                    out.push(Err(self.raise(*fail_diagnostic, loc_comma.new_from_start())));
                 }
             }
         }
@@ -638,8 +691,12 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
 
     #[inline]
-    fn raise(&mut self, diagnostic: ParseDiagnostic, loc: Loc) {
+    fn raise(&mut self, diagnostic: ParseDiagnostic, loc: Loc) -> ASTDiagnosticRef {
+        let parse_diagnostic_id = self.diagnostics.len();
         self.diagnostics.push((diagnostic, loc));
+        ASTDiagnosticRef {
+            parse_diagnostic_id,
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -661,19 +718,18 @@ impl<'a, 'src> Parser<'a, 'src> {
                 })
             {
                 // ASTStmt::VarAssign //
-                let rhs = self.parse_expr_non_greedy();
-                if rhs.is_none() {
+                let rhs = self.parse_expr_non_greedy().ok_or_else(|| {
                     self.raise(
                         ParseDiagnostic::ExpectedAssignValue,
                         expr.loc().merge(assign_symbol_loc),
-                    );
-                }
+                    )
+                });
                 Some(ASTStmt::VarAssign {
                     loc: expr
                         .loc()
                         .merge(rhs.as_ref().map(|it| it.loc()).unwrap_or(assign_symbol_loc)),
                     assign_op,
-                    lhs: Some(Box::new(expr)),
+                    lhs: Box::new(expr),
                     rhs: rhs.map(Box::new),
                 })
             } else {
@@ -1316,28 +1372,35 @@ impl<'a, 'src> Parser<'a, 'src> {
                     Some((ASTPostfixBlock::PropertyAccess { name }, loc))
                 } else if let Some(x) = p.parse_brackets(TBracketType::Curly, true, |p| {
                     ASTPostfixBlock::DataStructInit {
-                        entries: p.parse_list_commasep(
-                            |p| {
-                                let name = p.parse_name()?;
-                                if p.next_if_eq(TokenContent::Symbol(TSymbol::Assign))
-                                    .is_none()
-                                {
-                                    p.raise(
-                                        ParseDiagnostic::ExpectedValueStructInitAssign,
-                                        name.loc.new_from_end(),
-                                    );
-                                }
-                                let expr = p.parse_expr_greedy();
-                                if expr.is_none() {
-                                    p.raise(
-                                        ParseDiagnostic::ExpectedValueStructInitValue,
-                                        name.loc.new_from_end(),
-                                    );
-                                }
-                                Some((name, expr))
-                            },
-                            &ParseDiagnostic::ExpectedValueStructInit,
-                        ),
+                        entries: p
+                            .parse_list_commasep(
+                                |p| {
+                                    let name = p.parse_name()?;
+
+                                    let expr = p
+                                        .next_if_eq(TokenContent::Symbol(TSymbol::Assign))
+                                        .ok_or_else(|| {
+                                            p.raise(
+                                                ParseDiagnostic::ExpectedValueStructInitAssign,
+                                                name.loc.new_from_end(),
+                                            )
+                                        })
+                                        .and_then(|_| {
+                                            p.parse_expr_greedy().ok_or_else(|| {
+                                                p.raise(
+                                                    ParseDiagnostic::ExpectedValueStructInitValue,
+                                                    name.loc.new_from_end(),
+                                                )
+                                            })
+                                        });
+
+                                    Some((name, expr))
+                                },
+                                &ParseDiagnostic::ExpectedValueStructInit,
+                            )
+                            .into_iter()
+                            .filter_map(|ent| ent.ok())
+                            .collect(),
                     }
                 }) {
                     // ASTPostfixBlock::DataStructInit //
@@ -1425,7 +1488,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(keyword))?;
 
         let expr = self.parse_expr_greedy();
-        let loc = loc_start.merge_some(loc_of!(expr));
+        let loc = loc_start.merge_some(loco!(expr));
         Some((expr, loc))
     }
     fn parse_literal(&mut self) -> Option<(ASTLiteral<'src>, Loc)> {
@@ -1479,8 +1542,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                                         }
                                         _ => unreachable!(),
                                     };
-                                    p.raise(diagnostic, loc);
-                                    ASTLiteral::IntInvalid(unparsed)
+                                    ASTLiteral::IntInvalid(unparsed, p.raise(diagnostic, loc))
                                 }
                             }
                         }
@@ -1526,11 +1588,11 @@ impl<'a, 'src> Parser<'a, 'src> {
             let block = p.parse_block().unwrap_or_else(|| {
                 p.raise(
                     ParseDiagnostic::ExpectedLambdaBody,
-                    loc_start.merge_some(loc_of!(loc_ty_return, loc_args)),
+                    loc_start.merge_some(merge!(loc_ty_return, loc_args)),
                 );
                 ASTBlock {
                     body: Vec::new(),
-                    loc: loc_of!(loc_ty_return, loc_args)
+                    loc: merge!(loc_ty_return, loc_args)
                         .unwrap_or(loc_start)
                         .new_from_end(),
                 }
@@ -1548,44 +1610,13 @@ impl<'a, 'src> Parser<'a, 'src> {
         // `... { \ a: i32, b -> ... }`
         self.parse_brackets(TBracketType::Curly, true, |p| {
             let args = p
-                .next_if_eq(TokenContent::Symbol(TSymbol::Lambda))
-                .map(|loc_args_start| {
-                    let mut args = Vec::new();
-                    loop {
-                        match p.fail_until_parse(
-                            |p| {
-                                p.next_if_peek_and::<(), _>(|token, _| {
-                                    dbg!(token);
-                                    None
-                                });
-                                p.parse_either(
-                                    |p| p.next_if_eq(TokenContent::Symbol(TSymbol::ThinArrow)),
-                                    |p| {
-                                        let destructure = p.parse_typed_destructure(true)?;
-                                        let _ = p.next_if_eq(TokenContent::Symbol(TSymbol::Comma)); // optional commas
-                                        Some(destructure)
-                                    },
-                                )
-                            },
-                            &ParseDiagnostic::ExpectedLambdaArgument,
-                        ) {
-                            Some(AorB::B(arg_ent)) => args.push(arg_ent),
-                            Some(AorB::A(_)) => {
-                                // found `->`, done matching arguments.
-                                break;
-                            }
-                            None => {
-                                // end of section, no matches / no `->` found, raise and break.
-                                p.raise(
-                                    ParseDiagnostic::ExpectedLambdaArgsArrow,
-                                    loc_args_start.merge_some(args.last().map(HasLoc::loc)),
-                                );
-                                break;
-                            }
-                        }
-                    }
-                    args
-                });
+                .parse_brackets(TBracketType::LambdaArgs, true, |p| {
+                    p.parse_list_commasep(
+                        |p| p.parse_typed_destructure(true),
+                        &ParseDiagnostic::ExpectedLambdaArgument,
+                    )
+                })
+                .map(|(args_list, _)| args_list);
             let block = p.parse_stmt_list();
             (args, block)
         })
@@ -1733,13 +1764,13 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_type_optional(
         &mut self,
         allow_leading_newline: bool,
-    ) -> (Option<ASTType<'src>>, Option<Loc>) {
+    ) -> (Option<ASTFallible<ASTType<'src>>>, Option<Loc>) {
         // `: void` as `~` shorthand
         if let Some((_, loc)) = self.next_if_peek_and(|token, had_newline| match token {
             TokenContent::Symbol(TSymbol::Xor) if allow_leading_newline || !had_newline => Some(()),
             _ => None,
         }) {
-            return (Some(ASTType::Unit { loc }), Some(loc));
+            return (Some(Ok(ASTType::Unit { loc })), Some(loc));
         }
         // main parser
         if let Some((_, loc_colon)) = self.next_if_peek_and(|token, had_newline| match token {
@@ -1748,15 +1779,15 @@ impl<'a, 'src> Parser<'a, 'src> {
             }
             _ => None,
         }) {
-            let ty_return = self.parse_type();
-            if ty_return.is_none() {
+            let ty_return = self.parse_type().ok_or_else(|| {
                 self.raise(
                     ParseDiagnostic::ExpectedTypeAfterColon,
                     loc_colon.new_from_end(),
-                );
-            }
-            let loc = loc_colon.merge_some(loc_of!(ty_return));
-            (ty_return, Some(loc))
+                )
+            });
+
+            let loc = loc_colon.merge_some(ty_return.as_ref().ok().map(HasLoc::loc));
+            (Some(ty_return), Some(loc))
         } else {
             (None, None)
         }
@@ -1776,7 +1807,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             } else if let Some(((params, named_params), loc)) =
                 self.parse_brackets(TBracketType::Angle, true, |p| {
                     // ASTType::TypeParam //
-                    let s = p.parse_list(
+                    let s = p.parse_list_commasep(
                         |p| {
                             let key = p.guard_state(|p| {
                                 let key = p.parse_name()?;
@@ -1787,35 +1818,45 @@ impl<'a, 'src> Parser<'a, 'src> {
 
                             match (key, ty) {
                                 (None, None) => None,
-                                (Some((key, loc_eq)), None) => {
-                                    p.raise(
-                                        ParseDiagnostic::ExpectedTemplateTypeAfterEq,
-                                        key.loc.merge(loc_eq),
-                                    );
-                                    Some((Some((key, loc_eq)), None))
-                                }
+                                (Some((key, loc_eq)), None) => Some((Some((key, loc_eq)), None)),
                                 (key, Some(ty)) => Some((key, Some(ty))),
                             }
                         },
                         &ParseDiagnostic::ExpectedTemplateTypeEntry,
                     );
-                    let mut params = Vec::new();
-                    let mut named_params = None;
+                    let mut params = Vec::with_capacity(s.len());
+                    let mut named_params = Vec::new();
 
-                    for (key, ty) in s {
-                        if let Some((key, _)) = key {
-                            named_params.get_or_insert_with(Vec::new).push((key, ty));
-                        } else {
-                            let ty = ty.unwrap();
-                            if named_params.is_some() {
-                                p.raise(
-                                    ParseDiagnostic::TemplateOrderOrderedFoundAfterNamed,
-                                    ty.loc(),
-                                );
+                    for r in s {
+                        match r {
+                            Ok((key, ty)) => {
+                                if let Some((key, loc_eq)) = key {
+                                    let ty = ty.ok_or_else(|| {
+                                        p.raise(
+                                            ParseDiagnostic::ExpectedTemplateTypeAfterEq,
+                                            key.loc.merge(loc_eq),
+                                        )
+                                    });
+                                    named_params.push((key, ty));
+                                } else {
+                                    let ty = ty.unwrap();
+                                    if !named_params.is_empty() {
+                                        p.raise(
+                                            ParseDiagnostic::TemplateOrderOrderedFoundAfterNamed,
+                                            ty.loc(),
+                                        );
+                                    }
+                                    params.push(Ok(ty));
+                                }
                             }
-                            params.push(ty);
+                            Err(e) => {
+                                if named_params.is_empty() {
+                                    params.push(Err(e));
+                                }
+                            }
                         }
                     }
+                    params.shrink_to_fit();
 
                     (params, named_params)
                 })
@@ -1898,10 +1939,9 @@ impl<'a, 'src> Parser<'a, 'src> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Fn))?;
 
         // function name
-        let name = self.parse_name();
-        if name.is_none() {
-            self.raise(ParseDiagnostic::ExpectedFunctionName, loc_start)
-        }
+        let name = self
+            .parse_name()
+            .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedFunctionName, loc_start));
 
         // template bounds
         let templates = self.parse_templates();
@@ -1918,7 +1958,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             .unwrap_or_else(|| {
                 self.raise(
                     ParseDiagnostic::ExpectedFunctionArgumentList,
-                    loc_of!(templates, name).unwrap_or(loc_start),
+                    merge!(loco!(templates), locr!(name)).unwrap_or(loc_start),
                 );
                 (Vec::new(), None)
             });
@@ -1942,7 +1982,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                         );
                     }
                     ASTBlock {
-                        loc: loc_eq.merge_some(loc_of!(expr)),
+                        loc: loc_eq.merge_some(loco!(expr)),
                         body: expr.into_iter().map(|expr| ASTStmt::Expr(expr)).collect(),
                     }
                 }
@@ -1950,7 +1990,13 @@ impl<'a, 'src> Parser<'a, 'src> {
 
         Some(ASTFunction {
             annot: annot.take(),
-            loc: loc_start.merge_some(loc_of!(block, loc_ty_return, loc_args, templates, name,)),
+            loc: loc_start.merge_some(merge!(
+                loco!(block),
+                loc_ty_return,
+                loc_args,
+                loco!(templates),
+                locr!(name),
+            )),
             templates,
             args,
             block,
@@ -1961,25 +2007,31 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_const(&mut self, annot: &mut ASTAnnot) -> Option<ASTConst<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Const))?;
 
-        let name = self.parse_name();
-        if name.is_none() {
-            self.raise(ParseDiagnostic::ExpectedConstName, loc_start);
-        }
+        let name = self
+            .parse_name()
+            .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedConstName, loc_start));
         let (ty, loc_ty) = self.parse_type_optional(true);
 
         let (value, loc_eq) =
             if let Some(loc_eq) = self.next_if_eq(TokenContent::Symbol(TSymbol::Assign)) {
-                let value = self.parse_expr_greedy(); // TODO: cascading expr greediness
-                if value.is_none() {
-                    self.raise(ParseDiagnostic::ExpectedAssignValue, loc_eq.new_from_end());
-                }
+                // TODO: cascading expr greediness
+                let value = self.parse_expr_greedy().ok_or_else(|| {
+                    self.raise(ParseDiagnostic::ExpectedAssignValue, loc_eq.new_from_end())
+                });
+
                 (value, Some(loc_eq))
             } else {
-                (None, None)
+                (
+                    Err(self.raise(
+                        ParseDiagnostic::ExpectedAssignValue,
+                        loc_start.merge_some(loc_ty),
+                    )),
+                    None,
+                )
             };
 
         Some(ASTConst {
-            loc: loc_start.merge_some(loc_of!(value, loc_eq, loc_ty, name)),
+            loc: loc_start.merge_some(merge!(locr!(value), loc_eq, loc_ty, locr!(name))),
             annot: annot.take(),
             name,
             ty,
@@ -1989,22 +2041,22 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_trait(&mut self, annot: &mut ASTAnnot) -> Option<ASTTrait<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Trait))?;
 
-        let name = self.parse_name();
-        if name.is_none() {
-            self.raise(ParseDiagnostic::ExpectedTraitName, loc_start);
-        }
+        let name = self
+            .parse_name()
+            .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedTraitName, loc_start));
 
         let templates = self.parse_templates();
         let (bounds, loc_bounds) = self.parse_bounds();
+        let bounds = bounds;
 
         let contents = self.parse_impl_contents().unwrap_or_else(|| {
-            let loc = loc_start.merge_some(loc_of!(loc_bounds, templates, name));
+            let loc = loc_start.merge_some(merge!(loc_bounds, loco!(templates), locr!(name)));
             self.raise(ParseDiagnostic::ExpectedTraitBody, loc);
             ASTImplContents {
                 loc: loc.new_from_end(),
                 functions: Vec::new(),
-                consts: None,
-                types: None,
+                consts: Vec::new(),
+                types: Vec::new(),
             }
         });
 
@@ -2020,10 +2072,9 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_data(&mut self, annot: &mut ASTAnnot) -> Option<ASTData<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Data))?;
 
-        let name = self.parse_name();
-        if name.is_none() {
-            self.raise(ParseDiagnostic::ExpectedDataName, loc_start)
-        }
+        let name = self
+            .parse_name()
+            .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedDataName, loc_start));
 
         let templates = self.parse_templates();
 
@@ -2032,7 +2083,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             None => {
                 self.raise(
                     ParseDiagnostic::ExpectedDataBody,
-                    loc_start.merge_some(loc_of!(templates, name)),
+                    loc_start.merge_some(merge!(loco!(templates), locr!(name))),
                 );
                 (ASTDataContents::Unit, None)
             }
@@ -2043,10 +2094,10 @@ impl<'a, 'src> Parser<'a, 'src> {
             .collect::<Vec<_>>();
 
         Some(ASTData {
-            loc: loc_start.merge_some(attatched_impls.last().map(HasLoc::loc).or(loc_of!(
+            loc: loc_start.merge_some(attatched_impls.last().map(HasLoc::loc).or(merge!(
                 loc_contents,
-                templates,
-                name
+                loco!(templates),
+                locr!(name),
             ))),
             annot: annot.take(),
             name,
@@ -2086,6 +2137,9 @@ impl<'a, 'src> Parser<'a, 'src> {
                         Self::parse_enum_variant,
                         &ParseDiagnostic::ExpectedDataProperty,
                     )
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .collect()
                 })
                 .unwrap_or_else(|| (Vec::new(), loc_start));
 
@@ -2101,6 +2155,9 @@ impl<'a, 'src> Parser<'a, 'src> {
                     Self::parse_data_property,
                     &ParseDiagnostic::ExpectedDataProperty,
                 )
+                .into_iter()
+                .filter_map(Result::ok)
+                .collect()
             });
             finish_struct_and_tuple(
                 self,
@@ -2142,6 +2199,9 @@ impl<'a, 'src> Parser<'a, 'src> {
                         Self::parse_data_property,
                         &ParseDiagnostic::ExpectedDataProperty,
                     )
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .collect()
                 })
             } {
                 (ASTEnumVariantType::Struct { properties }, Some(loc))
@@ -2200,23 +2260,15 @@ impl<'a, 'src> Parser<'a, 'src> {
                     target,
                     attatched_impl,
                 },
-                None => {
-                    p.raise(ParseDiagnostic::ExpectedImplTarget, attatched_impl.loc());
-                    ASTFreeImpl {
-                        target: None,
-                        attatched_impl,
-                    }
-                }
+                None => ASTFreeImpl {
+                    target: Err(p.raise(ParseDiagnostic::ExpectedImplTarget, attatched_impl.loc())),
+                    attatched_impl,
+                },
             })
         })
     }
     /// Parses `impl` blocks, returning `(target, impl)`.
-    ///
-    /// `target` is:
-    /// - `None` if no `for T` clause is matched.
-    /// - `Some(None)` if `for` is matched but the type is missing.
-    /// - `Some(Some(...))` if the full valid `for T` clause is matched.
-    fn _parse_impl(&mut self) -> Option<(Option<Option<ASTType<'src>>>, ASTImpl<'src>)> {
+    fn _parse_impl(&mut self) -> Option<(Option<ASTFallible<ASTType<'src>>>, ASTImpl<'src>)> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Impl))?;
 
         let templates = self.parse_templates();
@@ -2225,26 +2277,25 @@ impl<'a, 'src> Parser<'a, 'src> {
         let target = self
             .next_if_eq(TokenContent::Keyword(TKeyword::For))
             .map(|loc_for| {
-                let target = self.parse_type();
-                if target.is_none() {
+                let target = self.parse_type().ok_or_else(|| {
                     self.raise(
                         ParseDiagnostic::ExpectedImplTargetAfterFor,
-                        loc_start.merge_some(loc_of!(target_trait, templates)),
-                    );
-                }
+                        loc_start.merge_some(merge!(loco!(target_trait), loco!(templates))),
+                    )
+                });
                 (target, loc_start.merge(loc_for))
             });
 
         let contents = self.parse_impl_contents().unwrap_or_else(|| {
-            let loc = loc_of!(target, target_trait, templates)
+            let loc = merge!(loco!(target), loco!(target_trait), loco!(templates))
                 .unwrap_or(loc_start)
                 .new_from_end();
             self.raise(ParseDiagnostic::ExpectedImplContents, loc);
             ASTImplContents {
                 loc,
                 functions: Vec::new(),
-                consts: None,
-                types: None,
+                consts: Vec::new(),
+                types: Vec::new(),
             }
         });
 
@@ -2278,17 +2329,17 @@ impl<'a, 'src> Parser<'a, 'src> {
                 &ParseDiagnostic::ExpectedImplContentEntry,
             );
             let mut functions = Vec::new();
-            let mut consts = None;
-            let mut types = None;
+            let mut consts = Vec::new();
+            let mut types = Vec::new();
             for (function, const_, type_) in r {
                 if let Some(function_) = function {
                     functions.push(function_);
                 }
                 if let Some(const_) = const_ {
-                    consts.get_or_insert_with(Vec::new).push(const_);
+                    consts.push(const_);
                 }
                 if let Some(type_) = type_ {
-                    types.get_or_insert_with(Vec::new).push(type_);
+                    types.push(type_);
                 }
             }
 
@@ -2304,10 +2355,9 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_type_alias(&mut self, annot: &mut ASTAnnot) -> Option<ASTTypeAlias<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Type))?;
 
-        let name = self.parse_name();
-        if name.is_none() {
-            self.raise(ParseDiagnostic::ExpectedTypealiasName, loc_start);
-        }
+        let name = self
+            .parse_name()
+            .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedTypealiasName, loc_start));
 
         let templates = self.parse_templates();
 
@@ -2317,15 +2367,15 @@ impl<'a, 'src> Parser<'a, 'src> {
             } else {
                 (None, None)
             };
-        if value.is_none() {
+        let value = value.ok_or_else(|| {
             self.raise(
                 ParseDiagnostic::ExpectedTypealiasValue,
-                loc_start.merge_some(loc_of!(loc_eq, templates, name)),
-            );
-        }
+                loc_start.merge_some(merge!(loc_eq, loco!(templates), locr!(name))),
+            )
+        });
 
         Some(ASTTypeAlias {
-            loc: loc_start.merge_some(loc_of!(value, loc_eq, templates, name)),
+            loc: loc_start.merge_some(merge!(locr!(value), loc_eq, loco!(templates), locr!(name))),
             annot: annot.take(),
             name,
             templates,
@@ -2334,13 +2384,10 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
     fn parse_import(&mut self) -> Option<ASTImport<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Import))?;
-        let tree = self._parse_import_tree();
-        let loc = if let Some(tree) = &tree {
-            loc_start.merge(tree.loc())
-        } else {
-            self.raise(ParseDiagnostic::ExpectedImportTreeBase, loc_start);
-            loc_start
-        };
+        let tree = self
+            ._parse_import_tree()
+            .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedImportTreeBase, loc_start));
+        let loc = loc_start.merge_some(tree.as_ref().ok().map(HasLoc::loc));
         Some(ASTImport { loc, tree })
     }
     fn _parse_import_tree(&mut self) -> Option<ASTImportTree<'src>> {
@@ -2353,6 +2400,9 @@ impl<'a, 'src> Parser<'a, 'src> {
                                 Self::_parse_import_tree,
                                 &ParseDiagnostic::ExpectedImportTreeInner,
                             )
+                            .into_iter()
+                            .filter_map(Result::ok)
+                            .collect()
                         })
                     {
                         // Self::Group //
@@ -2366,19 +2416,17 @@ impl<'a, 'src> Parser<'a, 'src> {
                         ASTImportTree::Name {
                             loc: ident.loc.merge(inner.loc()),
                             ident,
-                            inner: Some(Box::new(inner)),
+                            inner: Some(Ok(Box::new(inner))),
                         }
                     } else {
-                        self.raise(
-                            ParseDiagnostic::ExpectedImportTreeAfterDot,
-                            loc_dot.new_from_end(),
-                        );
-
                         // Self::Name (no following) //
                         ASTImportTree::Name {
                             loc: ident.loc,
                             ident,
-                            inner: None,
+                            inner: Some(Err(self.raise(
+                                ParseDiagnostic::ExpectedImportTreeAfterDot,
+                                loc_dot.new_from_end(),
+                            ))),
                         }
                     }
                 } else {
@@ -2398,7 +2446,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         }
     }
 
-    fn parse_templates(&mut self) -> Option<(Vec<ASTTemplateBound<'src>>, Loc)> {
+    fn parse_templates(&mut self) -> ASTTemplates<'src> {
         self.parse_brackets(TBracketType::Angle, true, |p| {
             p.parse_list_commasep(
                 |p| {
@@ -2413,9 +2461,13 @@ impl<'a, 'src> Parser<'a, 'src> {
                 },
                 &ParseDiagnostic::ExpectedBound,
             )
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect()
         })
     }
-    fn parse_bounds(&mut self) -> (Option<Vec<ASTType<'src>>>, Option<Loc>) {
+    /// NOTE: `None` no-consume rule is goverened by the `Option<Loc>` return value in this case.
+    fn parse_bounds(&mut self) -> (Vec<ASTType<'src>>, Option<Loc>) {
         if let Some(loc_colon) = self.next_if_eq(TokenContent::Symbol(TSymbol::Colon)) {
             let (bounds, loc_bounds) = self.parse_list_require_sep(
                 |p| p.parse_type(),
@@ -2424,9 +2476,9 @@ impl<'a, 'src> Parser<'a, 'src> {
                 &ParseDiagnostic::ExpectedBoundUnionSep,
                 loc_colon,
             );
-            (Some(bounds), Some(loc_bounds))
+            (bounds, Some(loc_bounds))
         } else {
-            (None, None)
+            (Vec::new(), None)
         }
     }
 
@@ -2538,10 +2590,10 @@ impl<'a, 'src> Parser<'a, 'src> {
         })
     }
     fn parse_annot(&mut self) -> ASTAnnot {
-        let mut doc = None;
+        let mut doc = Vec::new();
         loop {
             if let Some(value) = self.parse_doc() {
-                doc.get_or_insert_with(Vec::new).push(value);
+                doc.push(value);
             } else {
                 // todo macro attrs
                 break;
@@ -2570,19 +2622,17 @@ impl<'a, 'src> Parser<'a, 'src> {
                 TKeyword::If => {
                     // ASTSubBlocked::If //
 
-                    let condition = self.parse_expr_before_block();
-                    let block = self.parse_block();
-                    if condition.is_none() {
-                        self.raise(ParseDiagnostic::ExpectedIfCondition, loc_start)
-                    }
-                    if block.is_none() {
+                    let condition = self
+                        .parse_expr_before_block()
+                        .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedIfCondition, loc_start));
+                    let block = self.parse_block().ok_or_else(|| {
                         self.raise(
                             ParseDiagnostic::ExpectedIfBlock,
-                            loc_start.merge_some(loc_of!(condition)),
+                            loc_start.merge_some(merge!(locr!(condition))),
                         )
-                    }
-                    let mut loc_end = loc_of!(block, condition).unwrap_or(loc_start);
-                    let mut elifs = None;
+                    });
+                    let mut loc_end = merge!(locr!(block), locr!(condition)).unwrap_or(loc_start);
+                    let mut elifs = Vec::new();
                     let mut else_block = None;
 
                     while self._parse_subblocked_elseif(&mut elifs, &mut else_block, &mut loc_end) {
@@ -2599,31 +2649,29 @@ impl<'a, 'src> Parser<'a, 'src> {
                 TKeyword::Loop => {
                     // ASTSubBlocked::Loop //
 
-                    let block = self.parse_block();
-                    if block.is_none() {
-                        self.raise(ParseDiagnostic::ExpectedLoopBlock, loc_start)
-                    }
+                    let block = self
+                        .parse_block()
+                        .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedLoopBlock, loc_start));
 
                     Some(ASTSubBlocked::Loop {
-                        loc: loc_start.merge_some(loc_of!(block)),
+                        loc: loc_start.merge_some(locr!(block)),
                         block,
                     })
                 }
                 TKeyword::While => {
                     // ASTSubBlocked::While //
 
-                    let condition = self.parse_expr_before_block();
-                    let block = self.parse_block();
-                    if condition.is_none() {
+                    let condition = self.parse_expr_before_block().ok_or_else(|| {
                         self.raise(ParseDiagnostic::ExpectedWhileCondition, loc_start)
-                    }
-                    if block.is_none() {
+                    });
+                    let block = self.parse_block().ok_or_else(|| {
                         self.raise(
                             ParseDiagnostic::ExpectedWhileBlock,
-                            loc_start.merge_some(loc_of!(condition)),
+                            loc_start.merge_some(locr!(condition)),
                         )
-                    }
-                    let mut loc_end = loc_of!(block, condition).unwrap_or(loc_start);
+                    });
+
+                    let mut loc_end = merge!(locr!(block), locr!(condition)).unwrap_or(loc_start);
                     let else_block = self._parse_subblocked_else(&mut loc_end);
 
                     Some(ASTSubBlocked::While {
@@ -2636,36 +2684,37 @@ impl<'a, 'src> Parser<'a, 'src> {
                 TKeyword::For => {
                     // ASTSubBlocked::For //
 
-                    let var = self.parse_typed_destructure(true);
-                    let keyword_in = self.next_if_eq(TokenContent::Keyword(TKeyword::In));
-                    let iterator = self.parse_expr_before_block();
-                    let block = self.parse_block();
-
-                    if var.is_none() {
-                        self.raise(ParseDiagnostic::ExpectedForVar, loc_start)
-                    }
-                    if keyword_in.is_none() {
-                        self.raise(
-                            ParseDiagnostic::ExpectedForIn,
-                            loc_start.merge_some(loc_of!(var)),
-                        )
-                    }
-                    if iterator.is_none() {
+                    let var = self
+                        .parse_typed_destructure(true)
+                        .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedForVar, loc_start));
+                    let keyword_in = self
+                        .next_if_eq(TokenContent::Keyword(TKeyword::In))
+                        .ok_or_else(|| {
+                            self.raise(
+                                ParseDiagnostic::ExpectedForIn,
+                                loc_start.merge_some(locr!(var)),
+                            )
+                        });
+                    let iterator = self.parse_expr_before_block().ok_or_else(|| {
                         self.raise(
                             ParseDiagnostic::ExpectedForIterator,
-                            loc_start.merge_some(loc_of!(keyword_in, var)),
+                            loc_start.merge_some(merge!(locr!(keyword_in), locr!(var))),
                         )
-                    }
-                    if block.is_none() {
+                    });
+                    let block = self.parse_block().ok_or_else(|| {
                         self.raise(
                             ParseDiagnostic::ExpectedForBlock,
-                            loc_start.merge_some(loc_of!(iterator, keyword_in, var)),
+                            loc_start.merge_some(merge!(
+                                locr!(iterator),
+                                locr!(keyword_in),
+                                locr!(var)
+                            )),
                         )
-                    }
+                    });
 
-                    let mut loc_end = loc_of!(block, iterator, var)
-                        .or(keyword_in)
-                        .unwrap_or(loc_start);
+                    let mut loc_end =
+                        merge!(locr!(block), locr!(iterator), locr!(var), keyword_in.ok())
+                            .unwrap_or(loc_start);
                     let else_block = self._parse_subblocked_else(&mut loc_end);
 
                     Some(ASTSubBlocked::For {
@@ -2684,8 +2733,8 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
     fn _parse_subblocked_elseif(
         &mut self,
-        elifs: &mut Option<Vec<(Option<Box<ASTExpr<'src>>>, Option<ASTBlock<'src>>)>>,
-        else_block: &mut Option<ASTBlock<'src>>,
+        elifs: &mut Vec<(ASTFallible<Box<ASTExpr<'src>>>, ASTFallible<ASTBlock<'src>>)>,
+        else_block: &mut Option<ASTFallible<ASTBlock<'src>>>,
         loc_end: &mut Loc,
     ) -> bool {
         let loc_else =
@@ -2697,70 +2746,76 @@ impl<'a, 'src> Parser<'a, 'src> {
 
         if let Some(loc_if) = self.next_if_eq(TokenContent::Keyword(TKeyword::If)) {
             // matching `else if ...`
-            let condition = self.parse_expr_before_block();
-            let block = self.parse_block();
-            if condition.is_none() {
-                self.raise(ParseDiagnostic::ExpectedIfCondition, loc_if)
-            }
-            if block.is_none() {
+            let condition = self
+                .parse_expr_before_block()
+                .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedIfCondition, loc_if));
+            let block = self.parse_block().ok_or_else(|| {
                 self.raise(
                     ParseDiagnostic::ExpectedIfBlock,
-                    loc_if.merge_some(loc_of!(condition)),
+                    loc_if.merge_some(locr!(condition)),
                 )
-            }
-            *loc_end = loc_of!(block, condition).unwrap_or(loc_if);
-            elifs
-                .get_or_insert_with(Vec::new)
-                .push((condition.map(Box::new), block));
+            });
+
+            *loc_end = merge!(locr!(block), locr!(condition)).unwrap_or(loc_if);
+            elifs.push((condition.map(Box::new), block));
             true
         } else {
             // matching `else ...`
-            *else_block = self.parse_block();
-            if let Some(else_block) = else_block {
+            let else_block_read = self
+                .parse_block()
+                .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedElseBlock, loc_else));
+            if let Ok(else_block) = &else_block_read {
                 *loc_end = else_block.loc;
             } else {
-                self.raise(ParseDiagnostic::ExpectedElseBlock, loc_else);
                 *loc_end = loc_else;
             }
+            *else_block = Some(else_block_read);
             false
         }
     }
-    fn _parse_subblocked_else(&mut self, loc_end: &mut Loc) -> Option<ASTBlock<'src>> {
+    fn _parse_subblocked_else(&mut self, loc_end: &mut Loc) -> Option<ASTFallible<ASTBlock<'src>>> {
         let loc_else = self.next_if_eq(TokenContent::Keyword(TKeyword::Else))?;
 
-        let else_block = self.parse_block();
-        if let Some(else_block) = &else_block {
+        let else_block = self
+            .parse_block()
+            .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedElseBlock, loc_else));
+        if let Ok(else_block) = &else_block {
             *loc_end = else_block.loc;
         } else {
-            self.raise(ParseDiagnostic::ExpectedElseBlock, loc_else);
             *loc_end = loc_else;
         }
-        else_block
+        Some(else_block)
     }
 
     fn parse_var_declare(&mut self) -> Option<ASTVarDeclare<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Let))?;
 
-        let declr = self.parse_typed_destructure(false);
-        if declr.is_none() {
-            self.raise(ParseDiagnostic::ExpectedDestructure, loc_start);
-        }
-        let (initializer, loc_assign_symbol) = if let Some(loc_assign_symbol) =
-            self.next_if_eq(TokenContent::Symbol(TSymbol::Assign))
-        {
-            let expr = self.parse_expr_non_greedy();
-            if expr.is_none() {
-                self.raise(ParseDiagnostic::ExpectedAssignValue, loc_assign_symbol);
-            }
-            (expr, Some(loc_assign_symbol))
-        } else {
-            (None, None)
-        };
+        let declr = self
+            .parse_typed_destructure(false)
+            .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedDestructure, loc_start));
+
+        let (initializer, loc_assign_symbol) =
+            if let Some(loc_assign_symbol) = self.next_if_eq(TokenContent::Symbol(TSymbol::Assign))
+            {
+                let expr = self.parse_expr_non_greedy().map(Box::new).ok_or_else(|| {
+                    self.raise(ParseDiagnostic::ExpectedAssignValue, loc_assign_symbol)
+                });
+
+                (Some(expr), Some(loc_assign_symbol))
+            } else {
+                (None, None)
+            };
 
         Some(ASTVarDeclare {
-            loc: loc_start.merge_some(loc_of!(initializer, loc_assign_symbol, declr)),
+            loc: loc_start.merge_some(merge!(
+                initializer
+                    .as_ref()
+                    .and_then(|it| it.as_ref().ok().map(|it| it.loc())),
+                loco!(loc_assign_symbol),
+                locr!(declr)
+            )),
             declr,
-            initializer: initializer.map(Box::new),
+            initializer,
         })
     }
 
@@ -2797,16 +2852,22 @@ impl<'a, 'src> Parser<'a, 'src> {
     ) -> Option<(HelperParenOrTuple<T>, Loc)> {
         self.guard_state(|p| {
             p.parse_brackets(TBracketType::Paren, true, |p| {
-                if let Some(inner) = p.guard_state(|p| {
+                if p.peek(|t| t.next().is_none()) {
+                    // empty, we have got a `()`, (empty tuple)
+                    // Tuple //
+                    HelperParenOrTuple::Tuple(Vec::new())
+                } else if let Some(inner) = p.guard_state(|p| {
+                    // the whole deal with this section of code is that we want to match one expression and _not_ match a
+                    // comma, because if we do, that means this is actually a tuple.
                     const PARSE_COMMA: fn(&mut Parser) -> Option<Loc> =
                         |p| p.next_if_eq(TokenContent::Symbol(TSymbol::Comma));
-                    let inner = match p.fail_until_parse(
+                    let inner = match p.fail_until_parse_nonempty(
                         |p| p.parse_either(|p| parse_contents(p), PARSE_COMMA),
                         fail_diagnostic,
                     ) {
-                        None => return Some(None), // invalid contents, return this to count it as a paren but mark it as invalid.
-                        Some(AorB::A(inner)) => inner,
-                        Some(AorB::B(_comma_)) => return None, // this is a tuple, skip to tuple parsing
+                        Err(err) => return Some(Err(err)), // invalid contents, return this to count it as a paren but mark it as invalid.
+                        Ok(AorB::A(inner)) => inner,
+                        Ok(AorB::B(_comma_)) => return None, // this is a tuple, skip to tuple parsing
                     };
                     let comma_after =
                         p.fail_until_parse(PARSE_COMMA, &ParseDiagnostic::ExpectedClosing);
@@ -2814,7 +2875,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                         return None; // comma detected! this is a tuple, skip to tuple parsing
                     }
 
-                    Some(Some(inner))
+                    Some(Ok(inner))
                 }) {
                     // Paren //
                     HelperParenOrTuple::Paren(inner.map(Box::new))
@@ -2851,7 +2912,6 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
 }
 
-#[allow(unused)]
 pub fn parse_from_source<'src>(
     src: &'src str,
 ) -> (ASTSourceFile<'src>, Vec<(ParseDiagnostic, Loc)>) {
@@ -2868,7 +2928,7 @@ pub fn parse_from_source<'src>(
 mod test {
     use crate::front::{
         ast::{ASTExpr, ASTIdent, ASTIdentValue},
-        parse::{parse_from_source, ParseDiagnostic, Parser},
+        parse::{ParseDiagnostic, Parser},
         source::Loc,
         tokenize::{tokenize, TBracketType, TInfixOperatorType, TPrefixOperatorType, TokenContent},
     };

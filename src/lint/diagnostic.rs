@@ -1,8 +1,11 @@
 use std::fmt::Debug;
 
-use crate::front::{
-    parse::ParseDiagnostic,
-    source::{Loc, LocInFile},
+use crate::{
+    front::{
+        parse::ParseDiagnostic,
+        source::{Loc, LocInFile},
+    },
+    middle::resolution_diagnostics::ResolutionDiagnostic,
 };
 
 pub struct Diagnostics {
@@ -25,6 +28,7 @@ pub struct Diagnostic {
 #[derive(Debug, Clone)]
 pub enum DiagnosticContent {
     Parse(ParseDiagnostic),
+    Resolution(ResolutionDiagnostic),
 }
 pub trait ToDiagnostic: Clone + Debug {
     fn to_content(self) -> DiagnosticContent;

@@ -6,6 +6,7 @@ use crate::{
         tokenize::{TInfixOperatorType, TPostfixOperatorType, TPrefixOperatorType, TSymbol},
     },
     lint::diagnostic::{DiagnosticContent, ToDiagnostic},
+    middle::scope::LocallyScoped,
 };
 
 use super::{
@@ -706,6 +707,7 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_source_file(&mut self) -> ASTSourceFile<'src> {
         ASTSourceFile {
             body: self.parse_stmt_list(),
+            scope: LocallyScoped::new_empty(),
         }
     }
 
@@ -755,7 +757,11 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
     fn parse_block(&mut self) -> Option<ASTBlock<'src>> {
         self.parse_brackets(TBracketType::Curly, true, |p| p.parse_stmt_list())
-            .map(|(body, loc)| ASTBlock { loc, body })
+            .map(|(body, loc)| ASTBlock {
+                loc,
+                body,
+                scope: LocallyScoped::new_empty(),
+            })
     }
 
     fn parse_expr_before_block(&mut self) -> Option<ASTExpr<'src>> {
@@ -1595,6 +1601,8 @@ impl<'a, 'src> Parser<'a, 'src> {
                     loc: merge!(loc_ty_return, loc_args)
                         .unwrap_or(loc_start)
                         .new_from_end(),
+
+                    scope: LocallyScoped::new_empty(),
                 }
             });
 
@@ -1624,7 +1632,11 @@ impl<'a, 'src> Parser<'a, 'src> {
             loc,
             args,
             ty_return: None, // must be inferred by type system
-            block: ASTBlock { loc, body: block },
+            block: ASTBlock {
+                loc,
+                body: block,
+                scope: LocallyScoped::new_empty(),
+            },
         })
     }
 
@@ -1984,6 +1996,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                     ASTBlock {
                         loc: loc_eq.merge_some(loco!(expr)),
                         body: expr.into_iter().map(|expr| ASTStmt::Expr(expr)).collect(),
+                        scope: LocallyScoped::new_empty(),
                     }
                 }
             });

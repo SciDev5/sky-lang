@@ -1,4 +1,4 @@
-use crate::impl_hasloc_simple;
+use crate::{impl_hasloc_simple, middle::scope::LocallyScoped};
 
 use super::{
     source::{HasLoc, Loc},
@@ -8,6 +8,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTSourceFile<'src> {
     pub body: Vec<ASTStmt<'src>>,
+    pub scope: LocallyScoped<'src>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +111,7 @@ type Expr<'src> = Box<ASTExpr<'src>>;
 pub struct ASTBlock<'src> {
     pub loc: Loc,
     pub body: Vec<ASTStmt<'src>>,
+    pub scope: LocallyScoped<'src>,
 }
 impl_hasloc_simple!(ASTBlock<'src>);
 
@@ -245,6 +247,7 @@ pub struct ASTFunction<'src> {
     pub ty_return: Option<ASTFallible<ASTType<'src>>>,
     pub block: Option<ASTBlock<'src>>,
 }
+impl_hasloc_simple!(ASTFunction<'src>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTImport<'src> {
@@ -277,7 +280,7 @@ impl<'src> HasLoc for ASTImportTree<'src> {
 }
 
 /// Raw names, like [`ASTIdent`], but doesn't match keywords like `self`, `super`, etc.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ASTName<'src> {
     pub loc: Loc,
     pub value: &'src str,
@@ -420,6 +423,7 @@ pub struct ASTConst<'src> {
     pub ty: Option<ASTFallible<ASTType<'src>>>,
     pub value: ASTFallible<ASTExpr<'src>>,
 }
+impl_hasloc_simple!(ASTConst<'src>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTTrait<'src> {
@@ -430,6 +434,7 @@ pub struct ASTTrait<'src> {
     pub bounds: Vec<ASTType<'src>>,
     pub contents: ASTImplContents<'src>,
 }
+impl_hasloc_simple!(ASTTrait<'src>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTData<'src> {
@@ -440,6 +445,8 @@ pub struct ASTData<'src> {
     pub contents: ASTDataContents<'src>,
     pub attatched_impls: Vec<ASTImpl<'src>>,
 }
+impl_hasloc_simple!(ASTData<'src>);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ASTDataContents<'src> {
     Unit,
@@ -478,6 +485,8 @@ pub struct ASTTypeAlias<'src> {
     pub name: ASTFallible<ASTName<'src>>,
     pub value: ASTFallible<ASTType<'src>>,
 }
+impl_hasloc_simple!(ASTTypeAlias<'src>);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTFreeImpl<'src> {
     pub target: ASTFallible<ASTType<'src>>,
@@ -511,7 +520,7 @@ pub struct ASTImplContents<'src> {
 impl_hasloc_simple!(ASTImplContents<'src>);
 
 pub type ASTFallible<T> = Result<T, ASTDiagnosticRef>;
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ASTDiagnosticRef {
     pub parse_diagnostic_id: usize,
 }

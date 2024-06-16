@@ -16,6 +16,10 @@ use crate::{
 use super::{resolution_diagnostics::ResolutionDiagnostics, statics::ASTStatics};
 
 /// Contains lists of statics contained in this scope (not including child scopes.)
+///
+/// Note that these do not represent the final ids that these names will point to, as
+/// there will be some shifts in ids when merging several items into their cross-platform
+/// version, and when removing unused items.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocallyScoped<'src> {
     pub functions: HashMap<&'src str, Id>,
@@ -52,6 +56,14 @@ pub enum LocallyDefinedNameless {
     FreeImpl(Id),
 }
 
+/// Run the scoping / statics extraction step.
+///
+/// Moves static declarations (eg. function definitions, data definitions, etc.) into their
+/// own list (one for the entire module), recording the index it was inserted at as its id.
+/// This id is then recorded into the scope that the declaration was made in into a map by
+/// the name it was created under, (such as "hello" in the case of `fn hello()`).
+///
+/// Each `scope_<whatever>` function handles this task for different kinds of data.
 #[allow(unused)]
 pub fn scope_src<'src>(
     src: &mut ASTSourceFile<'src>,
@@ -62,6 +74,9 @@ pub fn scope_src<'src>(
     diagnostics.diagnostics
 }
 
+/// Register this static into the list of statics and add its id to the local scope.
+/// (This will additionally run the `scope_<whatever>` on the contents of the declarations,
+/// such as associated function bodies).
 fn register_static<'src>(
     declr: ASTDeclr<'src>,
     scope: &mut LocallyScoped<'src>,

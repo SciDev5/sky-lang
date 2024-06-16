@@ -2142,6 +2142,12 @@ impl<'a, 'src> Parser<'a, 'src> {
         if let Some(loc) = self.next_if_eq(TokenContent::Keyword(TKeyword::Unit)) {
             // ASTDataContents::Unit //
             Some((ASTDataContents::Unit, loc))
+        } else if let Some(loc) = self.next_if_eq(TokenContent::Keyword(TKeyword::Abstract)) {
+            // ASTDataContents::Abstract //
+            Some((ASTDataContents::Abstract, loc))
+        } else if let Some(loc) = self.next_if_eq(TokenContent::Keyword(TKeyword::Inherit)) {
+            // ASTDataContents::Inherit //
+            Some((ASTDataContents::Inherit, loc))
         } else if let Some(loc_start) = self.next_if_eq(TokenContent::Keyword(TKeyword::Enum)) {
             // ASTDataContents::Enum //
             let (variants, loc_enum) = self
@@ -2925,6 +2931,8 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
 }
 
+/// Parse a single source file into its corresponding AST (abstraxt syntax tree),
+/// returning any issues found with the source code as a list of diagnostics.
 pub fn parse_from_source<'src>(
     src: &'src str,
 ) -> (ASTSourceFile<'src>, Vec<(ParseDiagnostic, Loc)>) {

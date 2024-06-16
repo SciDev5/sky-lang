@@ -353,6 +353,8 @@ gen_TKeyword! {
     Tuple ("tuple")
     Enum ("enum")
     Unit ("unit")
+    Abstract ("abstract")
+    Inherit ("inherit")
     Trait ("trait")
     Impl ("impl")
     Import ("import")

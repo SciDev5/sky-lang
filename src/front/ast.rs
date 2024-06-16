@@ -1,3 +1,9 @@
+//! The definition of the abstract syntax tree for the language.
+//!
+//! This represents the text content of the program as a tree of nodes representing
+//! distinct syntactic elements of the language, such as if statements, expressions,
+//! and literals.
+
 use crate::{impl_hasloc_simple, middle::scope::LocallyScoped};
 
 use super::{
@@ -5,6 +11,12 @@ use super::{
     tokenize::{TInfixOperatorType, TPostfixOperatorType, TPrefixOperatorType},
 };
 
+/// The definition of the abstract syntax tree for a given source file and all its
+/// contents.
+///
+/// The AST represents the text content of the program as a tree of nodes representing
+/// distinct syntactic elements of the language, such as if statements, expressions,
+/// and literals.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTSourceFile<'src> {
     pub body: Vec<ASTStmt<'src>>,
@@ -450,6 +462,8 @@ impl_hasloc_simple!(ASTData<'src>);
 #[derive(Debug, Clone, PartialEq)]
 pub enum ASTDataContents<'src> {
     Unit,
+    Abstract,
+    Inherit,
     Struct {
         properties: Vec<ASTDataProperty<'src>>,
     },

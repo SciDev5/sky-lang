@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use crate::{
     front::{
         ast::{
-            ASTBlock, ASTConst, ASTData, ASTDeclr, ASTExpr, ASTFallible, ASTFunction, ASTImpl,
-            ASTImplContents, ASTImportTree, ASTLambda, ASTName, ASTPostfixBlock, ASTSourceFile,
-            ASTStmt, ASTSubBlocked, ASTTrait, ASTVarDeclare,
+            ASTBlock, ASTConst, ASTData, ASTDeclr, ASTExpr, ASTFallible, ASTFreeImpl, ASTFunction,
+            ASTImpl, ASTImplContents, ASTImportTree, ASTLambda, ASTName, ASTPostfixBlock,
+            ASTSourceFile, ASTStmt, ASTSubBlocked, ASTTrait, ASTTypeAlias, ASTVarDeclare,
         },
         source::{HasLoc, Loc},
     },
@@ -13,7 +13,30 @@ use crate::{
     modularity::Id,
 };
 
-use super::{resolution_diagnostics::ResolutionDiagnostics, statics::ASTStatics};
+use super::resolution_diagnostics::ResolutionDiagnostics;
+
+#[derive(Debug)]
+pub struct ASTStatics<'src> {
+    pub functions: Vec<ASTFunction<'src>>,
+    pub datas: Vec<ASTData<'src>>,
+    pub traits: Vec<ASTTrait<'src>>,
+    pub consts: Vec<ASTConst<'src>>,
+    pub typealiases: Vec<ASTTypeAlias<'src>>,
+    pub freeimpls: Vec<ASTFreeImpl<'src>>,
+}
+
+impl<'src> ASTStatics<'src> {
+    pub fn new() -> Self {
+        Self {
+            functions: Vec::new(),
+            datas: Vec::new(),
+            traits: Vec::new(),
+            consts: Vec::new(),
+            typealiases: Vec::new(),
+            freeimpls: Vec::new(),
+        }
+    }
+}
 
 /// Contains lists of statics contained in this scope (not including child scopes.)
 ///

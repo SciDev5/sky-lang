@@ -4,7 +4,7 @@
 //! distinct syntactic elements of the language, such as if statements, expressions,
 //! and literals.
 
-use crate::{impl_hasloc_simple, middle::scope::LocallyScoped};
+use crate::{impl_hasloc_simple, middle::scope_statics::LocallyScoped};
 
 use super::{
     source::{HasLoc, Loc},
@@ -463,7 +463,6 @@ impl_hasloc_simple!(ASTData<'src>);
 pub enum ASTDataContents<'src> {
     Unit,
     Abstract,
-    Inherit,
     Struct {
         properties: Vec<ASTDataProperty<'src>>,
     },

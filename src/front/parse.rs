@@ -6,7 +6,7 @@ use crate::{
         tokenize::{TInfixOperatorType, TPostfixOperatorType, TPrefixOperatorType, TSymbol},
     },
     lint::diagnostic::{DiagnosticContent, ToDiagnostic},
-    middle::scope::LocallyScoped,
+    middle::scope_statics::LocallyScoped,
 };
 
 use super::{
@@ -2145,9 +2145,6 @@ impl<'a, 'src> Parser<'a, 'src> {
         } else if let Some(loc) = self.next_if_eq(TokenContent::Keyword(TKeyword::Abstract)) {
             // ASTDataContents::Abstract //
             Some((ASTDataContents::Abstract, loc))
-        } else if let Some(loc) = self.next_if_eq(TokenContent::Keyword(TKeyword::Inherit)) {
-            // ASTDataContents::Inherit //
-            Some((ASTDataContents::Inherit, loc))
         } else if let Some(loc_start) = self.next_if_eq(TokenContent::Keyword(TKeyword::Enum)) {
             // ASTDataContents::Enum //
             let (variants, loc_enum) = self

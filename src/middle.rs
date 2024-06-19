@@ -28,8 +28,8 @@
 //! - assemble package
 
 pub mod memory;
+pub mod merge;
 pub mod optimize;
 pub mod resolution_diagnostics;
-pub mod scope;
-pub mod statics;
+pub mod scope_statics;
 pub mod types;

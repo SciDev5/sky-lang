@@ -5,7 +5,7 @@ use std::{
     str::CharIndices,
 };
 
-use crate::front::source::Loc;
+use crate::front::source::{Loc, SourceFileId};
 
 use super::{Token, TokenContent};
 
@@ -67,6 +67,7 @@ type K<'src> =
 pub(super) struct TokenizeIter<'src> {
     pub(super) char_iter: K<'src>,
     src: &'src str,
+    src_id: SourceFileId,
     chars_len: usize,
     tokenize_next: TokenizeNext<'src>,
 }
@@ -82,7 +83,7 @@ impl<'src> DerefMut for TokenizeIter<'src> {
     }
 }
 impl<'src> TokenizeIter<'src> {
-    pub fn new(src: &'src str, tokenize_next: TokenizeNext<'src>) -> Self {
+    pub fn new(src: &'src str, src_id: SourceFileId, tokenize_next: TokenizeNext<'src>) -> Self {
         Self {
             char_iter: Rewindable::new(src.char_indices().enumerate().map(
                 |(char_i, (byte_i, char))| CharIndex {
@@ -92,6 +93,7 @@ impl<'src> TokenizeIter<'src> {
                 },
             )),
             src,
+            src_id,
             chars_len: src.chars().count(),
             tokenize_next,
         }
@@ -137,7 +139,11 @@ impl<'src> TokenizeIter<'src> {
             .map(|CharIndex { char_i, .. }| char_i)
             .unwrap_or(self.chars_len)
             - start;
-        Loc { start, length }
+        Loc {
+            src_id: self.src_id,
+            start,
+            length,
+        }
     }
 }
 

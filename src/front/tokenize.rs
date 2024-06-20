@@ -4,7 +4,7 @@ use std::fmt::Debug;
 
 use self::tokenize_iter::{CharIndex, TokenizeIter};
 
-use super::source::Loc;
+use super::source::{Loc, SourceFileId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TBracketType {
@@ -767,8 +767,8 @@ fn tokenize_next<'src>(state: &mut TokenizeIter<'src>) -> Option<TokenContent<'s
 }
 
 #[allow(unused)]
-pub fn tokenize<'src>(src: &'src str) -> Vec<Token<'src>> {
-    TokenizeIter::new(src, tokenize_next).collect()
+pub fn tokenize<'src>(src: &'src str, src_id: SourceFileId) -> Vec<Token<'src>> {
+    TokenizeIter::new(src, src_id, tokenize_next).collect()
 }
 
 #[cfg(test)]
@@ -778,7 +778,7 @@ mod test {
     #[test]
     fn string_literals() {
         assert_eq!(
-            &tokenize("\"hello`")
+            &tokenize("\"hello`", 0)
                 .into_iter()
                 .map(|v| v.content)
                 .collect::<Vec<_>>()[..],
@@ -793,7 +793,7 @@ mod test {
     #[test]
     fn general_tokenization_test() {
         assert_eq!(
-            &tokenize("for+=while/%let/* /* */ */true jhdkdhk *")
+            &tokenize("for+=while/%let/* /* */ */true jhdkdhk *", 0)
                 .into_iter()
                 .map(|v| v.content)
                 .collect::<Vec<_>>()[..],
@@ -822,25 +822,30 @@ mod test {
     }
     #[test]
     fn loc() {
+        let src_id = 0;
         assert_eq!(
-            &tokenize("+abc+=\"def\"")
+            &tokenize("+abc+=\"def\"", src_id)
                 .into_iter()
                 .map(|v| v.loc)
                 .collect::<Vec<_>>()[..],
             &[
                 Loc {
+                    src_id,
                     start: 0,
                     length: 1
                 },
                 Loc {
+                    src_id,
                     start: 1,
                     length: 3
                 },
                 Loc {
+                    src_id,
                     start: 4,
                     length: 2
                 },
                 Loc {
+                    src_id,
                     start: 6,
                     length: 5
                 },

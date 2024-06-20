@@ -3,12 +3,15 @@ pub type SourceFileId = usize;
 /// A range of char indices in the source code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Loc {
+    pub src_id: SourceFileId,
     pub start: usize,
     pub length: usize,
 }
 impl Loc {
     pub fn merge(self, to: Self) -> Self {
+        assert_eq!(self.src_id, to.src_id);
         Self {
+            src_id: self.src_id,
             start: self.start,
             length: (to.start - self.start) + to.length,
         }
@@ -21,22 +24,18 @@ impl Loc {
     }
     pub fn new_from_end(self) -> Self {
         Self {
+            src_id: self.src_id,
             start: self.start + self.length,
             length: 0,
         }
     }
     pub fn new_from_start(self) -> Self {
         Self {
+            src_id: self.src_id,
             start: self.start,
             length: 0,
         }
     }
-}
-/// A range of char indices in the source code in a specific file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LocInFile {
-    pub file_id: SourceFileId,
-    pub loc: Loc,
 }
 
 pub trait HasLoc {

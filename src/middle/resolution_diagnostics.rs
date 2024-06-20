@@ -1,9 +1,6 @@
-use crate::{
-    front::source::Loc,
-    lint::diagnostic::{DiagnosticContent, ToDiagnostic},
-};
+use crate::lint::diagnostic::{DiagnosticContent, ToDiagnostic};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionDiagnostic {
     DuplicateName,
 }
@@ -11,19 +8,5 @@ pub enum ResolutionDiagnostic {
 impl ToDiagnostic for ResolutionDiagnostic {
     fn to_content(self) -> DiagnosticContent {
         DiagnosticContent::Resolution(self)
-    }
-}
-
-pub struct ResolutionDiagnostics {
-    pub diagnostics: Vec<(ResolutionDiagnostic, Loc)>,
-}
-impl ResolutionDiagnostics {
-    pub fn new() -> Self {
-        Self {
-            diagnostics: Vec::new(),
-        }
-    }
-    pub fn raise(&mut self, d: ResolutionDiagnostic, loc: Loc) {
-        self.diagnostics.push((d, loc))
     }
 }

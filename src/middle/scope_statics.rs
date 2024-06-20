@@ -7,13 +7,12 @@ use crate::{
             ASTImpl, ASTImplContents, ASTImportTree, ASTLambda, ASTName, ASTPostfixBlock,
             ASTSourceFile, ASTStmt, ASTSubBlocked, ASTTrait, ASTTypeAlias, ASTVarDeclare,
         },
-        source::{HasLoc, Loc},
+        source::HasLoc,
     },
+    lint::diagnostic::Diagnostics,
     middle::resolution_diagnostics::ResolutionDiagnostic,
     modularity::Id,
 };
-
-use super::resolution_diagnostics::ResolutionDiagnostics;
 
 #[derive(Debug)]
 pub struct ASTStatics<'src> {
@@ -91,10 +90,9 @@ pub enum LocallyDefinedNameless {
 pub fn scope_src<'src>(
     src: &mut ASTSourceFile<'src>,
     statics: &mut ASTStatics<'src>,
-) -> Vec<(ResolutionDiagnostic, Loc)> {
-    let mut diagnostics = ResolutionDiagnostics::new();
-    scope_stmt(&mut src.body, &mut src.scope, statics, &mut diagnostics);
-    diagnostics.diagnostics
+    diagnostics: &mut Diagnostics,
+) {
+    scope_stmt(&mut src.body, &mut src.scope, statics, diagnostics)
 }
 
 /// Register this static into the list of statics and add its id to the local scope.
@@ -104,7 +102,7 @@ fn register_static<'src>(
     declr: ASTDeclr<'src>,
     scope: &mut LocallyScoped<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     fn push_get_id<T>(target: &mut Vec<T>, value: T) -> Id {
         let id = target.len();
@@ -118,7 +116,7 @@ fn register_static<'src>(
         statics: &mut Vec<T>,
         to_nameless: F,
         nameless: &mut Vec<LocallyDefinedNameless>,
-        diagnostics: &mut ResolutionDiagnostics,
+        diagnostics: &mut Diagnostics,
     ) {
         let loc = value.loc();
         let id = push_get_id(statics, value);
@@ -189,7 +187,7 @@ fn register_static<'src>(
 fn scope_block<'src>(
     block: &mut ASTBlock<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     scope_stmt(&mut block.body, &mut block.scope, statics, diagnostics)
 }
@@ -198,7 +196,7 @@ fn scope_stmt<'src>(
     stmts: &mut Vec<ASTStmt<'src>>,
     scope: &mut LocallyScoped<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     *stmts = stmts
         .drain(..)
@@ -238,7 +236,7 @@ fn scope_expr<'src>(
     expr: &mut ASTExpr<'src>,
     scope: &mut LocallyScoped<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     match expr {
         ASTExpr::Lambda(lambda) => scope_lambda(lambda, scope, statics, diagnostics),
@@ -287,7 +285,7 @@ fn scope_subblocked<'src>(
     sb: &mut ASTSubBlocked<'src>,
     scope: &mut LocallyScoped<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     match sb {
         ASTSubBlocked::Block { block } => scope_block(block, statics, diagnostics),
@@ -357,7 +355,7 @@ fn scope_exprpostfix<'src>(
     postfix: &mut ASTPostfixBlock<'src>,
     scope: &mut LocallyScoped<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     match postfix {
         ASTPostfixBlock::Call { args } => scope_expr_iter(
@@ -393,7 +391,7 @@ fn scope_expr_iter<'src: 'a, 'a>(
     exprs: impl Iterator<Item = &'a mut ASTExpr<'src>>,
     scope: &mut LocallyScoped<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     for expr in exprs {
         scope_expr(expr, scope, statics, diagnostics);
@@ -404,7 +402,7 @@ fn scope_lambda<'src>(
     lambda: &mut ASTLambda<'src>,
     _scope: &mut LocallyScoped<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     scope_block(&mut lambda.block, statics, diagnostics)
 }
@@ -412,14 +410,14 @@ fn scope_lambda<'src>(
 fn scope_impl<'src>(
     impl_: &mut ASTImpl<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     scope_impl_contents(&mut impl_.contents, statics, diagnostics)
 }
 fn scope_impl_contents<'src>(
     contents: &mut ASTImplContents<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     let mut scope = LocallyScoped::new_empty();
     for const_ in &mut contents.consts {
@@ -434,7 +432,7 @@ fn scope_impl_contents<'src>(
 fn scope_function<'src>(
     function: &mut ASTFunction<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     if let Some(block) = &mut function.block {
         scope_block(block, statics, diagnostics);
@@ -444,7 +442,7 @@ fn scope_function<'src>(
 fn scope_trait<'src>(
     trait_: &mut ASTTrait<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     scope_impl_contents(&mut trait_.contents, statics, diagnostics)
 }
@@ -452,7 +450,7 @@ fn scope_trait<'src>(
 fn scope_data<'src>(
     data: &mut ASTData<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     for impl_ in &mut data.attatched_impls {
         scope_impl_contents(&mut impl_.contents, statics, diagnostics);
@@ -463,7 +461,7 @@ fn scope_const<'src>(
     const_: &mut ASTConst<'src>,
     scope: &mut LocallyScoped<'src>,
     statics: &mut ASTStatics<'src>,
-    diagnostics: &mut ResolutionDiagnostics,
+    diagnostics: &mut Diagnostics,
 ) {
     if let Ok(value) = &mut const_.value {
         scope_expr(value, scope, statics, diagnostics);

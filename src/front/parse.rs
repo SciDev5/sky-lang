@@ -5,7 +5,7 @@ use crate::{
         ast::{ASTEnumVariant, ASTLiteral},
         tokenize::{TInfixOperatorType, TPostfixOperatorType, TPrefixOperatorType, TSymbol},
     },
-    lint::diagnostic::{DiagnosticContent, ToDiagnostic},
+    lint::diagnostic::{DiagnosticContent, Diagnostics, ToDiagnostic},
     middle::scope_statics::LocallyScoped,
 };
 
@@ -18,7 +18,7 @@ use super::{
         ASTTemplateBound, ASTTemplates, ASTTrait, ASTType, ASTTypeAlias, ASTTypedDestructure,
         ASTVarDeclare,
     },
-    source::{HasLoc, Loc},
+    source::{HasLoc, Loc, SourceFileId},
     tokenize::{TBracketType, TKeyword, Token, TokenContent},
 };
 
@@ -157,7 +157,7 @@ struct Parser<'a, 'src> {
     /// Index into [`Self::tokens`], points to what is returned upon the next call to [`Self::next_raw`].
     i: usize,
     /// A list of diagnostics that is produced by the parsing process  (syntax errors, mostly).
-    diagnostics: Vec<(ParseDiagnostic, Loc)>,
+    diagnostics: &'a mut Diagnostics,
     /// A stack containing saved copies of `(self.i, self.diagnostics.len())`.
     /// Not to be modified outside [`Self::guard_state`].
     state_stack: Vec<(usize, usize)>,
@@ -165,11 +165,11 @@ struct Parser<'a, 'src> {
     bracket_stack: Vec<TBracketType>,
 }
 impl<'a, 'src> Parser<'a, 'src> {
-    fn new(tokens: &'a [Token<'src>]) -> Self {
+    fn new(tokens: &'a [Token<'src>], diagnostics: &'a mut Diagnostics) -> Self {
         Self {
             tokens,
             i: 0,
-            diagnostics: Vec::new(),
+            diagnostics,
             state_stack: Vec::new(),
             bracket_stack: Vec::new(),
         }
@@ -410,9 +410,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         if value.is_none() {
             let (revert_i, revert_diagnostics_len) = popped_state;
             self.i = revert_i;
-            self.diagnostics.resize_with(revert_diagnostics_len, || {
-                unreachable!("somehow diagnostics were drained");
-            });
+            self.diagnostics.resize_shrink(revert_diagnostics_len);
         }
         value
     }
@@ -428,9 +426,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             .expect("state_stack was drained! should not be possible");
         let (revert_i, revert_diagnostics_len) = popped_state;
         self.i = revert_i;
-        self.diagnostics.resize_with(revert_diagnostics_len, || {
-            unreachable!("somehow diagnostics were drained");
-        });
+        self.diagnostics.resize_shrink(revert_diagnostics_len);
         value
     }
 
@@ -489,10 +485,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                 ParseDiagnostic::MissingClosing {
                     expected: bracket_ty,
                 },
-                Loc {
-                    start: loc.start + loc.length,
-                    length: 0,
-                },
+                loc.new_from_end(),
             );
             loc
         };
@@ -694,7 +687,7 @@ impl<'a, 'src> Parser<'a, 'src> {
     #[inline]
     fn raise(&mut self, diagnostic: ParseDiagnostic, loc: Loc) -> ASTDiagnosticRef {
         let parse_diagnostic_id = self.diagnostics.len();
-        self.diagnostics.push((diagnostic, loc));
+        self.diagnostics.raise(diagnostic, loc);
         ASTDiagnosticRef {
             parse_diagnostic_id,
         }
@@ -2932,11 +2925,13 @@ impl<'a, 'src> Parser<'a, 'src> {
 /// returning any issues found with the source code as a list of diagnostics.
 pub fn parse_from_source<'src>(
     src: &'src str,
-) -> (ASTSourceFile<'src>, Vec<(ParseDiagnostic, Loc)>) {
-    let tokens = super::tokenize::tokenize(src);
-    let mut parser = Parser::new(&tokens);
+    src_id: SourceFileId,
+    diagnostics: &mut Diagnostics,
+) -> ASTSourceFile<'src> {
+    let tokens = super::tokenize::tokenize(src, src_id);
+    let mut parser = Parser::new(&tokens, diagnostics);
     let source_file = parser.parse_source_file();
-    (source_file, parser.diagnostics)
+    source_file
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2944,15 +2939,21 @@ pub fn parse_from_source<'src>(
 
 #[cfg(test)]
 mod test {
-    use crate::front::{
-        ast::{ASTExpr, ASTIdent, ASTIdentValue},
-        parse::{ParseDiagnostic, Parser},
-        source::Loc,
-        tokenize::{tokenize, TBracketType, TInfixOperatorType, TPrefixOperatorType, TokenContent},
+    use crate::{
+        front::{
+            ast::{ASTExpr, ASTIdent, ASTIdentValue},
+            parse::{ParseDiagnostic, Parser},
+            source::Loc,
+            tokenize::{
+                tokenize, TBracketType, TInfixOperatorType, TPrefixOperatorType, TokenContent,
+            },
+        },
+        lint::diagnostic::{Diagnostic, DiagnosticContent, Diagnostics},
     };
 
     fn loc(s: usize, l: usize) -> Loc {
         Loc {
+            src_id: 0, // placeholder for testing
             start: s,
             length: l,
         }
@@ -2966,8 +2967,9 @@ mod test {
 
     #[test]
     fn mismatched_brackets_automatically_close() {
-        let tokens = tokenize("{ ( 3 }");
-        let mut p = Parser::new(&tokens);
+        let tokens = tokenize("{ ( 3 }", 0);
+        let mut diagnostics = Diagnostics::init();
+        let mut p = Parser::new(&tokens, &mut diagnostics);
         assert_eq!(
             p.parse_brackets(TBracketType::Curly, true, |p| {
                 p.parse_brackets(TBracketType::Paren, true, |p| {
@@ -2984,20 +2986,21 @@ mod test {
             })))
         );
         assert_eq!(
-            p.diagnostics.as_slice(),
-            [(
-                ParseDiagnostic::MissingClosing {
+            p.diagnostics.dbg_as_slice(),
+            [Diagnostic {
+                content: DiagnosticContent::Parse(ParseDiagnostic::MissingClosing {
                     expected: TBracketType::Paren
-                },
-                loc(6, 0),
-            )]
+                }),
+                loc: loc(6, 0),
+            }]
             .as_slice()
         );
     }
     #[test]
     fn expression_operator_parsing_works_0() {
-        let t = crate::front::tokenize::tokenize("a + b * * c");
-        let mut p = Parser::new(&t);
+        let t = crate::front::tokenize::tokenize("a + b * * c", 0);
+        let mut diagnostics = Diagnostics::init();
+        let mut p = Parser::new(&t, &mut diagnostics);
         assert_eq!(
             p.parse_expr_greedy(),
             // -> (a + (b * (*c)))

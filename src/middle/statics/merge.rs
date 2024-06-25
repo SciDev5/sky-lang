@@ -23,80 +23,45 @@
 //!  - only allowed to be definet at a single level, overlaps are ignored
 //!
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::{
     back::BackendId,
     front::{
         ast::{
-            ASTAnnot, ASTBlock, ASTDataContents, ASTExpr, ASTFallible, ASTName, ASTTemplates,
-            ASTTrait, ASTType, ASTTypeAlias, ASTTypedDestructure,
+            ASTConst, ASTData, ASTFallible, ASTFunction, ASTName, ASTSourceFile, ASTTemplates,
+            ASTTrait, ASTType, ASTTypeAlias,
         },
         source::{HasLoc, Loc},
     },
     impl_hasloc_simple,
 };
 
+//////////////////// MERGED STATICS STRUCTURES //////////////////
+
 #[derive(Debug)]
-pub struct MergedStatics<'src> {
-    pub functions: Vec<MergedFunction<'src>>,
-    pub datas: Vec<MergedData<'src>>,
-    pub traits: Vec<MergedTrait<'src>>,
-    pub consts: Vec<MergedConst<'src>>,
-    pub typealiases: Vec<MergedTypeAlias<'src>>,
-    pub unbound_impls: Vec<MergedUnboundImpl<'src>>,
+pub struct MergedTypeStatics<'src> {
+    pub modules: Vec<Merged<'src, ASTSourceFile<'src>>>,
+    pub datas: Vec<Merged<'src, ASTData<'src>>>,
+    pub traits: Vec<Merged<'src, ASTTrait<'src>>>,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergedModule<'src> {
+    pub functions: HashMap<&'src str, usize>,
+    pub datas: HashMap<&'src str, usize>,
+    pub traits: HashMap<&'src str, usize>,
+    pub consts: HashMap<&'src str, usize>,
+    pub typealiases: HashMap<&'src str, usize>,
+
+    pub sources: BTreeMap<BackendId, ASTSourceFile<'src>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct MergedFunction<'src> {
-    pub loc: Loc,
-
-    pub annot: ASTAnnot,
+pub struct Merged<'src, T> {
     pub name: ASTFallible<ASTName<'src>>,
-    pub templates: ASTTemplates<'src>,
-    pub args: Vec<ASTFallible<ASTTypedDestructure<'src>>>,
-    pub ty_return: Option<ASTFallible<ASTType<'src>>>,
-
     pub base_target_level: BackendId,
-    pub contents: HashMap<BackendId, ASTBlock<'src>>,
+    pub contents: HashMap<BackendId, (usize, T)>,
 }
-impl_hasloc_simple!(MergedFunction<'src>);
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MergedData<'src> {
-    loc: Loc,
-
-    pub annot: ASTAnnot,
-    pub name: ASTFallible<ASTName<'src>>,
-    pub templates: ASTTemplates<'src>,
-
-    pub base_target_level: BackendId,
-    pub contents: HashMap<BackendId, ASTDataContents<'src>>,
-
-    pub attatced_impls: Vec<MergedImpl<'src>>,
-}
-impl_hasloc_simple!(MergedData<'src>);
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MergedTrait<'src> {
-    pub target_level: BackendId,
-    pub inner: ASTTrait<'src>,
-}
-impl<'src> HasLoc for MergedTrait<'src> {
-    fn loc(&self) -> Loc {
-        self.inner.loc()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MergedConst<'src> {
-    pub loc: Loc,
-    pub name: ASTName<'src>,
-    pub ty: ASTType<'src>,
-    pub base_target_level: BackendId,
-    pub contents: HashMap<BackendId, ASTExpr<'src>>,
-}
-impl_hasloc_simple!(MergedConst<'src>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergedTypeAlias<'src> {
@@ -127,8 +92,49 @@ pub struct MergedImpl<'src> {
     pub templates: ASTTemplates<'src>,
     pub target_trait: Option<ASTType<'src>>,
 
-    pub functions: Vec<MergedFunction<'src>>,
-    pub consts: Vec<MergedConst<'src>>,
+    pub functions: Vec<Merged<'src, ASTFunction<'src>>>,
+    pub consts: Vec<Merged<'src, ASTConst<'src>>>,
     pub types: Vec<ASTTypeAlias<'src>>,
 }
 impl_hasloc_simple!(MergedImpl<'src>);
+
+//////////////////// MERGED STATICS IMPLEMENTATION //////////////////
+
+// pub fn merge_statics<'src>(
+//     src_files: Vec<HashMap<BackendId, ASTSourceFile<'src>>>,
+//     statics: ASTStatics<'src>,
+// ) -> (Vec<MergedModule<'src>>, MergedStatics<'src>) {
+//     macro_rules! hashmapify {
+//         ($v:expr) => {
+//             $v.into_iter().enumerate().collect::<HashMap<_, _>>()
+//         };
+//     }
+//     let mut ast_functions = hashmapify!(statics.functions);
+//     let mut ast_datas = hashmapify!(statics.datas);
+//     let mut ast_traits = hashmapify!(statics.traits);
+//     let mut ast_consts = hashmapify!(statics.consts);
+//     let mut ast_typealiases = hashmapify!(statics.typealiases);
+//     let mut ast_freeimpls = hashmapify!(statics.freeimpls);
+//     let mut merged_statics = MergedStatics {
+//         functions: Vec::new(),
+//         datas: Vec::new(),
+//         traits: Vec::new(),
+//         consts: Vec::new(),
+//         typealiases: Vec::new(),
+//         unbound_impls: Vec::new(),
+//     };
+
+//     let modules = src_files
+//         .into_iter()
+//         .map(|src| {
+//             if src.len() == 1 {
+//                 // this is most modules, so may as well make a simplified special case
+//                 // statics.functions.push(MergedFunction {
+//                 //     loc:
+//                 // })
+//             }
+//         })
+//         .collect::<Vec<_>>();
+
+//     todo!()
+// }

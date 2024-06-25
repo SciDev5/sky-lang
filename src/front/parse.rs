@@ -6,7 +6,7 @@ use crate::{
         tokenize::{TInfixOperatorType, TPostfixOperatorType, TPrefixOperatorType, TSymbol},
     },
     lint::diagnostic::{DiagnosticContent, Diagnostics, ToDiagnostic},
-    middle::scope_statics::LocallyScoped,
+    middle::statics::scopes::{ScopeId, Scopes},
 };
 
 use super::{
@@ -14,9 +14,9 @@ use super::{
         ASTAnnot, ASTBlock, ASTConst, ASTData, ASTDataContents, ASTDataProperty, ASTDeclr,
         ASTDestructure, ASTDiagnosticRef, ASTDoc, ASTEnumVariantType, ASTExpr, ASTFallible,
         ASTFreeImpl, ASTFunction, ASTIdent, ASTIdentValue, ASTImpl, ASTImplContents, ASTImport,
-        ASTImportTree, ASTLambda, ASTName, ASTPostfixBlock, ASTSourceFile, ASTStmt, ASTSubBlocked,
-        ASTTemplateBound, ASTTemplates, ASTTrait, ASTType, ASTTypeAlias, ASTTypedDestructure,
-        ASTVarDeclare,
+        ASTImportTree, ASTLambda, ASTName, ASTPostfixBlock, ASTScope, ASTSourceFile, ASTStmt,
+        ASTSubBlocked, ASTTemplateBound, ASTTemplates, ASTTrait, ASTType, ASTTypeAlias,
+        ASTTypedDestructure, ASTVarDeclare,
     },
     source::{HasLoc, Loc, SourceFileId},
     tokenize::{TBracketType, TKeyword, Token, TokenContent},
@@ -156,8 +156,12 @@ struct Parser<'a, 'src> {
     tokens: &'a [Token<'src>],
     /// Index into [`Self::tokens`], points to what is returned upon the next call to [`Self::next_raw`].
     i: usize,
-    /// A list of diagnostics that is produced by the parsing process  (syntax errors, mostly).
+
     diagnostics: &'a mut Diagnostics,
+    scopes: &'a mut Scopes<ASTScope<'src>>,
+    /// Stores all the ids for stacks currently in scope.
+    scope_stack: Vec<ScopeId>,
+
     /// A stack containing saved copies of `(self.i, self.diagnostics.len())`.
     /// Not to be modified outside [`Self::guard_state`].
     state_stack: Vec<(usize, usize)>,
@@ -165,11 +169,17 @@ struct Parser<'a, 'src> {
     bracket_stack: Vec<TBracketType>,
 }
 impl<'a, 'src> Parser<'a, 'src> {
-    fn new(tokens: &'a [Token<'src>], diagnostics: &'a mut Diagnostics) -> Self {
+    fn new(
+        tokens: &'a [Token<'src>],
+        diagnostics: &'a mut Diagnostics,
+        scopes: &'a mut Scopes<ASTScope<'src>>,
+    ) -> Self {
         Self {
             tokens,
             i: 0,
             diagnostics,
+            scopes,
+            scope_stack: Vec::new(),
             state_stack: Vec::new(),
             bracket_stack: Vec::new(),
         }
@@ -428,6 +438,33 @@ impl<'a, 'src> Parser<'a, 'src> {
         self.i = revert_i;
         self.diagnostics.resize_shrink(revert_diagnostics_len);
         value
+    }
+
+    /// Creates a new empty scope for tracking statics, with the parent scope set
+    /// to the current scope, and makes it the current scope while the given callback
+    /// is running.
+    #[inline]
+    fn guard_scope<T, F: Fn(&mut Parser<'a, 'src>, ScopeId) -> T>(&mut self, f: F) -> T {
+        let scope_id = self.new_empty_scope();
+
+        self.scope_stack.push(scope_id);
+        let res = f(self, scope_id);
+        self.scope_stack.pop();
+
+        res
+    }
+    /// Creates a new empty scope for tracking statics, with the parent scope set
+    /// to the current scope. Does not add this scope to the scope stack.
+    fn new_empty_scope(&mut self) -> ScopeId {
+        let current_innermost_scope = self.scope_stack.last().copied();
+        self.scopes.register(current_innermost_scope)
+    }
+    /// Get the current scope.
+    ///
+    /// Panics:
+    /// - If there are no scopes currently present. (This should only be the case when calling [`Self::parse_source_file`])
+    fn current_scope(&mut self) -> ScopeId {
+        *self.scope_stack.last().unwrap()
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -698,10 +735,10 @@ impl<'a, 'src> Parser<'a, 'src> {
     //
 
     fn parse_source_file(&mut self) -> ASTSourceFile<'src> {
-        ASTSourceFile {
-            body: self.parse_stmt_list(),
-            scope: LocallyScoped::new_empty(),
-        }
+        self.guard_scope(|p, scope| ASTSourceFile {
+            body: p.parse_stmt_list(),
+            scope,
+        })
     }
 
     fn parse_stmt(&mut self) -> Option<ASTStmt<'src>> {
@@ -749,12 +786,10 @@ impl<'a, 'src> Parser<'a, 'src> {
         self.parse_list(Self::parse_stmt, &ParseDiagnostic::ExpectedStmt)
     }
     fn parse_block(&mut self) -> Option<ASTBlock<'src>> {
-        self.parse_brackets(TBracketType::Curly, true, |p| p.parse_stmt_list())
-            .map(|(body, loc)| ASTBlock {
-                loc,
-                body,
-                scope: LocallyScoped::new_empty(),
-            })
+        self.parse_brackets(TBracketType::Curly, true, |p| {
+            p.guard_scope(|p, scope| (p.parse_stmt_list(), scope))
+        })
+        .map(|((body, scope), loc)| ASTBlock { loc, body, scope })
     }
 
     fn parse_expr_before_block(&mut self) -> Option<ASTExpr<'src>> {
@@ -1595,7 +1630,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                         .unwrap_or(loc_start)
                         .new_from_end(),
 
-                    scope: LocallyScoped::new_empty(),
+                    scope: p.new_empty_scope(),
                 }
             });
 
@@ -1610,29 +1645,32 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_lambda_postfix(&mut self) -> Option<ASTLambda<'src>> {
         // `... { \ a: i32, b -> ... }`
         self.parse_brackets(TBracketType::Curly, true, |p| {
-            let args = p
-                .parse_brackets(TBracketType::LambdaArgs, true, |p| {
-                    p.parse_list_commasep(
-                        |p| p.parse_typed_destructure(true),
-                        &ParseDiagnostic::ExpectedLambdaArgument,
-                    )
-                })
-                .map(|(args_list, _)| args_list);
-            let block = p.parse_stmt_list();
-            (args, block)
+            p.guard_scope(|p, scope| {
+                let args = p
+                    .parse_brackets(TBracketType::LambdaArgs, true, |p| {
+                        p.parse_list_commasep(
+                            |p| p.parse_typed_destructure(true),
+                            &ParseDiagnostic::ExpectedLambdaArgument,
+                        )
+                    })
+                    .map(|(args_list, _)| args_list);
+                let block = p.parse_stmt_list();
+                (args, block, scope)
+            })
         })
-        .map(|((args, block), loc)| ASTLambda {
+        .map(|((args, block, scope), loc)| ASTLambda {
             loc,
             args,
             ty_return: None, // must be inferred by type system
             block: ASTBlock {
                 loc,
                 body: block,
-                scope: LocallyScoped::new_empty(),
+                scope,
             },
         })
     }
 
+    /// Escape the contents of string literals, converting `"\n"`, `"\t"`, etc. into their actual newline, tab, etc..
     fn flee_from_string(unescaped: &'src str) -> String {
         fn next(unescaped: &mut std::str::Chars, escaped: &mut String) -> bool {
             let ch = if let Some(ch) = unescaped.next() {
@@ -1975,11 +2013,16 @@ impl<'a, 'src> Parser<'a, 'src> {
         let block = self
             .parse_either(Self::parse_block, |p| {
                 p.next_if_eq(TokenContent::Symbol(TSymbol::Assign))
-                    .map(|loc| (loc, p.parse_expr_greedy())) // TODO: cascading expr greediness
+                    .map(|loc| {
+                        (
+                            loc,
+                            p.guard_scope(|p, scope| (p.parse_expr_greedy(), scope)),
+                        )
+                    }) // TODO: cascading expr greediness
             })
             .map(|block| match block {
                 AorB::A(block) => block,
-                AorB::B((loc_eq, expr)) => {
+                AorB::B((loc_eq, (expr, scope))) => {
                     if expr.is_none() {
                         self.raise(
                             ParseDiagnostic::ExpectedFunctionBodyExprAfterEq,
@@ -1989,7 +2032,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                     ASTBlock {
                         loc: loc_eq.merge_some(loco!(expr)),
                         body: expr.into_iter().map(|expr| ASTStmt::Expr(expr)).collect(),
-                        scope: LocallyScoped::new_empty(),
+                        scope,
                     }
                 }
             });
@@ -2003,6 +2046,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                 loco!(templates),
                 locr!(name),
             )),
+            containing_scope: self.current_scope(),
             templates,
             args,
             block,
@@ -2039,6 +2083,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         Some(ASTConst {
             loc: loc_start.merge_some(merge!(locr!(value), loc_eq, loc_ty, locr!(name))),
             annot: annot.take(),
+            containing_scope: self.current_scope(),
             name,
             ty,
             value,
@@ -2069,6 +2114,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         Some(ASTTrait {
             loc: loc_start.merge(contents.loc()),
             annot: annot.take(),
+            containing_scope: self.current_scope(),
             name,
             templates,
             bounds,
@@ -2106,6 +2152,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                 locr!(name),
             ))),
             annot: annot.take(),
+            containing_scope: self.current_scope(),
             name,
             templates,
             contents,
@@ -2264,14 +2311,17 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_free_impl(&mut self) -> Option<ASTFreeImpl<'src>> {
         self.guard_state(|p| {
             let (target, attatched_impl) = p._parse_impl()?;
+            let containing_scope = p.current_scope();
             Some(match target {
                 Some(target) => ASTFreeImpl {
                     target,
                     attatched_impl,
+                    containing_scope,
                 },
                 None => ASTFreeImpl {
                     target: Err(p.raise(ParseDiagnostic::ExpectedImplTarget, attatched_impl.loc())),
                     attatched_impl,
+                    containing_scope,
                 },
             })
         })
@@ -2386,6 +2436,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         Some(ASTTypeAlias {
             loc: loc_start.merge_some(merge!(locr!(value), loc_eq, loco!(templates), locr!(name))),
             annot: annot.take(),
+            containing_scope: self.current_scope(),
             name,
             templates,
             value,
@@ -2397,7 +2448,11 @@ impl<'a, 'src> Parser<'a, 'src> {
             ._parse_import_tree()
             .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedImportTreeBase, loc_start));
         let loc = loc_start.merge_some(tree.as_ref().ok().map(HasLoc::loc));
-        Some(ASTImport { loc, tree })
+        Some(ASTImport {
+            loc,
+            containing_scope: self.current_scope(),
+            tree,
+        })
     }
     fn _parse_import_tree(&mut self) -> Option<ASTImportTree<'src>> {
         if let Some(ident) = self.parse_ident() {
@@ -2927,9 +2982,10 @@ pub fn parse_from_source<'src>(
     src: &'src str,
     src_id: SourceFileId,
     diagnostics: &mut Diagnostics,
+    scopes: &mut Scopes<ASTScope<'src>>,
 ) -> ASTSourceFile<'src> {
     let tokens = super::tokenize::tokenize(src, src_id);
-    let mut parser = Parser::new(&tokens, diagnostics);
+    let mut parser = Parser::new(&tokens, diagnostics, scopes);
     let source_file = parser.parse_source_file();
     source_file
 }
@@ -2949,6 +3005,7 @@ mod test {
             },
         },
         lint::diagnostic::{Diagnostic, DiagnosticContent, Diagnostics},
+        middle::statics::scopes::Scopes,
     };
 
     fn loc(s: usize, l: usize) -> Loc {
@@ -2969,7 +3026,8 @@ mod test {
     fn mismatched_brackets_automatically_close() {
         let tokens = tokenize("{ ( 3 }", 0);
         let mut diagnostics = Diagnostics::init();
-        let mut p = Parser::new(&tokens, &mut diagnostics);
+        let mut scopes = Scopes::init();
+        let mut p = Parser::new(&tokens, &mut diagnostics, &mut scopes);
         assert_eq!(
             p.parse_brackets(TBracketType::Curly, true, |p| {
                 p.parse_brackets(TBracketType::Paren, true, |p| {
@@ -2998,9 +3056,10 @@ mod test {
     }
     #[test]
     fn expression_operator_parsing_works_0() {
+        let mut scopes = Scopes::init();
         let t = crate::front::tokenize::tokenize("a + b * * c", 0);
         let mut diagnostics = Diagnostics::init();
-        let mut p = Parser::new(&t, &mut diagnostics);
+        let mut p = Parser::new(&t, &mut diagnostics, &mut scopes);
         assert_eq!(
             p.parse_expr_greedy(),
             // -> (a + (b * (*c)))

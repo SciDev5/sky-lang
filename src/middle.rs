@@ -12,14 +12,16 @@
 //! This id is then recorded into the scope that the declaration was made in into a map by
 //! the name it was created under, (such as "hello" in the case of `fn hello()`).
 //!   
-//! - module merge
-//!    > :: need ::
-//!    > module merge
-//!    >   data merge
-//!    >   function merge
-//!    >   unmerged export name collision warning (traits/consts/typealiases dont merge)
-//! - create export lists
-//! - resolve static refs
+//! - extract statics from AST
+//! - statics phase
+//!     - typelike static (module refs/datas/traits/type alias/reexports):
+//!         - merge
+//!             [unchecked; grouping to generate final IDs only]
+//!         - resolve refs and imports
+//!             [convert ASTType in all statics to ResolvedType]
+//!     - codelike static (functions/impls/consts)
+//!         - merge
+//!         - resolve refs
 //!
 //! - resolve local scope variables
 //! - resolve types
@@ -28,8 +30,7 @@
 //! - assemble package
 
 pub mod memory;
-pub mod merge;
 pub mod optimize;
 pub mod resolution_diagnostics;
-pub mod scope_statics;
+pub mod statics;
 pub mod types;

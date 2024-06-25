@@ -4,7 +4,9 @@
 //! distinct syntactic elements of the language, such as if statements, expressions,
 //! and literals.
 
-use crate::{impl_hasloc_simple, middle::scope_statics::LocallyScoped};
+use std::collections::HashMap;
+
+use crate::{impl_hasloc_simple, middle::statics::scopes::ScopeId, modularity::Id};
 
 use super::{
     source::{HasLoc, Loc},
@@ -20,7 +22,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTSourceFile<'src> {
     pub body: Vec<ASTStmt<'src>>,
-    pub scope: LocallyScoped<'src>,
+    pub scope: ScopeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,10 +122,55 @@ impl<'src> HasLoc for ASTExpr<'src> {
 type Expr<'src> = Box<ASTExpr<'src>>;
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ASTScope<'src> {
+    pub functions: HashMap<&'src str, Id>,
+    pub datas: HashMap<&'src str, Id>,
+    pub traits: HashMap<&'src str, Id>,
+    pub consts: HashMap<&'src str, Id>,
+    pub typealiases: HashMap<&'src str, Id>,
+    pub imports: Vec<ASTImportTree<'src>>,
+}
+impl<'src> ASTScope<'src> {
+    pub fn new_empty() -> Self {
+        Self {
+            functions: HashMap::new(),
+            datas: HashMap::new(),
+            traits: HashMap::new(),
+            consts: HashMap::new(),
+            typealiases: HashMap::new(),
+            imports: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ASTStatics<'src> {
+    pub functions: Vec<ASTFunction<'src>>,
+    pub datas: Vec<ASTData<'src>>,
+    pub traits: Vec<ASTTrait<'src>>,
+    pub consts: Vec<ASTConst<'src>>,
+    pub typealiases: Vec<ASTTypeAlias<'src>>,
+    pub freeimpls: Vec<ASTFreeImpl<'src>>,
+}
+
+impl<'src> ASTStatics<'src> {
+    pub fn new() -> Self {
+        Self {
+            functions: Vec::new(),
+            datas: Vec::new(),
+            traits: Vec::new(),
+            consts: Vec::new(),
+            typealiases: Vec::new(),
+            freeimpls: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ASTBlock<'src> {
     pub loc: Loc,
     pub body: Vec<ASTStmt<'src>>,
-    pub scope: LocallyScoped<'src>,
+    pub scope: ScopeId,
 }
 impl_hasloc_simple!(ASTBlock<'src>);
 
@@ -252,6 +299,7 @@ impl_hasloc_simple!(ASTLambda<'src>);
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTFunction<'src> {
     pub loc: Loc,
+    pub containing_scope: ScopeId,
     pub annot: ASTAnnot,
     pub name: ASTFallible<ASTName<'src>>,
     pub templates: ASTTemplates<'src>,
@@ -263,6 +311,7 @@ impl_hasloc_simple!(ASTFunction<'src>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTImport<'src> {
+    pub containing_scope: ScopeId,
     pub loc: Loc,
     pub tree: ASTFallible<ASTImportTree<'src>>,
 }
@@ -430,6 +479,7 @@ impl<'src> HasLoc for ASTTypedDestructure<'src> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTConst<'src> {
     pub loc: Loc,
+    pub containing_scope: ScopeId,
     pub annot: ASTAnnot,
     pub name: ASTFallible<ASTName<'src>>,
     pub ty: Option<ASTFallible<ASTType<'src>>>,
@@ -440,6 +490,7 @@ impl_hasloc_simple!(ASTConst<'src>);
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTTrait<'src> {
     pub loc: Loc,
+    pub containing_scope: ScopeId,
     pub annot: ASTAnnot,
     pub name: ASTFallible<ASTName<'src>>,
     pub templates: ASTTemplates<'src>,
@@ -451,6 +502,7 @@ impl_hasloc_simple!(ASTTrait<'src>);
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTData<'src> {
     pub loc: Loc,
+    pub containing_scope: ScopeId,
     pub annot: ASTAnnot,
     pub name: ASTFallible<ASTName<'src>>,
     pub templates: ASTTemplates<'src>,
@@ -493,6 +545,7 @@ pub enum ASTEnumVariantType<'src> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTTypeAlias<'src> {
     pub loc: Loc,
+    pub containing_scope: ScopeId,
     pub annot: ASTAnnot,
     pub templates: ASTTemplates<'src>,
     pub name: ASTFallible<ASTName<'src>>,
@@ -502,6 +555,7 @@ impl_hasloc_simple!(ASTTypeAlias<'src>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTFreeImpl<'src> {
+    pub containing_scope: ScopeId,
     pub target: ASTFallible<ASTType<'src>>,
     pub attatched_impl: ASTImpl<'src>,
 }

@@ -104,7 +104,7 @@ impl<'a, 'src> ScopeExtractor<'a, 'src> {
             }
             ASTDeclr::FreeImpl(mut ast) => {
                 self.scope_impl(&mut ast.attatched_impl, scope);
-                self.statics.freeimpls.push(ast);
+                self.statics.free_impls.push(ast);
             }
             ASTDeclr::Function(mut ast) => {
                 self.scope_function(&mut ast);

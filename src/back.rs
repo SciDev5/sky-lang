@@ -13,7 +13,9 @@ mod common_garbage_collected;
 pub type BackendId = usize;
 
 pub trait Backend {
-    /// The unique identifier for this backend
+    /// The unique identifier for this backend.
+    ///
+    /// Id must be numerically higher than that of all parent backends.
     const ID: BackendId;
     /// Extra information for this backend, including, name and
     /// code compatibility info.

@@ -6,7 +6,15 @@
 
 use std::collections::HashMap;
 
-use crate::{impl_hasloc_simple, middle::statics::scopes::ScopeId, modularity::Id};
+use crate::{
+    back::BackendId,
+    impl_hasloc_simple,
+    middle::statics::{
+        module::ModuleExports,
+        scopes::{ScopeId, Scopes},
+    },
+    modularity::Id,
+};
 
 use super::{
     source::{HasLoc, Loc},
@@ -123,6 +131,7 @@ type Expr<'src> = Box<ASTExpr<'src>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTScope<'src> {
+    pub backend_id: BackendId,
     pub functions: HashMap<&'src str, Id>,
     pub datas: HashMap<&'src str, Id>,
     pub traits: HashMap<&'src str, Id>,
@@ -133,6 +142,7 @@ pub struct ASTScope<'src> {
 impl<'src> ASTScope<'src> {
     pub fn new_empty() -> Self {
         Self {
+            backend_id: usize::MAX,
             functions: HashMap::new(),
             datas: HashMap::new(),
             traits: HashMap::new(),
@@ -140,6 +150,28 @@ impl<'src> ASTScope<'src> {
             typealiases: HashMap::new(),
             imports: Vec::new(),
         }
+    }
+    pub fn attatch_backend_ids(
+        module_exports: &Vec<HashMap<BackendId, ModuleExports<'src>>>,
+        scopes: &mut Scopes<ASTScope<'src>>,
+    ) {
+        let backend_id_lookup = module_exports
+            .iter()
+            .flat_map(|by_backend| {
+                by_backend.iter().flat_map(|(backend_id, exports)| {
+                    exports
+                        .sources
+                        .iter()
+                        .map(|(_, src)| (src.scope, *backend_id))
+                })
+            })
+            .collect::<HashMap<_, _>>();
+        scopes.modify_contextual(
+            |scope, b, _| {
+                scope.backend_id = *b;
+            },
+            &backend_id_lookup,
+        )
     }
 }
 
@@ -150,7 +182,7 @@ pub struct ASTStatics<'src> {
     pub traits: Vec<ASTTrait<'src>>,
     pub consts: Vec<ASTConst<'src>>,
     pub typealiases: Vec<ASTTypeAlias<'src>>,
-    pub freeimpls: Vec<ASTFreeImpl<'src>>,
+    pub free_impls: Vec<ASTFreeImpl<'src>>,
 }
 
 impl<'src> ASTStatics<'src> {
@@ -161,7 +193,7 @@ impl<'src> ASTStatics<'src> {
             traits: Vec::new(),
             consts: Vec::new(),
             typealiases: Vec::new(),
-            freeimpls: Vec::new(),
+            free_impls: Vec::new(),
         }
     }
 }

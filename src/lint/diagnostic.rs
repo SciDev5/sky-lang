@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use crate::{
     front::{parse::ParseDiagnostic, source::Loc},
-    middle::resolution_diagnostics::ResolutionDiagnostic,
+    middle::{resolution_diagnostics::ResolutionDiagnostic, resolve_import::ImportDiagnostic},
 };
 
 pub struct Diagnostics {
@@ -45,6 +45,7 @@ pub struct Diagnostic {
 pub enum DiagnosticContent {
     Parse(ParseDiagnostic),
     Resolution(ResolutionDiagnostic),
+    Import(ImportDiagnostic),
 }
 pub trait ToDiagnostic: Clone + Debug + Copy {
     fn to_content(self) -> DiagnosticContent;

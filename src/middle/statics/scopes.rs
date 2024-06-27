@@ -74,6 +74,34 @@ impl<T> Scopes<T> {
         }
     }
 
+    pub fn zip<V, R, F: Fn(T, V) -> R>(self, other: Scopes<V>, mapping: F) -> Scopes<R> {
+        assert!(self.has_registered_children);
+        assert!(other.has_registered_children);
+        assert_eq!(self.scopes.len(), other.scopes.len());
+
+        Scopes {
+            has_registered_children: true,
+            scopes: self
+                .scopes
+                .into_iter()
+                .zip(other.scopes.into_iter())
+                .map(|(this, other)| {
+                    assert_eq!(this.parent, other.parent);
+                    assert_eq!(&this.children, &other.children);
+                    Scope {
+                        parent: this.parent,
+                        children: this.children,
+                        inner: match (this.inner, other.inner) {
+                            (Some(this), Some(other)) => Some(Box::new(mapping(*this, *other))),
+                            (None, None) => None,
+                            _ => panic!("Scopes mismatched in zip"),
+                        },
+                    }
+                })
+                .collect(),
+        }
+    }
+
     /// Modify the scopes within the context of all their parent scopes.
     pub fn modify_contextual<B, F: FnMut(&mut T, &B, &[Box<T>])>(
         &mut self,

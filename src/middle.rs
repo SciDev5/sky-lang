@@ -50,5 +50,6 @@
 pub mod memory;
 pub mod optimize;
 pub mod resolution_diagnostics;
+pub mod resolve_import;
 pub mod statics;
 pub mod types;

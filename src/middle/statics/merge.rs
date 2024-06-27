@@ -8,19 +8,15 @@
 //!    - defined content from this level -> `data struct`/`data tuple`/...
 //!    - inherited content from a more abstract level -> (write nothing)
 //!  - trait impls must be declared on the same level as data
-//! IMPL/FUNCTION:
-//!  - temporary impl limitations:
-//!    - free impls must be defined in the top level of the same module as either the trait or data it uses.
-//!    - impls must be for a specific data, `impl<T: SomeLocalTrait> X for T` is not yet allowed.
-//!  - ref to impl is stored with either the data or trait, prefering to stick to data if both are near.
-//!  - all declared functions must be implemented by the packages given abstractmost compilable levels.
-//! CONST:
+//! FUNCTION / CONST:
 //!  - at a given target level datas can either have
 //!    - undefined content -> `pub const PLATFORM_NAME: string`
 //!    - defined content from this level -> `pub const PLATFORM_NAME = "hello world"` (infers type)
 //!    - inherited content from a more abstract level -> (write nothing)
 //! TYPE ALIAS / TRAIT:
 //!  - only allowed to be definet at a single level, overlaps are ignored
+//! IMPL:
+//!  - not handled at this phase
 //!
 
 use std::collections::HashMap;
@@ -34,7 +30,7 @@ use crate::{
 };
 
 use super::{
-    module::ModuleExports,
+    module::{ModuleExports, ModuleParts},
     scopes::{ScopeId, Scopes},
 };
 
@@ -88,11 +84,11 @@ impl MergeIdRemapLookup {
 }
 
 pub fn merge_statics<'src>(
-    module_exports: Vec<HashMap<BackendId, ModuleExports<'src>>>,
+    modules_in: Vec<ModuleParts<'src>>,
     statics_unmerged: ASTStatics<'src>,
     scopes: &mut Scopes<ASTScope<'src>>,
 ) -> (Vec<ModuleExports<'src>>, MergedStatics<'src>) {
-    ASTScope::attatch_backend_ids(&module_exports, scopes);
+    ASTScope::attatch_backend_ids(&modules_in, scopes);
 
     let mut id_lut = MergeIdRemapLookup::new(&statics_unmerged);
     let mut statics: MergedStatics = MergedStatics::new_with_capacity_like(&statics_unmerged);
@@ -113,11 +109,11 @@ pub fn merge_statics<'src>(
     let mut consts_unmerged = optionalize_elements!(consts);
     let mut typealiases_unmerged = optionalize_elements!(typealiases);
 
-    let mut modules_out = Vec::with_capacity(module_exports.len());
-    for module_exports_by_backend in module_exports {
-        let mut module_out = ModuleExports::new_empty();
+    let mut modules_out = Vec::with_capacity(modules_in.len());
+    for module_parts in modules_in {
+        let mut module_out = ModuleExports::new_empty(module_parts.parent, module_parts.children);
 
-        for (backend_id, exports) in module_exports_by_backend {
+        for (backend_id, exports) in module_parts.export_parts {
             macro_rules! add_exports_to_merged {
                 ($x:ident, $unmerged:expr) => {
                     merge_exports(
@@ -135,6 +131,7 @@ pub fn merge_statics<'src>(
             add_exports_to_merged!(traits, traits_unmerged);
             add_exports_to_merged!(consts, consts_unmerged);
             add_exports_to_merged!(typealiases, typealiases_unmerged);
+            module_out.sources.push((backend_id, exports.source));
         }
 
         modules_out.push(module_out);

@@ -10,7 +10,7 @@ use crate::{
     back::BackendId,
     impl_hasloc_simple,
     middle::statics::{
-        module::ModuleExports,
+        module::ModuleParts,
         scopes::{ScopeId, Scopes},
     },
     modularity::Id,
@@ -152,18 +152,15 @@ impl<'src> ASTScope<'src> {
         }
     }
     pub fn attatch_backend_ids(
-        module_exports: &Vec<HashMap<BackendId, ModuleExports<'src>>>,
+        modules: &Vec<ModuleParts<'src>>,
         scopes: &mut Scopes<ASTScope<'src>>,
     ) {
-        let backend_id_lookup = module_exports
+        let backend_id_lookup = modules
             .iter()
-            .flat_map(|by_backend| {
-                by_backend.iter().flat_map(|(backend_id, exports)| {
-                    exports
-                        .sources
-                        .iter()
-                        .map(|(_, src)| (src.scope, *backend_id))
-                })
+            .flat_map(|ModuleParts { export_parts, .. }| {
+                export_parts
+                    .iter()
+                    .map(|(backend_id, exports)| (exports.source.scope, *backend_id))
             })
             .collect::<HashMap<_, _>>();
         scopes.modify_contextual(

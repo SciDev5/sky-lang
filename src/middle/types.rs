@@ -32,10 +32,10 @@ mod solve;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeDiagnostic {
-    IllegalAccessIntoMatchableType,
     IllegalNamedTemplateArgsOnMatcherType,
     FailedToConvertType,
     InnerTypeCannotTakeTemplateArgs,
+    IllegalUseOfUndefinedSelfTy,
 }
 impl ToDiagnostic for TypeDiagnostic {
     fn to_content(self) -> DiagnosticContent {
@@ -43,35 +43,29 @@ impl ToDiagnostic for TypeDiagnostic {
     }
 }
 
-pub enum TypeDatalikeMatchable {
-    Data(TypeMatchable),
-    Template(TypeTemplate),
-}
-impl HasLoc for TypeDatalikeMatchable {
-    fn loc(&self) -> Loc {
-        match self {
-            Self::Data(v) => v.loc,
-            Self::Template(v) => v.loc,
-        }
-    }
-}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeDatalike {
     Data(TypeData),
     Template(TypeTemplate),
     Associated(TypeDataAssociated),
-    TraitAssociated(TypeDataAssociated),
+}
+impl HasLoc for TypeDatalike {
+    fn loc(&self) -> Loc {
+        match self {
+            Self::Data(v) => v.loc,
+            Self::Template(v) => v.loc,
+            Self::Associated(v) => v.loc,
+        }
+    }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeData {
     loc: Loc,
     id: Id,
-    templates: Vec<TypeDatalike>,
+    templates: Vec<Option<TypeDatalike>>,
 }
-pub struct TypeMatchable {
-    loc: Loc,
-    id: Id,
-    templates: Vec<Option<TypeDatalikeMatchable>>,
-}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeTrait {
     loc: Loc,
     id: Id,
@@ -79,16 +73,19 @@ pub struct TypeTrait {
     constrained_associated: HashMap<usize, TypeDatalike>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeTemplate {
     loc: Loc,
     id: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDataAssociated {
     loc: Loc,
     inner: TypeData,
     associated_id: usize,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDataTraitAssociated {
     loc: Loc,
     inner: TypeData,
@@ -96,13 +93,14 @@ pub struct TypeDataTraitAssociated {
     associated_id: usize,
 }
 
-struct ConvertTypeMatchable<'a, 'src> {
+struct ConvertTypeDatalike<'a, 'src> {
     scopes: &'a Scopes<ImportedScope<'src>>,
     scope: ScopeId,
     exports: &'a ExportsLookup<'src>,
     local_modules: &'a Vec<LocalModule<'src>>,
     mod_id: usize,
     templates: Vec<&'src str>,
+    self_ty: Option<&'a TypeDatalike>,
     diagnostics: &'a mut Diagnostics,
 }
 
@@ -132,7 +130,7 @@ fn try_type_as_import_path<'src>(ty: &ASTType<'src>) -> Option<Vec<ASTIdent<'src
     })
 }
 
-pub fn convert_type_matchable<'src>(
+pub fn convert_type_datalike<'src>(
     ty: ASTType<'src>,
     scopes: &Scopes<ImportedScope<'src>>,
     scope: ScopeId,
@@ -140,25 +138,27 @@ pub fn convert_type_matchable<'src>(
     local_modules: &Vec<LocalModule<'src>>,
     mod_id: usize,
     templates: Vec<&'src str>,
+    self_ty: Option<&TypeDatalike>,
     diagnostics: &mut Diagnostics,
-) -> Option<TypeDatalikeMatchable> {
-    ConvertTypeMatchable {
+) -> Option<TypeDatalike> {
+    ConvertTypeDatalike {
         scopes,
         scope,
         exports,
         local_modules,
         mod_id,
         templates,
+        self_ty,
         diagnostics,
     }
     .convert(&ty)
 }
 
-impl<'a, 'src> ConvertTypeMatchable<'a, 'src> {
-    fn convert(&mut self, ty: &ASTType<'src>) -> Option<TypeDatalikeMatchable> {
-        if let Some(ty) = self.try_convert_pathlike(ty) {
+impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
+    fn convert(&mut self, ty: &ASTType<'src>) -> Option<TypeDatalike> {
+        if let Some(ty) = self.try_convert_singular(ty) {
             ty
-        } else if let Some(ty) = self.try_convert_templateargs(ty) {
+        } else if let Some(ty) = self.try_convert_with_templateargs(ty) {
             ty
         } else {
             self.diagnostics
@@ -167,10 +167,10 @@ impl<'a, 'src> ConvertTypeMatchable<'a, 'src> {
         }
     }
 
-    fn try_convert_templateargs(
+    fn try_convert_with_templateargs(
         &mut self,
         ty: &ASTType<'src>,
-    ) -> Option<Option<TypeDatalikeMatchable>> {
+    ) -> Option<Option<TypeDatalike>> {
         let ASTType::TypeParam {
             loc,
             inner,
@@ -201,9 +201,7 @@ impl<'a, 'src> ConvertTypeMatchable<'a, 'src> {
         }
 
         let (id, loc) = match inner {
-            TypeDatalikeMatchable::Data(TypeMatchable { id, loc, templates })
-                if templates.is_empty() =>
-            {
+            TypeDatalike::Data(TypeData { id, loc, templates }) if templates.is_empty() => {
                 (id, loc)
             }
             v => {
@@ -213,17 +211,22 @@ impl<'a, 'src> ConvertTypeMatchable<'a, 'src> {
             }
         };
 
-        Some(Some(TypeDatalikeMatchable::Data(TypeMatchable {
-            loc,
-            id,
-            templates,
-        })))
+        Some(Some(TypeDatalike::Data(TypeData { loc, id, templates })))
     }
 
-    fn try_convert_pathlike(
+    fn access_inner<T>(
         &mut self,
-        ty: &ASTType<'src>,
-    ) -> Option<Option<TypeDatalikeMatchable>> {
+        ty: TypeDatalike,
+        path: &[T],
+        f: impl Fn(&T) -> Option<(&'src str, Loc)>,
+    ) -> Option<TypeDatalike> {
+        if path.len() > 0 {
+            todo!("accesses into traitful type -----------------------------------------------------------------");
+        }
+        Some(ty)
+    }
+
+    fn try_convert_singular(&mut self, ty: &ASTType<'src>) -> Option<Option<TypeDatalike>> {
         let path = try_type_as_import_path(ty)?;
 
         if let ASTIdent {
@@ -237,18 +240,37 @@ impl<'a, 'src> ConvertTypeMatchable<'a, 'src> {
                     .enumerate()
                     .find_map(|(i, v)| if *v == name { Some(i) } else { None })
             {
-                if path.len() > 1 {
-                    self.diagnostics.raise(
-                        TypeDiagnostic::IllegalAccessIntoMatchableType,
-                        path[0].loc().merge_some(path.last().map(|it| it.loc())),
-                    );
-                    return Some(None);
-                }
+                if path.len() > 1 {}
 
-                return Some(Some(TypeDatalikeMatchable::Template(TypeTemplate {
-                    loc,
-                    id: template_id,
-                })));
+                return Some(self.access_inner(
+                    TypeDatalike::Template(TypeTemplate {
+                        loc,
+                        id: template_id,
+                    }),
+                    &path[1..],
+                    |k| match k.value {
+                        ASTIdentValue::Name(v) => Some((v, loc)),
+                        _ => None,
+                    },
+                ));
+            }
+        }
+        if let ASTIdent {
+            loc,
+            value: ASTIdentValue::SelfTy,
+        } = path[0]
+        {
+            if let Some(self_ty) = self.self_ty {
+                return Some(
+                    self.access_inner(self_ty.clone(), &path[1..], |k| match k.value {
+                        ASTIdentValue::Name(v) => Some((v, loc)),
+                        _ => None,
+                    }),
+                );
+            } else {
+                self.diagnostics
+                    .raise(TypeDiagnostic::IllegalUseOfUndefinedSelfTy, loc);
+                return Some(None);
             }
         }
 
@@ -262,21 +284,15 @@ impl<'a, 'src> ConvertTypeMatchable<'a, 'src> {
                 self.exports,
                 self.diagnostics,
             ) {
-                if trailing.len() > 0 {
-                    self.diagnostics.raise(
-                        TypeDiagnostic::IllegalAccessIntoMatchableType,
-                        trailing[0]
-                            .loc()
-                            .merge_some(trailing.last().map(|(_, loc)| *loc)),
-                    );
-                    None
-                } else {
-                    Some(TypeDatalikeMatchable::Data(TypeMatchable {
+                self.access_inner(
+                    TypeDatalike::Data(TypeData {
                         loc,
                         id,
                         templates: Vec::new(),
-                    }))
-                }
+                    }),
+                    &trailing,
+                    |v| Some(*v),
+                )
             } else {
                 None
             },

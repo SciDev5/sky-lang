@@ -261,6 +261,25 @@ impl<T> Scopes<T> {
             scopes: scopes_out.into_iter().map(Option::unwrap).collect(),
         }
     }
+
+    pub fn find_map<R, F: Fn(&T) -> Option<R>>(
+        &self,
+        origin_scope: ScopeId,
+        predicate: F,
+    ) -> Option<R> {
+        let mut i = origin_scope;
+        loop {
+            let scope = &self.scopes[i];
+            if let Some(result) = scope
+                .inner
+                .as_ref()
+                .and_then(|inner| predicate(inner.as_ref()))
+            {
+                return Some(result);
+            }
+            i = scope.parent?;
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

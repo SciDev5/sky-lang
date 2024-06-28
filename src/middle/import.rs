@@ -19,7 +19,13 @@ use crate::{
     modularity::Id,
 };
 
-use super::statics::{merge::MergedStatics, module::ModuleExports, scopes::Scopes};
+use super::{
+    module::{LocalModule, ModuleExports},
+    statics::{
+        merge::MergedStatics,
+        scopes::{ScopeId, Scopes},
+    },
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportDiagnostic {
@@ -33,6 +39,8 @@ pub enum ImportDiagnostic {
     NoSuperAvailable,
     NameForImportNotFound,
     NameMemberForImportNotFound,
+    ExpectedDataFoundModule,
+    ExpectedDataOrModule,
     ImportDependencyFailed,
     RecursiveProblem,
 }
@@ -131,6 +139,8 @@ fn convert_ast_importtree<'src>(
         import_dependency_resolved: &mut Vec<ImportDependencyResolutionStatus>,
         diagnostics: &mut Diagnostics,
     ) -> ImportDependencyId {
+        println!("todo! no reexports problem also here -------------------------------------");
+
         let id = import_dependency_resolved.len();
         import_dependency_resolved.push(ImportDependencyResolutionStatus::NotResolved);
         named_items
@@ -267,7 +277,7 @@ fn convert_ast_importtree_base<'src>(
     ast: ASTImportTree<'src>,
     backend_id: usize,
     module_id: usize,
-    module_exports: &Vec<ModuleExports<'src>>,
+    module_exports: &Vec<LocalModule<'src>>,
     named_items: &mut HashMap<&'src str, ImportingId>,
     diagnostics: &mut Diagnostics,
     import_dependency_resolved: &mut Vec<ImportDependencyResolutionStatus>,
@@ -361,9 +371,9 @@ fn lookup_by_name<'src>(
         .copied()
 }
 
+// todo! something might be wrong here with importing reexports?
 fn lookup_by_name_in<'src>(
-    statics: &MergedStatics<'src>,
-    module_exports: &Vec<ModuleExports<'src>>,
+    module_exports: &Vec<LocalModule<'src>>,
     import_dependency_resolved: &Vec<ImportDependencyResolutionStatus>,
     base: ImportingId,
     name: &'src str,
@@ -389,13 +399,9 @@ fn lookup_by_name_in<'src>(
     };
     Some(match base {
         ImportingId::Module(Id::Local { id: module_id }) => {
-            let exports = &module_exports[module_id];
+            let exports = &module_exports[module_id].exports;
 
-            let module_ = exports
-                .children
-                .get(name)
-                .copied()
-                .map(|id| ImportingId::Module(Id::Local { id }));
+            let module_ = exports.modules.get(name).copied().map(ImportingId::Module);
             let data_ = exports.datas.get(name).copied().map(ImportingId::Data);
             let trait_ = exports.traits.get(name).copied().map(ImportingId::Trait);
             let const_ = exports.consts.get(name).copied().map(ImportingId::Const);
@@ -458,11 +464,10 @@ fn fail_import_recursive<'src>(
 
 pub fn resolve_imports<'src>(
     scopes: Scopes<ASTScope<'src>>,
-    statics: &MergedStatics<'src>,
-    module_exports: &Vec<ModuleExports<'src>>,
+    modules: &mut Vec<LocalModule<'src>>,
     diagnostics: &mut Diagnostics,
 ) -> Scopes<ImportedScope<'src>> {
-    let moduleid_by_scopeid = module_exports
+    let moduleid_by_scopeid = modules
         .iter()
         .enumerate()
         .flat_map(|(i, exports)| {
@@ -498,7 +503,7 @@ pub fn resolve_imports<'src>(
             add_to_named_items!(consts, Const);
             add_to_named_items!(typealiases, TypeAlias);
 
-            for (name, child_module_id) in &module_exports[*module_id].children {
+            for (name, child_module_id) in &modules[*module_id].children {
                 let didnt_replace = named_items
                     .insert(
                         *name,
@@ -516,7 +521,7 @@ pub fn resolve_imports<'src>(
                     import,
                     scope.backend_id,
                     *module_id,
-                    module_exports,
+                    modules,
                     &mut named_items,
                     diagnostics,
                     &mut import_dependency_resolved,
@@ -596,8 +601,7 @@ pub fn resolve_imports<'src>(
                 }
                 ImportTreeWhich::Name { ident, dep_id } => {
                     if let Some(r) = lookup_by_name_in(
-                        statics,
-                        module_exports,
+                        modules,
                         &import_dependency_resolved,
                         base,
                         ident,
@@ -630,8 +634,7 @@ pub fn resolve_imports<'src>(
                 }
                 ImportTreeWhich::NameWithChild { ident, inner } => {
                     if let Some(r) = lookup_by_name_in(
-                        statics,
-                        module_exports,
+                        modules,
                         &import_dependency_resolved,
                         base,
                         ident,
@@ -720,6 +723,198 @@ pub fn resolve_imports<'src>(
                 map.insert(name, id);
             }
             scope
+        },
+    )
+}
+
+// todo! public/private
+pub struct ExportsLookup<'src> {
+    local: Vec<ModuleExports<'src>>,
+    // todo! dependency exports
+}
+impl<'src> ExportsLookup<'src> {
+    fn new(local_modules: &Vec<LocalModule<'src>>) -> Self {
+        Self {
+            local: local_modules
+                .iter()
+                .map(|module| {
+                    let mut exports = module.exports.clone();
+                    // modules also export their children for access for local
+                    for (child_name, child_id) in &module.children {
+                        exports
+                            .modules
+                            .entry(*child_name)
+                            .or_insert(Id::Local { id: *child_id });
+                        // does not result in errors if something shadows local modlue children exports
+                    }
+                    exports
+                })
+                .collect(),
+        }
+    }
+    fn get_module(&self, mod_id: Id) -> &ModuleExports<'src> {
+        match mod_id {
+            Id::Local { id } => &self.local[id],
+            Id::Dependency { .. } => todo!("exports from modules in dependencies"),
+        }
+    }
+}
+
+pub fn resolve_data<'src>(
+    idents: Vec<ASTIdent<'src>>,
+    scopes: &Scopes<ImportedScope<'src>>,
+    scope: ScopeId,
+    local_modules: &Vec<LocalModule<'src>>,
+    mod_id: usize,
+    exports: &ExportsLookup<'src>,
+    diagnostics: &mut Diagnostics,
+) -> Option<((Id, Loc), Vec<(&'src str, Loc)>)> {
+    assert!(idents.len() > 0);
+
+    fn into_names<'src>(
+        idents: impl Iterator<Item = ASTIdent<'src>>,
+        diagnostics: &mut Diagnostics,
+    ) -> Option<(Vec<&'src str>, Vec<Loc>)> {
+        let mut names = Vec::new();
+        let mut locs = Vec::new();
+        for ident in idents {
+            names.push(match ident.value {
+                ASTIdentValue::Name(name) => name,
+                ASTIdentValue::Root => {
+                    diagnostics.raise(ImportDiagnostic::IllegalRoot, ident.loc);
+                    return None;
+                }
+                ASTIdentValue::SelfTy | ASTIdentValue::SelfVar => {
+                    diagnostics.raise(ImportDiagnostic::IllegalSelf, ident.loc);
+                    return None;
+                }
+                ASTIdentValue::Super => {
+                    diagnostics.raise(ImportDiagnostic::IllegalSuper, ident.loc);
+                    return None;
+                }
+            });
+            locs.push(ident.loc);
+        }
+        Some((names, locs))
+    }
+
+    let (id, n_skip) = match &idents[0].value {
+        ASTIdentValue::Name(_) => {
+            let (names, locs) = into_names(idents.into_iter(), diagnostics)?;
+            let (id, trailing_skip) =
+                resolve_data_named(&names, &locs, scopes, scope, exports, diagnostics)?;
+            return Some((
+                id,
+                names
+                    .into_iter()
+                    .zip(locs.into_iter())
+                    .skip(trailing_skip)
+                    .collect(),
+            ));
+        }
+        ASTIdentValue::SelfTy => {
+            panic!("`Self` should be handled by caller");
+        }
+        ASTIdentValue::SelfVar => {
+            diagnostics.raise(ImportDiagnostic::IllegalSelf, idents[0].loc);
+            return None;
+        }
+        ASTIdentValue::Root => {
+            (Id::Local { id: 0 }, 1) // root is always zero
+        }
+        ASTIdentValue::Super => {
+            let mut id = mod_id;
+            let mut i = 0;
+            for name in &idents {
+                if name.value == ASTIdentValue::Super {
+                    i += 1;
+                    if let Some(id_parent) = local_modules[id].parent {
+                        id = id_parent
+                    } else {
+                        diagnostics.raise(ImportDiagnostic::NoSuperAvailable, name.loc);
+                        return None;
+                    }
+                } else {
+                    break;
+                }
+            }
+            (Id::Local { id }, i)
+        }
+    };
+
+    let (names, locs) = into_names(idents.into_iter().skip(n_skip), diagnostics)?;
+
+    let (id, trailing_skip) = resolve_data_from_module(id, &names, &locs, exports, diagnostics)?;
+
+    return Some((
+        id,
+        names
+            .into_iter()
+            .zip(locs.into_iter())
+            .skip(trailing_skip)
+            .collect(),
+    ));
+}
+pub fn resolve_data_from_module<'a, 'src>(
+    mut id: Id,
+    names: &'a [&'src str],
+    locs: &'a [Loc],
+    exports: &ExportsLookup<'src>,
+    diagnostics: &mut Diagnostics,
+) -> Option<((Id, Loc), usize)> {
+    let mut i = 1;
+
+    loop {
+        if i >= names.len() {
+            diagnostics.raise(
+                ImportDiagnostic::ExpectedDataFoundModule,
+                locs[names.len() - 1],
+            );
+            return None;
+        }
+        let exports = exports.get_module(id);
+        if let Some(id_next) = exports.modules.get(names[i]) {
+            id = *id_next;
+            i += 1;
+        } else if let Some(id_next) = exports.datas.get(names[i]) {
+            id = *id_next;
+            break;
+        } else {
+            diagnostics.raise(ImportDiagnostic::ExpectedDataOrModule, locs[i]);
+            return None;
+        }
+    }
+    Some(((id, locs[0].merge(locs[i - 1])), i))
+}
+pub fn resolve_data_named<'a, 'src>(
+    names: &'a [&'src str],
+    locs: &'a [Loc],
+    scopes: &Scopes<ImportedScope<'src>>,
+    scope: ScopeId,
+    exports: &ExportsLookup<'src>,
+    diagnostics: &mut Diagnostics,
+) -> Option<((Id, Loc), usize)> {
+    assert!(names.len() > 0);
+    assert_eq!(names.len(), locs.len());
+    Some(
+        if let Some((id, is_module)) = scopes.find_map(scope, |scope| {
+            if let Some(id) = scope.datas.get(names[0]) {
+                Some((*id, false))
+            } else if let Some(id) = scope.modules.get(names[0]) {
+                Some((*id, true))
+            } else {
+                None
+            }
+        }) {
+            if is_module {
+                resolve_data_from_module(id, names, locs, exports, diagnostics)?
+            } else {
+                // is data
+                ((id, locs[0]), 1)
+            }
+        } else {
+            diagnostics.raise(ImportDiagnostic::ExpectedDataOrModule, locs[0]);
+            return None;
         },
     )
 }

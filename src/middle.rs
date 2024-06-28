@@ -37,9 +37,10 @@
 //! - statics phase
 //!     - merge statics (except impls)
 //!     - resolve imports
-//!     - free and merge impls
+//!     - free and merge impls (resolve target types)
 //!     - resolve types in statics
 //!     - verify merge (and compact)
+//!     - verify impls (and compact)
 //!
 //! - resolve local scope variables
 //! - resolve types
@@ -47,9 +48,11 @@
 //!
 //! - assemble package
 
+pub mod impls;
+pub mod import;
 pub mod memory;
+pub mod module;
 pub mod optimize;
 pub mod resolution_diagnostics;
-pub mod resolve_import;
 pub mod statics;
 pub mod types;

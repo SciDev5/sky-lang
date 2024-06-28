@@ -1,4 +1,3 @@
-mod module;
 mod package;
 mod semver;
 

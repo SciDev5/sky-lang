@@ -26,13 +26,11 @@ use crate::{
     front::ast::{
         ASTConst, ASTData, ASTFreeImpl, ASTFunction, ASTScope, ASTStatics, ASTTrait, ASTTypeAlias,
     },
+    middle::module::{LocalModule, ModuleParts},
     modularity::Id,
 };
 
-use super::{
-    module::{ModuleExports, ModuleParts},
-    scopes::{ScopeId, Scopes},
-};
+use super::scopes::{ScopeId, Scopes};
 
 #[derive(Debug, Default)]
 pub struct MergedStatics<'src> {
@@ -87,7 +85,7 @@ pub fn merge_statics<'src>(
     modules_in: Vec<ModuleParts<'src>>,
     statics_unmerged: ASTStatics<'src>,
     scopes: &mut Scopes<ASTScope<'src>>,
-) -> (Vec<ModuleExports<'src>>, MergedStatics<'src>) {
+) -> (Vec<LocalModule<'src>>, MergedStatics<'src>) {
     ASTScope::attatch_backend_ids(&modules_in, scopes);
 
     let mut id_lut = MergeIdRemapLookup::new(&statics_unmerged);
@@ -111,27 +109,30 @@ pub fn merge_statics<'src>(
 
     let mut modules_out = Vec::with_capacity(modules_in.len());
     for module_parts in modules_in {
-        let mut module_out = ModuleExports::new_empty(module_parts.parent, module_parts.children);
+        let mut module_out = LocalModule::new_empty(module_parts.parent, module_parts.children);
 
-        for (backend_id, exports) in module_parts.export_parts {
-            macro_rules! add_exports_to_merged {
-                ($x:ident, $unmerged:expr) => {
-                    merge_exports(
-                        backend_id,
-                        exports.$x,
-                        &mut module_out.$x,
-                        &mut $unmerged,
-                        &mut id_lut.$x,
-                        &mut statics.$x,
-                    );
-                };
+        for (backend_id, src) in module_parts.parts {
+            let exports = scopes.get(src.scope).cloned(); // todo! filter by public/private
+            if let Some(exports) = exports {
+                macro_rules! add_exports_to_merged {
+                    ($x:ident, $unmerged:expr) => {
+                        merge_exports(
+                            backend_id,
+                            exports.$x,
+                            &mut module_out.exports.$x,
+                            &mut $unmerged,
+                            &mut id_lut.$x,
+                            &mut statics.$x,
+                        );
+                    };
+                }
+                add_exports_to_merged!(functions, functions_unmerged);
+                add_exports_to_merged!(datas, datas_unmerged);
+                add_exports_to_merged!(traits, traits_unmerged);
+                add_exports_to_merged!(consts, consts_unmerged);
+                add_exports_to_merged!(typealiases, typealiases_unmerged);
             }
-            add_exports_to_merged!(functions, functions_unmerged);
-            add_exports_to_merged!(datas, datas_unmerged);
-            add_exports_to_merged!(traits, traits_unmerged);
-            add_exports_to_merged!(consts, consts_unmerged);
-            add_exports_to_merged!(typealiases, typealiases_unmerged);
-            module_out.sources.push((backend_id, exports.source));
+            module_out.sources.push((backend_id, src));
         }
 
         modules_out.push(module_out);
@@ -218,6 +219,7 @@ fn merge_remaining<'src, T>(
     let to = &mut statics[id_to];
 
     let backend_id = scopes.get(get_scope_id(&from)).unwrap().backend_id;
+    // safe to unwrap because this is a static and will necessarily be added to its containing scope, meaning it will not be empty/None
 
     to.base_target_level = to.base_target_level.min(backend_id);
     to.contents.insert(backend_id, from);

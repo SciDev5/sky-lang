@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use crate::{
     back::BackendId,
     impl_hasloc_simple,
-    middle::statics::{
+    middle::{
         module::ModuleParts,
-        scopes::{ScopeId, Scopes},
+        statics::scopes::{ScopeId, Scopes},
     },
     modularity::Id,
 };
@@ -157,10 +157,10 @@ impl<'src> ASTScope<'src> {
     ) {
         let backend_id_lookup = modules
             .iter()
-            .flat_map(|ModuleParts { export_parts, .. }| {
-                export_parts
+            .flat_map(|ModuleParts { parts, .. }| {
+                parts
                     .iter()
-                    .map(|(backend_id, exports)| (exports.source.scope, *backend_id))
+                    .map(|(backend_id, src)| (src.scope, *backend_id))
             })
             .collect::<HashMap<_, _>>();
         scopes.modify_contextual(
@@ -377,13 +377,13 @@ pub struct ASTName<'src> {
 }
 impl_hasloc_simple!(ASTName<'src>);
 /// Identifiers, including some keywords like `self`, `super`, etc.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ASTIdent<'src> {
     pub loc: Loc,
     pub value: ASTIdentValue<'src>,
 }
 impl_hasloc_simple!(ASTIdent<'src>);
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ASTIdentValue<'src> {
     Name(&'src str),
     Super,

@@ -5,18 +5,17 @@ use crate::{
         ast::{ASTEnumVariant, ASTLiteral},
         tokenize::{TInfixOperatorType, TPostfixOperatorType, TPrefixOperatorType, TSymbol},
     },
-    lint::diagnostic::{DiagnosticContent, Diagnostics, ToDiagnostic},
+    lint::diagnostic::{DiagnosticContent, DiagnosticId, Diagnostics, Fallible, ToDiagnostic},
     middle::statics::scopes::{ScopeId, Scopes},
 };
 
 use super::{
     ast::{
         ASTAnnot, ASTBlock, ASTConst, ASTData, ASTDataContents, ASTDataProperty, ASTDeclr,
-        ASTDestructure, ASTDiagnosticRef, ASTDoc, ASTEnumVariantType, ASTExpr, ASTFallible,
-        ASTFreeImpl, ASTFunction, ASTIdent, ASTIdentValue, ASTImpl, ASTImplContents, ASTImport,
-        ASTImportTree, ASTLambda, ASTName, ASTPostfixBlock, ASTScope, ASTSourceFile, ASTStmt,
-        ASTSubBlocked, ASTTemplateBound, ASTTemplates, ASTTrait, ASTType, ASTTypeAlias,
-        ASTTypedDestructure, ASTVarDeclare,
+        ASTDestructure, ASTDoc, ASTEnumVariantType, ASTExpr, ASTFreeImpl, ASTFunction, ASTIdent,
+        ASTIdentValue, ASTImpl, ASTImplContents, ASTImport, ASTImportTree, ASTLambda, ASTName,
+        ASTPostfixBlock, ASTScope, ASTSourceFile, ASTStmt, ASTSubBlocked, ASTTemplateBound,
+        ASTTemplates, ASTTrait, ASTType, ASTTypeAlias, ASTTypedDestructure, ASTVarDeclare,
     },
     source::{HasLoc, Loc, SourceFileId},
     tokenize::{TBracketType, TKeyword, Token, TokenContent},
@@ -126,8 +125,8 @@ fn bracket_priority(which: TBracketType) -> u8 {
 }
 
 enum HelperParenOrTuple<T> {
-    Paren(ASTFallible<Box<T>>),
-    Tuple(Vec<ASTFallible<T>>),
+    Paren(Fallible<Box<T>>),
+    Tuple(Vec<Fallible<T>>),
 }
 enum AorB<A, B> {
     A(A),
@@ -575,7 +574,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         &mut self,
         parse_inner: F,
         fail_diagnostic: &'static ParseDiagnostic,
-    ) -> ASTFallible<T> {
+    ) -> Fallible<T> {
         if let Some(res) = parse_inner(self) {
             return Ok(res);
         }
@@ -685,7 +684,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         &mut self,
         parse_inner: F,
         fail_diagnostic: &'static ParseDiagnostic,
-    ) -> Vec<ASTFallible<T>> {
+    ) -> Vec<Fallible<T>> {
         let mut out = Vec::new();
         let mut expecting_comma = false;
         for aorb in self.parse_list(
@@ -722,12 +721,8 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
 
     #[inline]
-    fn raise(&mut self, diagnostic: ParseDiagnostic, loc: Loc) -> ASTDiagnosticRef {
-        let parse_diagnostic_id = self.diagnostics.len();
-        self.diagnostics.raise(diagnostic, loc);
-        ASTDiagnosticRef {
-            parse_diagnostic_id,
-        }
+    fn raise(&mut self, diagnostic: ParseDiagnostic, loc: Loc) -> DiagnosticId {
+        self.diagnostics.raise(diagnostic, loc)
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1807,7 +1802,7 @@ impl<'a, 'src> Parser<'a, 'src> {
     fn parse_type_optional(
         &mut self,
         allow_leading_newline: bool,
-    ) -> (Option<ASTFallible<ASTType<'src>>>, Option<Loc>) {
+    ) -> (Option<Fallible<ASTType<'src>>>, Option<Loc>) {
         // `: void` as `~` shorthand
         if let Some((_, loc)) = self.next_if_peek_and(|token, had_newline| match token {
             TokenContent::Symbol(TSymbol::Xor) if allow_leading_newline || !had_newline => Some(()),
@@ -2327,7 +2322,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         })
     }
     /// Parses `impl` blocks, returning `(target, impl)`.
-    fn _parse_impl(&mut self) -> Option<(Option<ASTFallible<ASTType<'src>>>, ASTImpl<'src>)> {
+    fn _parse_impl(&mut self) -> Option<(Option<Fallible<ASTType<'src>>>, ASTImpl<'src>)> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Impl))?;
 
         let templates = self.parse_templates();
@@ -2797,8 +2792,8 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
     fn _parse_subblocked_elseif(
         &mut self,
-        elifs: &mut Vec<(ASTFallible<Box<ASTExpr<'src>>>, ASTFallible<ASTBlock<'src>>)>,
-        else_block: &mut Option<ASTFallible<ASTBlock<'src>>>,
+        elifs: &mut Vec<(Fallible<Box<ASTExpr<'src>>>, Fallible<ASTBlock<'src>>)>,
+        else_block: &mut Option<Fallible<ASTBlock<'src>>>,
         loc_end: &mut Loc,
     ) -> bool {
         let loc_else =
@@ -2837,7 +2832,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             false
         }
     }
-    fn _parse_subblocked_else(&mut self, loc_end: &mut Loc) -> Option<ASTFallible<ASTBlock<'src>>> {
+    fn _parse_subblocked_else(&mut self, loc_end: &mut Loc) -> Option<Fallible<ASTBlock<'src>>> {
         let loc_else = self.next_if_eq(TokenContent::Keyword(TKeyword::Else))?;
 
         let else_block = self

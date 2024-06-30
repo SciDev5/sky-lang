@@ -8,6 +8,9 @@ use crate::{
     },
 };
 
+pub type Fallible<T> = Result<T, DiagnosticId>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiagnosticId(usize);
 pub struct Diagnostics {
     list: Vec<Diagnostic>,
 }
@@ -15,11 +18,13 @@ impl Diagnostics {
     pub fn init() -> Self {
         Self { list: Vec::new() }
     }
-    pub fn raise<T: ToDiagnostic>(&mut self, d: T, loc: Loc) {
+    pub fn raise<T: ToDiagnostic>(&mut self, d: T, loc: Loc) -> DiagnosticId {
+        let id = self.list.len();
         self.list.push(Diagnostic {
             loc,
             content: d.to_content(),
         });
+        return DiagnosticId(id);
     }
     /// Sets the number of diagnostics stored to the given length or less if it was already less.
     pub fn resize_shrink(&mut self, new_len: usize) {

@@ -15,16 +15,13 @@ use crate::{
         ast::{ASTIdent, ASTIdentValue, ASTImportTree, ASTScope},
         source::Loc,
     },
-    lint::diagnostic::{DiagnosticContent, Diagnostics, ToDiagnostic},
+    lint::diagnostic::{DiagnosticContent, Diagnostics, Fallible, ToDiagnostic},
     modularity::Id,
 };
 
 use super::{
     module::{LocalModule, ModuleExports},
-    statics::{
-        merge::MergedStatics,
-        scopes::{ScopeId, Scopes},
-    },
+    statics::scopes::{ScopeId, Scopes},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +128,7 @@ fn convert_ast_importtree<'src>(
     diagnostics: &mut Diagnostics,
     named_items: &mut HashMap<&'src str, ImportingId>,
     import_dependency_resolved: &mut Vec<ImportDependencyResolutionStatus>,
-) -> Option<ImportTree<'src>> {
+) -> Fallible<ImportTree<'src>> {
     fn define_import_dependency<'src>(
         name: &'src str,
         loc: Loc,
@@ -145,12 +142,14 @@ fn convert_ast_importtree<'src>(
         import_dependency_resolved.push(ImportDependencyResolutionStatus::NotResolved);
         named_items
             .entry(name)
-            .and_modify(|_| diagnostics.raise(ImportDiagnostic::DuplicateName, loc))
+            .and_modify(|_| {
+                diagnostics.raise(ImportDiagnostic::DuplicateName, loc);
+            })
             .or_insert(ImportingId::Import(id));
         id
     }
 
-    Some(match ast {
+    Ok(match ast {
         ASTImportTree::Name {
             loc,
             ident:
@@ -189,7 +188,7 @@ fn convert_ast_importtree<'src>(
             which: ImportTreeWhich::NameWithChild {
                 ident,
                 inner: Box::new(convert_ast_importtree(
-                    *inner.ok()?,
+                    *inner?,
                     backend_id,
                     diagnostics,
                     named_items,
@@ -228,8 +227,8 @@ fn convert_ast_importtree<'src>(
                                 diagnostics,
                             ));
                         } else {
-                            diagnostics.raise(ImportDiagnostic::DuplicateSelfInListImport, loc);
-                            return None;
+                            let _ =
+                                diagnostics.raise(ImportDiagnostic::DuplicateSelfInListImport, loc);
                         }
                         None
                     }
@@ -239,7 +238,8 @@ fn convert_ast_importtree<'src>(
                         diagnostics,
                         named_items,
                         import_dependency_resolved,
-                    ),
+                    )
+                    .ok(),
                 })
                 .collect::<Vec<_>>();
 
@@ -255,15 +255,14 @@ fn convert_ast_importtree<'src>(
             }
         }
         ASTImportTree::Name { loc, ident, .. } | ASTImportTree::Group { loc, ident, .. } => {
-            match ident.value {
+            return Err(match ident.value {
                 ASTIdentValue::Root => diagnostics.raise(ImportDiagnostic::IllegalRoot, loc),
                 ASTIdentValue::SelfTy | ASTIdentValue::SelfVar => {
                     diagnostics.raise(ImportDiagnostic::IllegalSelf, loc)
                 }
                 ASTIdentValue::Super => diagnostics.raise(ImportDiagnostic::IllegalSuper, loc),
                 ASTIdentValue::Name(_) => unreachable!(),
-            }
-            return None;
+            });
         }
     })
 }
@@ -281,34 +280,31 @@ fn convert_ast_importtree_base<'src>(
     named_items: &mut HashMap<&'src str, ImportingId>,
     diagnostics: &mut Diagnostics,
     import_dependency_resolved: &mut Vec<ImportDependencyResolutionStatus>,
-) -> Option<(NameOrModuleId<'src>, ImportTree<'src>)> {
+) -> Fallible<(NameOrModuleId<'src>, ImportTree<'src>)> {
     match ast {
         ASTImportTree::ToAll(loc)
         | ASTImportTree::Group { loc, .. }
         | ASTImportTree::Name {
             loc, inner: None, ..
         } => {
-            diagnostics.raise(ImportDiagnostic::IllegalInitial, loc);
-            return None;
+            return Err(diagnostics.raise(ImportDiagnostic::IllegalInitial, loc));
         }
         ASTImportTree::Name {
             loc,
             ident,
             inner: Some(inner),
         } => {
-            let mut inner = *inner.ok()?;
+            let mut inner = *inner?;
             let mut base = match ident.value {
                 ASTIdentValue::SelfTy => {
-                    diagnostics.raise(ImportDiagnostic::WrongSelfKeyIdent, loc);
-                    return None;
+                    return Err(diagnostics.raise(ImportDiagnostic::WrongSelfKeyIdent, loc));
                 }
                 ASTIdentValue::Root => NameOrModuleId::ModuleId(0), // 0 is always root
                 ASTIdentValue::Super => {
                     if let Some(parent_id) = module_exports[module_id].parent {
                         NameOrModuleId::ModuleId(parent_id)
                     } else {
-                        diagnostics.raise(ImportDiagnostic::NoSuperAvailable, loc);
-                        return None;
+                        return Err(diagnostics.raise(ImportDiagnostic::NoSuperAvailable, loc));
                     }
                 }
                 ASTIdentValue::SelfVar => NameOrModuleId::ModuleId(module_id),
@@ -329,12 +325,11 @@ fn convert_ast_importtree_base<'src>(
                         },
                         NameOrModuleId::ModuleId(module_id),
                     ) => {
-                        inner = *inner_.ok()?;
+                        inner = *inner_?;
                         if let Some(parent_id) = module_exports[module_id].parent {
                             base = NameOrModuleId::ModuleId(parent_id);
                         } else {
-                            diagnostics.raise(ImportDiagnostic::NoSuperAvailable, loc);
-                            return None;
+                            return Err(diagnostics.raise(ImportDiagnostic::NoSuperAvailable, loc));
                         }
                     }
                     (inner_, base_) => {
@@ -379,7 +374,7 @@ fn lookup_by_name_in<'src>(
     name: &'src str,
     loc: Loc,
     diagnostics: &mut Diagnostics,
-) -> Option<Result<ImportingId, ()>> {
+) -> Option<Fallible<ImportingId>> {
     let base = match base {
         ImportingId::Import(import_dep_id) => {
             let import_depenency = import_dependency_resolved[import_dep_id];
@@ -387,8 +382,9 @@ fn lookup_by_name_in<'src>(
                 match import_depenency.succeeded() {
                     Some(base) => base,
                     None => {
-                        diagnostics.raise(ImportDiagnostic::ImportDependencyFailed, loc);
-                        return Some(Err(()));
+                        return Some(Err(
+                            diagnostics.raise(ImportDiagnostic::ImportDependencyFailed, loc)
+                        ));
                     }
                 }
             } else {
@@ -425,17 +421,13 @@ fn lookup_by_name_in<'src>(
             {
                 Ok(id)
             } else {
-                diagnostics.raise(ImportDiagnostic::NameMemberForImportNotFound, loc);
-                Err(())
+                Err(diagnostics.raise(ImportDiagnostic::NameMemberForImportNotFound, loc))
             }
         }
         ImportingId::Module(Id::Dependency { package_id, id }) => {
             todo!("imports from dependencies");
         }
-        _ => {
-            diagnostics.raise(ImportDiagnostic::NameMemberForImportNotFound, loc);
-            Err(())
-        }
+        _ => Err(diagnostics.raise(ImportDiagnostic::NameMemberForImportNotFound, loc)),
     })
 }
 
@@ -526,7 +518,7 @@ pub fn resolve_imports<'src>(
                     diagnostics,
                     &mut import_dependency_resolved,
                 );
-                if let Some(import) = import {
+                if let Ok(import) = import {
                     imports.push(import);
                 }
             }
@@ -768,34 +760,31 @@ pub fn resolve_data<'src>(
     mod_id: usize,
     exports: &ExportsLookup<'src>,
     diagnostics: &mut Diagnostics,
-) -> Option<((Id, Loc), Vec<(&'src str, Loc)>)> {
+) -> Fallible<((Id, Loc), Vec<(&'src str, Loc)>)> {
     assert!(idents.len() > 0);
 
     fn into_names<'src>(
         idents: impl Iterator<Item = ASTIdent<'src>>,
         diagnostics: &mut Diagnostics,
-    ) -> Option<(Vec<&'src str>, Vec<Loc>)> {
+    ) -> Fallible<(Vec<&'src str>, Vec<Loc>)> {
         let mut names = Vec::new();
         let mut locs = Vec::new();
         for ident in idents {
             names.push(match ident.value {
                 ASTIdentValue::Name(name) => name,
                 ASTIdentValue::Root => {
-                    diagnostics.raise(ImportDiagnostic::IllegalRoot, ident.loc);
-                    return None;
+                    return Err(diagnostics.raise(ImportDiagnostic::IllegalRoot, ident.loc));
                 }
                 ASTIdentValue::SelfTy | ASTIdentValue::SelfVar => {
-                    diagnostics.raise(ImportDiagnostic::IllegalSelf, ident.loc);
-                    return None;
+                    return Err(diagnostics.raise(ImportDiagnostic::IllegalSelf, ident.loc));
                 }
                 ASTIdentValue::Super => {
-                    diagnostics.raise(ImportDiagnostic::IllegalSuper, ident.loc);
-                    return None;
+                    return Err(diagnostics.raise(ImportDiagnostic::IllegalSuper, ident.loc));
                 }
             });
             locs.push(ident.loc);
         }
-        Some((names, locs))
+        Ok((names, locs))
     }
 
     let (id, n_skip) = match &idents[0].value {
@@ -803,7 +792,7 @@ pub fn resolve_data<'src>(
             let (names, locs) = into_names(idents.into_iter(), diagnostics)?;
             let (id, trailing_skip) =
                 resolve_data_named(&names, &locs, scopes, scope, exports, diagnostics)?;
-            return Some((
+            return Ok((
                 id,
                 names
                     .into_iter()
@@ -816,8 +805,7 @@ pub fn resolve_data<'src>(
             panic!("`Self` should be handled by caller");
         }
         ASTIdentValue::SelfVar => {
-            diagnostics.raise(ImportDiagnostic::IllegalSelf, idents[0].loc);
-            return None;
+            return Err(diagnostics.raise(ImportDiagnostic::IllegalSelf, idents[0].loc));
         }
         ASTIdentValue::Root => {
             (Id::Local { id: 0 }, 1) // root is always zero
@@ -831,8 +819,7 @@ pub fn resolve_data<'src>(
                     if let Some(id_parent) = local_modules[id].parent {
                         id = id_parent
                     } else {
-                        diagnostics.raise(ImportDiagnostic::NoSuperAvailable, name.loc);
-                        return None;
+                        return Err(diagnostics.raise(ImportDiagnostic::NoSuperAvailable, name.loc));
                     }
                 } else {
                     break;
@@ -846,7 +833,7 @@ pub fn resolve_data<'src>(
 
     let (id, trailing_skip) = resolve_data_from_module(id, &names, &locs, exports, diagnostics)?;
 
-    return Some((
+    return Ok((
         id,
         names
             .into_iter()
@@ -861,16 +848,15 @@ pub fn resolve_data_from_module<'a, 'src>(
     locs: &'a [Loc],
     exports: &ExportsLookup<'src>,
     diagnostics: &mut Diagnostics,
-) -> Option<((Id, Loc), usize)> {
+) -> Fallible<((Id, Loc), usize)> {
     let mut i = 1;
 
     loop {
         if i >= names.len() {
-            diagnostics.raise(
+            return Err(diagnostics.raise(
                 ImportDiagnostic::ExpectedDataFoundModule,
                 locs[names.len() - 1],
-            );
-            return None;
+            ));
         }
         let exports = exports.get_module(id);
         if let Some(id_next) = exports.modules.get(names[i]) {
@@ -880,11 +866,10 @@ pub fn resolve_data_from_module<'a, 'src>(
             id = *id_next;
             break;
         } else {
-            diagnostics.raise(ImportDiagnostic::ExpectedDataOrModule, locs[i]);
-            return None;
+            return Err(diagnostics.raise(ImportDiagnostic::ExpectedDataOrModule, locs[i]));
         }
     }
-    Some(((id, locs[0].merge(locs[i - 1])), i))
+    Ok(((id, locs[0].merge(locs[i - 1])), i))
 }
 pub fn resolve_data_named<'a, 'src>(
     names: &'a [&'src str],
@@ -893,10 +878,10 @@ pub fn resolve_data_named<'a, 'src>(
     scope: ScopeId,
     exports: &ExportsLookup<'src>,
     diagnostics: &mut Diagnostics,
-) -> Option<((Id, Loc), usize)> {
+) -> Fallible<((Id, Loc), usize)> {
     assert!(names.len() > 0);
     assert_eq!(names.len(), locs.len());
-    Some(
+    Ok(
         if let Some((id, is_module)) = scopes.find_map(scope, |scope| {
             if let Some(id) = scope.datas.get(names[0]) {
                 Some((*id, false))
@@ -913,8 +898,7 @@ pub fn resolve_data_named<'a, 'src>(
                 ((id, locs[0]), 1)
             }
         } else {
-            diagnostics.raise(ImportDiagnostic::ExpectedDataOrModule, locs[0]);
-            return None;
+            return Err(diagnostics.raise(ImportDiagnostic::ExpectedDataOrModule, locs[0]));
         },
     )
 }

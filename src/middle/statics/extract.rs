@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use crate::{
     front::{
         ast::{
-            ASTBlock, ASTConst, ASTData, ASTDeclr, ASTExpr, ASTFallible, ASTFunction, ASTImpl,
-            ASTImplContents, ASTLambda, ASTName, ASTPostfixBlock, ASTScope, ASTSourceFile,
-            ASTStatics, ASTStmt, ASTSubBlocked, ASTTrait, ASTVarDeclare,
+            ASTBlock, ASTConst, ASTData, ASTDeclr, ASTExpr, ASTFunction, ASTImpl, ASTImplContents,
+            ASTLambda, ASTName, ASTPostfixBlock, ASTScope, ASTSourceFile, ASTStatics, ASTStmt,
+            ASTSubBlocked, ASTTrait, ASTVarDeclare,
         },
         source::HasLoc,
     },
-    lint::diagnostic::Diagnostics,
+    lint::diagnostic::{Diagnostics, Fallible},
     middle::resolution_diagnostics::ResolutionDiagnostic,
     modularity::Id,
 };
@@ -60,7 +60,7 @@ impl<'a, 'src> ScopeExtractor<'a, 'src> {
             Id::Local { id }
         }
         fn insert<'src, T: HasLoc>(
-            name: ASTFallible<ASTName<'src>>,
+            name: Fallible<ASTName<'src>>,
             value: T,
             scope: &mut HashMap<&'src str, Id>,
             statics: &mut Vec<T>,

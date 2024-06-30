@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use crate::{
     back::BackendId,
     impl_hasloc_simple,
+    lint::diagnostic::{DiagnosticId, Fallible},
     middle::{
         module::ModuleParts,
         statics::scopes::{ScopeId, Scopes},
@@ -51,7 +52,7 @@ pub enum ASTStmt<'src> {
         loc: Loc,
         assign_op: Option<TInfixOperatorType>,
         lhs: Expr<'src>,
-        rhs: ASTFallible<Expr<'src>>,
+        rhs: Fallible<Expr<'src>>,
     },
     SubBlocked(ASTSubBlocked<'src>),
     Expr(ASTExpr<'src>),
@@ -86,11 +87,11 @@ pub enum ASTExpr<'src> {
     },
     Parentheses {
         loc: Loc,
-        inner: ASTFallible<Expr<'src>>,
+        inner: Fallible<Expr<'src>>,
     },
     Array {
         loc: Loc,
-        inner: Vec<ASTFallible<ASTExpr<'src>>>,
+        inner: Vec<Fallible<ASTExpr<'src>>>,
         /// `true` &rarr; `(a,b,c)`, represents a tuple.
         /// `false` &rarr; `[a,b,c]`, represents an array ref.
         is_tuple: bool,
@@ -206,22 +207,18 @@ impl_hasloc_simple!(ASTBlock<'src>);
 #[derive(Debug, Clone, PartialEq)]
 pub enum ASTPostfixBlock<'src> {
     /// `x ( a, b, c )`
-    Call {
-        args: Vec<ASTFallible<ASTExpr<'src>>>,
-    },
+    Call { args: Vec<Fallible<ASTExpr<'src>>> },
     /// `x [ a, b, c ]`
-    Index {
-        args: Vec<ASTFallible<ASTExpr<'src>>>,
-    },
+    Index { args: Vec<Fallible<ASTExpr<'src>>> },
     /// `x { a, b -> c }``
     Lambda { lambda: ASTLambda<'src> },
     /// `x.{ a = b, c }`
     DataStructInit {
-        entries: Vec<(ASTName<'src>, ASTFallible<ASTExpr<'src>>)>,
+        entries: Vec<(ASTName<'src>, Fallible<ASTExpr<'src>>)>,
     },
     /// `x.( a, b, c)`
     DataTupleInit {
-        entries: Vec<ASTFallible<ASTExpr<'src>>>,
+        entries: Vec<Fallible<ASTExpr<'src>>>,
     },
     /// `x.abc`
     PropertyAccess { name: ASTName<'src> },
@@ -233,36 +230,36 @@ pub enum ASTSubBlocked<'src> {
     /// `if x { ... }`
     If {
         loc: Loc,
-        condition: ASTFallible<Expr<'src>>,
-        block: ASTFallible<ASTBlock<'src>>,
+        condition: Fallible<Expr<'src>>,
+        block: Fallible<ASTBlock<'src>>,
         /// `else if y { ... }`
-        elifs: Vec<(ASTFallible<Expr<'src>>, ASTFallible<ASTBlock<'src>>)>,
+        elifs: Vec<(Fallible<Expr<'src>>, Fallible<ASTBlock<'src>>)>,
         /// `else { ... }`
-        else_block: Option<ASTFallible<ASTBlock<'src>>>,
+        else_block: Option<Fallible<ASTBlock<'src>>>,
     },
     /// `loop { ... }`
     Loop {
         loc: Loc,
-        block: ASTFallible<ASTBlock<'src>>,
+        block: Fallible<ASTBlock<'src>>,
     },
     /// `while x { ... }`
     While {
         loc: Loc,
-        condition: ASTFallible<Expr<'src>>,
-        block: ASTFallible<ASTBlock<'src>>,
+        condition: Fallible<Expr<'src>>,
+        block: Fallible<ASTBlock<'src>>,
         /// Optional else block which allows this to return
         /// a value when used as an expression.
-        else_block: Option<ASTFallible<ASTBlock<'src>>>,
+        else_block: Option<Fallible<ASTBlock<'src>>>,
     },
     /// `for x in y { ... }`
     For {
         loc: Loc,
-        var: ASTFallible<ASTTypedDestructure<'src>>,
-        iterator: ASTFallible<Expr<'src>>,
-        block: ASTFallible<ASTBlock<'src>>,
+        var: Fallible<ASTTypedDestructure<'src>>,
+        iterator: Fallible<Expr<'src>>,
+        block: Fallible<ASTBlock<'src>>,
         /// Optional else block which allows this to return
         /// a value when used as an expression.
-        else_block: Option<ASTFallible<ASTBlock<'src>>>,
+        else_block: Option<Fallible<ASTBlock<'src>>>,
     },
 }
 impl<'src> HasLoc for ASTSubBlocked<'src> {
@@ -294,12 +291,12 @@ pub enum ASTLiteral<'src> {
     /// Negative integer of any size (stored as negative, down to `-2^63`)
     NInt(i128),
     /// Invalid integer
-    IntInvalid(&'src str, ASTDiagnosticRef),
+    IntInvalid(&'src str, DiagnosticId),
     /// Floating point number, stored in both supported formats for when the
     /// type system decides which one to use.
     Float(f64, f32),
     /// Invalid float
-    FloatInvalid(&'src str, ASTDiagnosticRef),
+    FloatInvalid(&'src str, DiagnosticId),
     /// Simple boolean.
     Bool(bool),
     /// String (with `\n` and similar escaped), with no templating going on.
@@ -309,8 +306,8 @@ pub enum ASTLiteral<'src> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTVarDeclare<'src> {
     pub loc: Loc,
-    pub declr: ASTFallible<ASTTypedDestructure<'src>>,
-    pub initializer: Option<ASTFallible<Expr<'src>>>,
+    pub declr: Fallible<ASTTypedDestructure<'src>>,
+    pub initializer: Option<Fallible<Expr<'src>>>,
 }
 impl_hasloc_simple!(ASTVarDeclare<'src>);
 
@@ -319,8 +316,8 @@ impl_hasloc_simple!(ASTVarDeclare<'src>);
 pub struct ASTLambda<'src> {
     pub loc: Loc,
     // pub templates: TemplateBounds<'src>,
-    pub args: Option<Vec<ASTFallible<ASTTypedDestructure<'src>>>>,
-    pub ty_return: Option<ASTFallible<ASTType<'src>>>,
+    pub args: Option<Vec<Fallible<ASTTypedDestructure<'src>>>>,
+    pub ty_return: Option<Fallible<ASTType<'src>>>,
     pub block: ASTBlock<'src>,
 }
 impl_hasloc_simple!(ASTLambda<'src>);
@@ -330,10 +327,10 @@ pub struct ASTFunction<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
     pub annot: ASTAnnot,
-    pub name: ASTFallible<ASTName<'src>>,
+    pub name: Fallible<ASTName<'src>>,
     pub templates: ASTTemplates<'src>,
-    pub args: Vec<ASTFallible<ASTTypedDestructure<'src>>>,
-    pub ty_return: Option<ASTFallible<ASTType<'src>>>,
+    pub args: Vec<Fallible<ASTTypedDestructure<'src>>>,
+    pub ty_return: Option<Fallible<ASTType<'src>>>,
     pub block: Option<ASTBlock<'src>>,
 }
 impl_hasloc_simple!(ASTFunction<'src>);
@@ -342,7 +339,7 @@ impl_hasloc_simple!(ASTFunction<'src>);
 pub struct ASTImport<'src> {
     pub containing_scope: ScopeId,
     pub loc: Loc,
-    pub tree: ASTFallible<ASTImportTree<'src>>,
+    pub tree: Fallible<ASTImportTree<'src>>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ASTImportTree<'src> {
@@ -350,7 +347,7 @@ pub enum ASTImportTree<'src> {
     Name {
         loc: Loc,
         ident: ASTIdent<'src>,
-        inner: Option<ASTFallible<Box<ASTImportTree<'src>>>>,
+        inner: Option<Fallible<Box<ASTImportTree<'src>>>>,
     },
     /// `abc.[ ... ]`
     Group {
@@ -430,18 +427,18 @@ pub enum ASTType<'src> {
     TypeParam {
         loc: Loc,
         inner: Box<ASTType<'src>>,
-        params: Vec<ASTFallible<ASTType<'src>>>,
-        named_params: Vec<(ASTName<'src>, ASTFallible<ASTType<'src>>)>,
+        params: Vec<Fallible<ASTType<'src>>>,
+        named_params: Vec<(ASTName<'src>, Fallible<ASTType<'src>>)>,
     },
     /// Types of the form `(A,B,C)`
     Tuple {
         loc: Loc,
-        inner: Vec<ASTFallible<ASTType<'src>>>,
+        inner: Vec<Fallible<ASTType<'src>>>,
     },
     /// Parentheses in types. Used for disambiguation.
     Paren {
         loc: Loc,
-        inner: ASTFallible<Box<ASTType<'src>>>,
+        inner: Fallible<Box<ASTType<'src>>>,
     },
     //// TODO not included for the time being, as they are aliases for other types
     //// and I need to decide how to handle that:
@@ -471,11 +468,11 @@ pub enum ASTDestructure<'src> {
     Name(ASTName<'src>),
     Paren {
         loc: Loc,
-        inner: ASTFallible<Box<ASTDestructure<'src>>>,
+        inner: Fallible<Box<ASTDestructure<'src>>>,
     },
     Tuple {
         loc: Loc,
-        inner: Vec<ASTFallible<ASTDestructure<'src>>>,
+        inner: Vec<Fallible<ASTDestructure<'src>>>,
     },
     // TODO Struct destructures not included because they're rare and a pain to implement
 }
@@ -492,7 +489,7 @@ impl<'src> HasLoc for ASTDestructure<'src> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTTypedDestructure<'src> {
     pub destructure: ASTDestructure<'src>,
-    pub ty: Option<ASTFallible<ASTType<'src>>>,
+    pub ty: Option<Fallible<ASTType<'src>>>,
 }
 impl<'src> HasLoc for ASTTypedDestructure<'src> {
     fn loc(&self) -> Loc {
@@ -510,9 +507,9 @@ pub struct ASTConst<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
     pub annot: ASTAnnot,
-    pub name: ASTFallible<ASTName<'src>>,
-    pub ty: Option<ASTFallible<ASTType<'src>>>,
-    pub value: ASTFallible<ASTExpr<'src>>,
+    pub name: Fallible<ASTName<'src>>,
+    pub ty: Option<Fallible<ASTType<'src>>>,
+    pub value: Fallible<ASTExpr<'src>>,
 }
 impl_hasloc_simple!(ASTConst<'src>);
 
@@ -521,7 +518,7 @@ pub struct ASTTrait<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
     pub annot: ASTAnnot,
-    pub name: ASTFallible<ASTName<'src>>,
+    pub name: Fallible<ASTName<'src>>,
     pub templates: ASTTemplates<'src>,
     pub bounds: Vec<ASTType<'src>>,
     pub contents: ASTImplContents<'src>,
@@ -533,7 +530,7 @@ pub struct ASTData<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
     pub annot: ASTAnnot,
-    pub name: ASTFallible<ASTName<'src>>,
+    pub name: Fallible<ASTName<'src>>,
     pub templates: ASTTemplates<'src>,
     pub contents: ASTDataContents<'src>,
     pub attatched_impls: Vec<ASTImpl<'src>>,
@@ -548,7 +545,7 @@ pub enum ASTDataContents<'src> {
         properties: Vec<ASTDataProperty<'src>>,
     },
     Tuple {
-        properties: Vec<ASTFallible<ASTType<'src>>>,
+        properties: Vec<Fallible<ASTType<'src>>>,
     },
     Enum {
         variants: Vec<ASTEnumVariant<'src>>,
@@ -568,7 +565,7 @@ pub enum ASTEnumVariantType<'src> {
         properties: Vec<ASTDataProperty<'src>>,
     },
     Tuple {
-        properties: Vec<ASTFallible<ASTType<'src>>>,
+        properties: Vec<Fallible<ASTType<'src>>>,
     },
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -577,15 +574,15 @@ pub struct ASTTypeAlias<'src> {
     pub containing_scope: ScopeId,
     pub annot: ASTAnnot,
     pub templates: ASTTemplates<'src>,
-    pub name: ASTFallible<ASTName<'src>>,
-    pub value: ASTFallible<ASTType<'src>>,
+    pub name: Fallible<ASTName<'src>>,
+    pub value: Fallible<ASTType<'src>>,
 }
 impl_hasloc_simple!(ASTTypeAlias<'src>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTFreeImpl<'src> {
     pub containing_scope: ScopeId,
-    pub target: ASTFallible<ASTType<'src>>,
+    pub target: Fallible<ASTType<'src>>,
     pub attatched_impl: ASTImpl<'src>,
 }
 
@@ -594,7 +591,7 @@ pub struct ASTDataProperty<'src> {
     pub loc: Loc,
     pub annot: ASTAnnot,
     pub name: ASTName<'src>,
-    pub ty: Option<ASTFallible<ASTType<'src>>>,
+    pub ty: Option<Fallible<ASTType<'src>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -614,9 +611,3 @@ pub struct ASTImplContents<'src> {
     pub types: Vec<ASTTypeAlias<'src>>,
 }
 impl_hasloc_simple!(ASTImplContents<'src>);
-
-pub type ASTFallible<T> = Result<T, ASTDiagnosticRef>;
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ASTDiagnosticRef {
-    pub parse_diagnostic_id: usize,
-}

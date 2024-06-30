@@ -19,7 +19,7 @@ use crate::{
         ast::{ASTIdent, ASTIdentValue, ASTName, ASTType},
         source::{HasLoc, Loc},
     },
-    lint::diagnostic::{DiagnosticContent, Diagnostics, ToDiagnostic},
+    lint::diagnostic::{DiagnosticContent, Diagnostics, Fallible, ToDiagnostic},
     modularity::Id,
 };
 
@@ -63,10 +63,10 @@ impl HasLoc for TypeDatalike {
 pub struct TypeData {
     loc: Loc,
     id: Id,
-    templates: Vec<Option<TypeDatalike>>,
+    templates: Vec<Fallible<TypeDatalike>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeTrait {
+pub struct TypeTraitlike {
     loc: Loc,
     id: Id,
     templates: Vec<TypeDatalike>,
@@ -89,7 +89,7 @@ pub struct TypeDataAssociated {
 pub struct TypeDataTraitAssociated {
     loc: Loc,
     inner: TypeData,
-    from_trait: TypeTrait,
+    from_trait: TypeTraitlike,
     associated_id: usize,
 }
 
@@ -140,7 +140,7 @@ pub fn convert_type_datalike<'src>(
     templates: Vec<&'src str>,
     self_ty: Option<&TypeDatalike>,
     diagnostics: &mut Diagnostics,
-) -> Option<TypeDatalike> {
+) -> Fallible<TypeDatalike> {
     ConvertTypeDatalike {
         scopes,
         scope,
@@ -155,22 +155,22 @@ pub fn convert_type_datalike<'src>(
 }
 
 impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
-    fn convert(&mut self, ty: &ASTType<'src>) -> Option<TypeDatalike> {
+    fn convert(&mut self, ty: &ASTType<'src>) -> Fallible<TypeDatalike> {
         if let Some(ty) = self.try_convert_singular(ty) {
             ty
         } else if let Some(ty) = self.try_convert_with_templateargs(ty) {
             ty
         } else {
-            self.diagnostics
-                .raise(TypeDiagnostic::FailedToConvertType, ty.loc());
-            None
+            Err(self
+                .diagnostics
+                .raise(TypeDiagnostic::FailedToConvertType, ty.loc()))
         }
     }
 
     fn try_convert_with_templateargs(
         &mut self,
         ty: &ASTType<'src>,
-    ) -> Option<Option<TypeDatalike>> {
+    ) -> Option<Fallible<TypeDatalike>> {
         let ASTType::TypeParam {
             loc,
             inner,
@@ -181,13 +181,14 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
             return None;
         };
 
-        let Some(inner) = self.convert(inner) else {
-            return Some(None);
+        let inner = match self.convert(inner) {
+            Ok(v) => v,
+            Err(v) => return Some(Err(v)),
         };
 
         let templates = params
             .into_iter()
-            .map(|ty| ty.as_ref().ok().and_then(|ty| self.convert(ty)))
+            .map(|ty| ty.as_ref().map_err(|e| *e).and_then(|ty| self.convert(ty)))
             .collect::<Vec<_>>();
 
         for named in named_params {
@@ -207,11 +208,11 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
             v => {
                 self.diagnostics
                     .raise(TypeDiagnostic::InnerTypeCannotTakeTemplateArgs, v.loc());
-                return Some(Some(v));
+                return Some(Ok(v));
             }
         };
 
-        Some(Some(TypeDatalike::Data(TypeData { loc, id, templates })))
+        Some(Ok(TypeDatalike::Data(TypeData { loc, id, templates })))
     }
 
     fn access_inner<T>(
@@ -219,14 +220,14 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
         ty: TypeDatalike,
         path: &[T],
         f: impl Fn(&T) -> Option<(&'src str, Loc)>,
-    ) -> Option<TypeDatalike> {
+    ) -> Fallible<TypeDatalike> {
         if path.len() > 0 {
             todo!("accesses into traitful type -----------------------------------------------------------------");
         }
-        Some(ty)
+        Ok(ty)
     }
 
-    fn try_convert_singular(&mut self, ty: &ASTType<'src>) -> Option<Option<TypeDatalike>> {
+    fn try_convert_singular(&mut self, ty: &ASTType<'src>) -> Option<Fallible<TypeDatalike>> {
         let path = try_type_as_import_path(ty)?;
 
         if let ASTIdent {
@@ -268,14 +269,14 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
                     }),
                 );
             } else {
-                self.diagnostics
-                    .raise(TypeDiagnostic::IllegalUseOfUndefinedSelfTy, loc);
-                return Some(None);
+                return Some(Err(self
+                    .diagnostics
+                    .raise(TypeDiagnostic::IllegalUseOfUndefinedSelfTy, loc)));
             }
         }
 
         Some(
-            if let Some(((id, loc), trailing)) = resolve_data(
+            resolve_data(
                 path,
                 self.scopes,
                 self.scope,
@@ -283,7 +284,8 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
                 self.mod_id,
                 self.exports,
                 self.diagnostics,
-            ) {
+            )
+            .and_then(|((id, loc), trailing)| {
                 self.access_inner(
                     TypeDatalike::Data(TypeData {
                         loc,
@@ -293,9 +295,7 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
                     &trailing,
                     |v| Some(*v),
                 )
-            } else {
-                None
-            },
+            }),
         )
     }
 }

@@ -18,6 +18,14 @@ pub mod merge;
 pub mod scopes;
 pub mod verify_merge;
 
+pub struct UnresolvedStatics<'src> {
+    pub functions: Vec<FunctionUnresolved<'src>>,
+    pub datas: Vec<Data>,
+    pub traits: Vec<TraitUnresolved<'src>>,
+    pub consts: Vec<ConstUnsolved<'src>>,
+    pub typealiases: Vec<TypeAlias>,
+}
+
 pub struct Data {
     pub annot: Annot,
     pub name: String,
@@ -78,7 +86,7 @@ pub struct TraitGeneric<BodyBlock> {
     pub base_target: BackendId,
     pub consts: Vec<TraitConst>,
     pub functions: Vec<TraitFunction<BodyBlock>>,
-    pub typealias: Vec<TraitTypeAlias>,
+    pub types: Vec<TraitTypeAlias>,
 }
 pub type TraitUnresolved<'src> = TraitGeneric<ASTBlock<'src>>;
 // pub type Trait = TraitGeneric<___todo!____>;
@@ -99,9 +107,13 @@ pub struct TraitFunction<BodyBlock> {
     pub annot: Annot,
     pub name: String,
     pub templates: Templates,
-    pub params: Vec<Fallible<TypeDatalike>>,
+    pub args: Vec<Fallible<(Destructure, Fallible<TypeDatalike>)>>,
     pub return_ty: Fallible<TypeDatalike>,
     pub body: Option<BodyBlock>,
+}
+
+pub enum Destructure {
+    Name { loc: Loc, name: String },
 }
 
 pub struct ConstGeneric<Type, Initilizer> {
@@ -120,7 +132,7 @@ pub struct FunctionGeneric<ReturnTy, BodyBlock> {
     pub annot: Annot,
     pub name: String,
     pub templates: Templates,
-    pub params: Vec<Fallible<TypeDatalike>>,
+    pub args: Vec<Fallible<TypeDatalike>>,
     pub return_ty: Fallible<ReturnTy>,
 
     pub base_target: BackendId,
@@ -131,6 +143,7 @@ pub type FunctionUnresolved<'src> = FunctionGeneric<Option<TypeDatalike>, ASTBlo
 pub struct FunctionVariant<BodyBlock> {
     pub loc: Loc,
 
+    pub args: Vec<Destructure>,
     pub body: BodyBlock,
 }
 
@@ -150,5 +163,5 @@ pub struct Templates {
 
 pub struct Annot {
     pub doc: Option<String>,
-    pub is_public: bool,
+    pub is_public: Option<Loc>,
 }

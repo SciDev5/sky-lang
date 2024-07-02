@@ -8,6 +8,11 @@ pub struct Loc {
     pub length: usize,
 }
 impl Loc {
+    pub const INVALID: Loc = Loc {
+        start: 0,
+        length: 0,
+        src_id: usize::MAX,
+    };
     pub fn merge(self, to: Self) -> Self {
         assert_eq!(self.src_id, to.src_id);
         Self {

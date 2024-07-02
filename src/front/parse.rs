@@ -15,7 +15,8 @@ use super::{
         ASTDestructure, ASTDoc, ASTEnumVariantType, ASTExpr, ASTFreeImpl, ASTFunction, ASTIdent,
         ASTIdentValue, ASTImpl, ASTImplContents, ASTImport, ASTImportTree, ASTLambda, ASTName,
         ASTPostfixBlock, ASTScope, ASTSourceFile, ASTStmt, ASTSubBlocked, ASTTemplateBound,
-        ASTTemplates, ASTTrait, ASTType, ASTTypeAlias, ASTTypedDestructure, ASTVarDeclare,
+        ASTTemplates, ASTTrait, ASTTraitConst, ASTTraitTypeAlias, ASTType, ASTTypeAlias,
+        ASTTypedDestructure, ASTVarDeclare,
     },
     source::{HasLoc, Loc, SourceFileId},
     tokenize::{TBracketType, TKeyword, Token, TokenContent},
@@ -105,6 +106,7 @@ pub enum ParseDiagnostic {
     ExpectedImplContentEntry,
     ExpectedTypealiasName,
     ExpectedTypealiasValue,
+    ExpectedTraitConstType,
 }
 impl ToDiagnostic for ParseDiagnostic {
     fn to_content(self) -> DiagnosticContent {
@@ -2084,6 +2086,29 @@ impl<'a, 'src> Parser<'a, 'src> {
             value,
         })
     }
+    fn parse_trait_const(&mut self, annot: &mut ASTAnnot) -> Option<ASTTraitConst<'src>> {
+        let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Const))?;
+
+        let name = self
+            .parse_name()
+            .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedConstName, loc_start));
+        let (ty, loc_ty) = self.parse_type_optional(true);
+        let ty = match ty {
+            Some(ty) => ty,
+            None => Err(self.raise(
+                ParseDiagnostic::ExpectedTraitConstType,
+                loc_start.merge_some(locr!(name)),
+            )),
+        };
+
+        Some(ASTTraitConst {
+            loc: loc_start.merge_some(merge!(loc_ty, locr!(name))),
+            annot: annot.take(),
+            containing_scope: self.current_scope(),
+            name,
+            ty,
+        })
+    }
     fn parse_trait(&mut self, annot: &mut ASTAnnot) -> Option<ASTTrait<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Trait))?;
 
@@ -2095,25 +2120,23 @@ impl<'a, 'src> Parser<'a, 'src> {
         let (bounds, loc_bounds) = self.parse_bounds();
         let bounds = bounds;
 
-        let contents = self.parse_impl_contents().unwrap_or_else(|| {
-            let loc = loc_start.merge_some(merge!(loc_bounds, loco!(templates), locr!(name)));
-            self.raise(ParseDiagnostic::ExpectedTraitBody, loc);
-            ASTImplContents {
-                loc: loc.new_from_end(),
-                functions: Vec::new(),
-                consts: Vec::new(),
-                types: Vec::new(),
-            }
-        });
+        let (loc_body, functions, consts, types) =
+            self.parse_trait_impl_contents().unwrap_or_else(|| {
+                let loc = loc_start.merge_some(merge!(loc_bounds, loco!(templates), locr!(name)));
+                self.raise(ParseDiagnostic::ExpectedTraitBody, loc);
+                (loc, Vec::new(), Vec::new(), Vec::new())
+            });
 
         Some(ASTTrait {
-            loc: loc_start.merge(contents.loc()),
+            loc: loc_start.merge(loc_body),
             annot: annot.take(),
             containing_scope: self.current_scope(),
             name,
             templates,
             bounds,
-            contents,
+            functions,
+            consts,
+            types,
         })
     }
     fn parse_data(&mut self, annot: &mut ASTAnnot) -> Option<ASTData<'src>> {
@@ -2406,6 +2429,51 @@ impl<'a, 'src> Parser<'a, 'src> {
             types,
         })
     }
+    fn parse_trait_impl_contents(
+        &mut self,
+    ) -> Option<(
+        Loc,
+        Vec<ASTFunction<'src>>,
+        Vec<ASTTraitConst<'src>>,
+        Vec<ASTTraitTypeAlias<'src>>,
+    )> {
+        self.parse_brackets(TBracketType::Curly, true, |p| {
+            let r = p.parse_list(
+                |p| {
+                    p.guard_state(|p| {
+                        let mut annot = p.parse_annot();
+                        if let Some(x) = p.parse_function(&mut annot) {
+                            Some((Some(x), None, None))
+                        } else if let Some(x) = p.parse_trait_const(&mut annot) {
+                            Some((None, Some(x), None))
+                        } else if let Some(x) = p.parse_trait_type_alias(&mut annot) {
+                            Some((None, None, Some(x)))
+                        } else {
+                            None
+                        }
+                    })
+                },
+                &ParseDiagnostic::ExpectedImplContentEntry,
+            );
+            let mut functions = Vec::new();
+            let mut consts = Vec::new();
+            let mut types = Vec::new();
+            for (function, const_, type_) in r {
+                if let Some(function_) = function {
+                    functions.push(function_);
+                }
+                if let Some(const_) = const_ {
+                    consts.push(const_);
+                }
+                if let Some(type_) = type_ {
+                    types.push(type_);
+                }
+            }
+
+            (functions, consts, types)
+        })
+        .map(|((functions, consts, types), loc)| (loc, functions, consts, types))
+    }
     fn parse_type_alias(&mut self, annot: &mut ASTAnnot) -> Option<ASTTypeAlias<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Type))?;
 
@@ -2435,6 +2503,23 @@ impl<'a, 'src> Parser<'a, 'src> {
             name,
             templates,
             value,
+        })
+    }
+    fn parse_trait_type_alias(&mut self, annot: &mut ASTAnnot) -> Option<ASTTraitTypeAlias<'src>> {
+        let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Type))?;
+
+        let name = self
+            .parse_name()
+            .ok_or_else(|| self.raise(ParseDiagnostic::ExpectedTypealiasName, loc_start));
+
+        let (bounds, loc_bounds) = self.parse_bounds();
+
+        Some(ASTTraitTypeAlias {
+            loc: loc_start.merge_some(merge!(loc_bounds, locr!(name))),
+            annot: annot.take(),
+            containing_scope: self.current_scope(),
+            name,
+            bounds,
         })
     }
     fn parse_import(&mut self) -> Option<ASTImport<'src>> {

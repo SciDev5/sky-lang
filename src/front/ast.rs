@@ -133,6 +133,7 @@ type Expr<'src> = Box<ASTExpr<'src>>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTScope<'src> {
     pub backend_id: BackendId,
+    pub mod_id: usize,
     pub functions: HashMap<&'src str, Id>,
     pub datas: HashMap<&'src str, Id>,
     pub traits: HashMap<&'src str, Id>,
@@ -144,6 +145,7 @@ impl<'src> ASTScope<'src> {
     pub fn new_empty() -> Self {
         Self {
             backend_id: usize::MAX,
+            mod_id: usize::MAX,
             functions: HashMap::new(),
             datas: HashMap::new(),
             traits: HashMap::new(),
@@ -158,15 +160,18 @@ impl<'src> ASTScope<'src> {
     ) {
         let backend_id_lookup = modules
             .iter()
-            .flat_map(|ModuleParts { parts, .. }| {
+            .enumerate()
+            .flat_map(|(mod_id, ModuleParts { parts, .. })| {
                 parts
                     .iter()
-                    .map(|(backend_id, src)| (src.scope, *backend_id))
+                    .zip(std::iter::repeat(mod_id))
+                    .map(|((backend_id, src), mod_id)| (src.scope, (mod_id, *backend_id)))
             })
             .collect::<HashMap<_, _>>();
         scopes.modify_contextual(
-            |scope, b, _| {
-                scope.backend_id = *b;
+            |scope, (mod_id, backend_id), _| {
+                scope.backend_id = *backend_id;
+                scope.mod_id = *mod_id;
             },
             &backend_id_lookup,
         )
@@ -512,6 +517,15 @@ pub struct ASTConst<'src> {
     pub value: Fallible<ASTExpr<'src>>,
 }
 impl_hasloc_simple!(ASTConst<'src>);
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASTTraitConst<'src> {
+    pub loc: Loc,
+    pub containing_scope: ScopeId,
+    pub annot: ASTAnnot,
+    pub name: Fallible<ASTName<'src>>,
+    pub ty: Fallible<ASTType<'src>>,
+}
+impl_hasloc_simple!(ASTTraitConst<'src>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTTrait<'src> {
@@ -521,7 +535,10 @@ pub struct ASTTrait<'src> {
     pub name: Fallible<ASTName<'src>>,
     pub templates: ASTTemplates<'src>,
     pub bounds: Vec<ASTType<'src>>,
-    pub contents: ASTImplContents<'src>,
+
+    pub functions: Vec<ASTFunction<'src>>,
+    pub consts: Vec<ASTTraitConst<'src>>,
+    pub types: Vec<ASTTraitTypeAlias<'src>>,
 }
 impl_hasloc_simple!(ASTTrait<'src>);
 
@@ -578,6 +595,15 @@ pub struct ASTTypeAlias<'src> {
     pub value: Fallible<ASTType<'src>>,
 }
 impl_hasloc_simple!(ASTTypeAlias<'src>);
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASTTraitTypeAlias<'src> {
+    pub loc: Loc,
+    pub containing_scope: ScopeId,
+    pub annot: ASTAnnot,
+    pub name: Fallible<ASTName<'src>>,
+    pub bounds: Vec<ASTType<'src>>,
+}
+impl_hasloc_simple!(ASTTraitTypeAlias<'src>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTFreeImpl<'src> {

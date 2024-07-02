@@ -329,7 +329,10 @@ impl<'a, 'src> ScopeExtractor<'a, 'src> {
     }
 
     fn scope_trait(&mut self, trait_: &mut ASTTrait<'src>) {
-        self.scope_impl_contents(&mut trait_.contents, trait_.containing_scope)
+        for function in &mut trait_.functions {
+            self.scope_function(function);
+        }
+        // both types and consts dont need to have their contents scoped there isnt anything in their contents to scope.
     }
 
     fn scope_data(&mut self, data: &mut ASTData<'src>) {

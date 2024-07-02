@@ -37,10 +37,13 @@
 //! - statics phase
 //!     - merge statics (except impls)
 //!     - resolve imports
-//!     - free and merge impls (resolve target types)
-//!     - resolve types in statics
 //!     - verify merge (and compact)
+//!         - a quick step for parsing trait-associated types is done
+//!         - typealiases go first because they need to be expanded to check type equality in more complex types
+//!         - the rest follow
+//!     - free and merge impls (resolve target types)
 //!     - verify impls (and compact)
+//!     - types fit trait bounds sanity check
 //!
 //! - resolve local scope variables
 //! - resolve types

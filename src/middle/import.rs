@@ -78,11 +78,13 @@ enum ImportTreeWhich<'src> {
 
 struct ImportingScope<'src> {
     backend_id: BackendId,
+    mod_id: usize,
     named_items: HashMap<&'src str, ImportingId>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportedScope<'src> {
     pub backend_id: BackendId,
+    pub mod_id: usize,
     pub functions: HashMap<&'src str, Id>,
     pub datas: HashMap<&'src str, Id>,
     pub traits: HashMap<&'src str, Id>,
@@ -554,6 +556,7 @@ pub fn resolve_imports<'src>(
             ImportingScope {
                 named_items,
                 backend_id: scope.backend_id,
+                mod_id: scope.mod_id,
             }
         },
         &moduleid_by_scopeid,
@@ -681,10 +684,12 @@ pub fn resolve_imports<'src>(
     scopes.map(
         |ImportingScope {
              backend_id,
+             mod_id,
              named_items,
          }| {
             let mut scope = ImportedScope {
                 backend_id,
+                mod_id,
                 functions: HashMap::new(),
                 datas: HashMap::new(),
                 traits: HashMap::new(),

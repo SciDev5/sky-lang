@@ -4,7 +4,7 @@ use crate::{
     front::{parse::ParseDiagnostic, source::Loc},
     middle::{
         import::ImportDiagnostic, resolution_diagnostics::ResolutionDiagnostic,
-        types::TypeDiagnostic,
+        statics::verify_merge::StaticVerifyDiagnostic, types::TypeDiagnostic,
     },
 };
 
@@ -55,6 +55,7 @@ pub enum DiagnosticContent {
     Resolution(ResolutionDiagnostic),
     Import(ImportDiagnostic),
     Type(TypeDiagnostic),
+    StaticVerify(StaticVerifyDiagnostic),
 }
 pub trait ToDiagnostic: Clone + Debug + Copy {
     fn to_content(self) -> DiagnosticContent;

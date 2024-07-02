@@ -26,7 +26,11 @@ use crate::{
 use super::{
     import::{resolve_data, ExportsLookup, ImportedScope},
     module::LocalModule,
-    statics::scopes::{ScopeId, Scopes},
+    statics::{
+        scopes::{ScopeId, Scopes},
+        verify_merge::TraitAssociatedTyIdMap,
+        TypeAlias,
+    },
 };
 mod solve;
 
@@ -36,6 +40,9 @@ pub enum TypeDiagnostic {
     FailedToConvertType,
     InnerTypeCannotTakeTemplateArgs,
     IllegalUseOfUndefinedSelfTy,
+    IllegalAccessInnerNonName,
+    IllegalAccessInnerNoValidOptions,
+    IllegalAccessInnerTooManyValidOptions,
 }
 impl ToDiagnostic for TypeDiagnostic {
     fn to_content(self) -> DiagnosticContent {
@@ -47,7 +54,8 @@ impl ToDiagnostic for TypeDiagnostic {
 pub enum TypeDatalike {
     Data(TypeData),
     Template(TypeTemplate),
-    Associated(TypeDataAssociated),
+    Associated(TypeDataTraitAssociated),
+    Aliased(TypeDtatlikeAliased),
 }
 impl HasLoc for TypeDatalike {
     fn loc(&self) -> Loc {
@@ -55,42 +63,54 @@ impl HasLoc for TypeDatalike {
             Self::Data(v) => v.loc,
             Self::Template(v) => v.loc,
             Self::Associated(v) => v.loc,
+            Self::Aliased(v) => v.loc,
+        }
+    }
+}
+impl TypeDatalike {
+    fn edit_loc(&mut self) -> &mut Loc {
+        match self {
+            Self::Data(v) => &mut v.loc,
+            Self::Template(v) => &mut v.loc,
+            Self::Associated(v) => &mut v.loc,
+            Self::Aliased(v) => &mut v.loc,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDtatlikeAliased {
+    pub loc: Loc,
+    pub id: Id,
+    pub templates: Vec<Fallible<TypeDatalike>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeData {
-    loc: Loc,
-    id: Id,
-    templates: Vec<Fallible<TypeDatalike>>,
+    pub loc: Loc,
+    pub id: Id,
+    pub templates: Vec<Fallible<TypeDatalike>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeTraitlike {
-    loc: Loc,
-    id: Id,
-    templates: Vec<TypeDatalike>,
-    constrained_associated: HashMap<usize, TypeDatalike>,
+    pub loc: Loc,
+    pub id: Id,
+    pub templates: Vec<TypeDatalike>,
+    pub constrained_associated: HashMap<usize, TypeDatalike>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeTemplate {
-    loc: Loc,
-    id: usize,
+    pub loc: Loc,
+    pub id: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeDataAssociated {
-    loc: Loc,
-    inner: TypeData,
-    associated_id: usize,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDataTraitAssociated {
-    loc: Loc,
-    inner: TypeData,
-    from_trait: TypeTraitlike,
-    associated_id: usize,
+    pub loc: Loc,
+    pub inner: Box<TypeDatalike>,
+    pub from_trait: TypeTraitlike,
+    pub associated_id: usize,
 }
 
 struct ConvertTypeDatalike<'a, 'src> {
@@ -99,9 +119,10 @@ struct ConvertTypeDatalike<'a, 'src> {
     exports: &'a ExportsLookup<'src>,
     local_modules: &'a Vec<LocalModule<'src>>,
     mod_id: usize,
-    templates: Vec<&'src str>,
+    templates: &'a [(&'src str, Vec<TypeTraitlike>)],
     self_ty: Option<&'a TypeDatalike>,
     diagnostics: &'a mut Diagnostics,
+    trait_associated_ty_id_map: &'a TraitAssociatedTyIdMap<'src>,
 }
 
 fn try_type_as_import_path<'src>(ty: &ASTType<'src>) -> Option<Vec<ASTIdent<'src>>> {
@@ -130,17 +151,31 @@ fn try_type_as_import_path<'src>(ty: &ASTType<'src>) -> Option<Vec<ASTIdent<'src
     })
 }
 
+pub struct StaticsInfo<'a, 'src> {
+    pub scopes: &'a Scopes<ImportedScope<'src>>,
+    pub exports: &'a ExportsLookup<'src>,
+    pub local_modules: &'a Vec<LocalModule<'src>>,
+    pub diagnostics: &'a mut Diagnostics,
+}
+
 pub fn convert_type_datalike<'src>(
     ty: ASTType<'src>,
-    scopes: &Scopes<ImportedScope<'src>>,
     scope: ScopeId,
-    exports: &ExportsLookup<'src>,
-    local_modules: &Vec<LocalModule<'src>>,
-    mod_id: usize,
-    templates: Vec<&'src str>,
+    templates: &[(&str, Vec<TypeTraitlike>)],
     self_ty: Option<&TypeDatalike>,
-    diagnostics: &mut Diagnostics,
+    trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
+    StaticsInfo {
+        diagnostics,
+        exports,
+        local_modules,
+        scopes,
+    }: &mut StaticsInfo<'_, 'src>,
 ) -> Fallible<TypeDatalike> {
+    let mod_id = {
+        scopes
+            .find_map(scope, |scope| Some(scope.mod_id))
+            .expect("should exist, if it doesn't, there's a static object somewhere with no static declarations, which shouldnt be possible")
+    };
     ConvertTypeDatalike {
         scopes,
         scope,
@@ -150,6 +185,7 @@ pub fn convert_type_datalike<'src>(
         templates,
         self_ty,
         diagnostics,
+        trait_associated_ty_id_map,
     }
     .convert(&ty)
 }
@@ -161,6 +197,7 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
         } else if let Some(ty) = self.try_convert_with_templateargs(ty) {
             ty
         } else {
+            // todo! type aliases
             Err(self
                 .diagnostics
                 .raise(TypeDiagnostic::FailedToConvertType, ty.loc()))
@@ -221,6 +258,51 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
         path: &[T],
         f: impl Fn(&T) -> Option<(&'src str, Loc)>,
     ) -> Fallible<TypeDatalike> {
+        if path.len() == 1 {
+            let bounds = match &ty {
+                TypeDatalike::Template(t) => self.templates[t.id].1.as_slice(),
+                _ => todo!("get bounds from more complex types"),
+            };
+            let (path_0, loc_name) = if let Some(v) = f(&path[0]) {
+                v
+            } else {
+                self.diagnostics.raise(
+                    TypeDiagnostic::IllegalAccessInnerNonName,
+                    ty.loc().new_from_end(),
+                );
+                return Ok(ty); // fail but fallback
+            };
+
+            let options = bounds
+                .iter()
+                .filter_map(|bound| match bound.id {
+                    Id::Local { id } => {
+                        Some((*self.trait_associated_ty_id_map[id].get(path_0)?, bound))
+                    }
+                    Id::Dependency { .. } => todo!("get associated types of dependency traits"),
+                })
+                .collect::<Vec<_>>();
+
+            if options.len() == 1 {
+                let (associated_id, from_trait) = options[0];
+                return Ok(TypeDatalike::Associated(TypeDataTraitAssociated {
+                    loc: ty.loc().merge(loc_name),
+                    inner: Box::new(ty),
+                    from_trait: from_trait.clone(),
+                    associated_id,
+                }));
+            } else {
+                self.diagnostics.raise(
+                    if options.len() == 0 {
+                        TypeDiagnostic::IllegalAccessInnerNoValidOptions
+                    } else {
+                        TypeDiagnostic::IllegalAccessInnerTooManyValidOptions
+                    },
+                    ty.loc().new_from_end(),
+                );
+                return Ok(ty); // fail but fallback
+            }
+        }
         if path.len() > 0 {
             todo!("accesses into traitful type -----------------------------------------------------------------");
         }
@@ -239,10 +321,8 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
                 self.templates
                     .iter()
                     .enumerate()
-                    .find_map(|(i, v)| if *v == name { Some(i) } else { None })
+                    .find_map(|(i, (v, _))| if *v == name { Some(i) } else { None })
             {
-                if path.len() > 1 {}
-
                 return Some(self.access_inner(
                     TypeDatalike::Template(TypeTemplate {
                         loc,
@@ -262,12 +342,12 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
         } = path[0]
         {
             if let Some(self_ty) = self.self_ty {
-                return Some(
-                    self.access_inner(self_ty.clone(), &path[1..], |k| match k.value {
-                        ASTIdentValue::Name(v) => Some((v, loc)),
-                        _ => None,
-                    }),
-                );
+                let mut self_ty = self_ty.clone();
+                *self_ty.edit_loc() = loc;
+                return Some(self.access_inner(self_ty, &path[1..], |k| match k.value {
+                    ASTIdentValue::Name(v) => Some((v, loc)),
+                    _ => None,
+                }));
             } else {
                 return Some(Err(self
                     .diagnostics
@@ -298,4 +378,53 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
             }),
         )
     }
+}
+
+pub fn convert_type_traitlike<'src>(
+    ty: ASTType<'src>,
+    scope: ScopeId,
+    templates: &[(&str, Vec<TypeTraitlike>)],
+    self_ty: Option<&TypeDatalike>,
+    trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
+    StaticsInfo {
+        diagnostics,
+        exports,
+        local_modules,
+        scopes,
+    }: &mut StaticsInfo<'_, 'src>,
+) -> Fallible<TypeTraitlike> {
+    todo!("ast type into traitlike")
+}
+
+pub fn eq_type_datalike(a: &TypeDatalike, b: &TypeDatalike, typealiases: &Vec<TypeAlias>) -> bool {
+    match (a, b) {
+        (TypeDatalike::Data(a), TypeDatalike::Data(b)) => {
+            a.id == b.id && eq_templatevalues(&a.templates, &b.templates, typealiases)
+        }
+        (TypeDatalike::Template(a), TypeDatalike::Template(b)) => a.id == b.id,
+        (TypeDatalike::Associated(a), TypeDatalike::Associated(b)) => {
+            a.associated_id == b.associated_id
+                && a.from_trait == b.from_trait
+                && eq_type_datalike(a.inner.as_ref(), b.inner.as_ref(), typealiases)
+        }
+        _ => todo!("associated types and typealiases"),
+    }
+}
+pub fn eq_type_traitlike(
+    a: &TypeTraitlike,
+    b: &TypeTraitlike,
+    typealiases: &Vec<TypeAlias>,
+) -> bool {
+    todo!("traitlike type equality");
+}
+fn eq_templatevalues(
+    a: &Vec<Fallible<TypeDatalike>>,
+    b: &Vec<Fallible<TypeDatalike>>,
+    typealiases: &Vec<TypeAlias>,
+) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b.iter()).all(|(a, b)| match (a, b) {
+            (Ok(a), Ok(b)) => eq_type_datalike(a, b, typealiases),
+            _ => false,
+        })
 }

@@ -342,7 +342,7 @@ impl<'a, 'src> ScopeExtractor<'a, 'src> {
     }
 
     fn scope_const(&mut self, const_: &mut ASTConst<'src>, scope: ScopeId) {
-        if let Ok(value) = &mut const_.value {
+        if let Some(Ok(value)) = &mut const_.value {
             self.scope_expr(value, scope);
         }
     }

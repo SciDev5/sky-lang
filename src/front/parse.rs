@@ -2066,19 +2066,20 @@ impl<'a, 'src> Parser<'a, 'src> {
                     self.raise(ParseDiagnostic::ExpectedAssignValue, loc_eq.new_from_end())
                 });
 
-                (value, Some(loc_eq))
+                (Some(value), Some(loc_eq))
             } else {
-                (
-                    Err(self.raise(
-                        ParseDiagnostic::ExpectedAssignValue,
-                        loc_start.merge_some(loc_ty),
-                    )),
-                    None,
-                )
+                (None, None)
             };
 
         Some(ASTConst {
-            loc: loc_start.merge_some(merge!(locr!(value), loc_eq, loc_ty, locr!(name))),
+            loc: loc_start.merge_some(merge!(
+                value
+                    .as_ref()
+                    .and_then(|it| it.as_ref().ok().map(|it| it.loc())),
+                loc_eq,
+                loc_ty,
+                locr!(name)
+            )),
             annot: annot.take(),
             containing_scope: self.current_scope(),
             name,

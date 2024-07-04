@@ -514,7 +514,7 @@ pub struct ASTConst<'src> {
     pub annot: ASTAnnot,
     pub name: Fallible<ASTName<'src>>,
     pub ty: Option<Fallible<ASTType<'src>>>,
-    pub value: Fallible<ASTExpr<'src>>,
+    pub value: Option<Fallible<ASTExpr<'src>>>,
 }
 impl_hasloc_simple!(ASTConst<'src>);
 #[derive(Debug, Clone, PartialEq)]

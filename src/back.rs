@@ -36,6 +36,8 @@ pub struct BackendInfo {
     /// The ids of all backends that this is compatible with and
     /// capable of using code from (this also includes the current
     /// backend's id).
+    ///
+    /// Must be ordered from most to least abstract.
     pub compat_ids: &'static [BackendId],
 
     /// Macro definitions specific to this backend, and handled by

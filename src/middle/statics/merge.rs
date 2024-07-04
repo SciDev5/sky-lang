@@ -58,7 +58,6 @@ impl<'src> MergedStatics<'src> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Merged<T> {
-    pub base_target_level: BackendId,
     pub contents: HashMap<BackendId, T>,
 }
 
@@ -199,7 +198,6 @@ fn merge_exports<'src, T>(
             .expect("same item was exported by more than one module, should be impossible");
         let to = &mut statics[id_to];
 
-        to.base_target_level = to.base_target_level.min(backend_id);
         to.contents.insert(backend_id, from);
         lut[id_from] = id_to;
     }
@@ -221,7 +219,6 @@ fn merge_remaining<'src, T>(
     let backend_id = scopes.get(get_scope_id(&from)).unwrap().backend_id;
     // safe to unwrap because this is a static and will necessarily be added to its containing scope, meaning it will not be empty/None
 
-    to.base_target_level = to.base_target_level.min(backend_id);
     to.contents.insert(backend_id, from);
     lut[id_from] = id_to;
 
@@ -231,7 +228,6 @@ fn merge_remaining<'src, T>(
 fn register_merged_static<T>(statics: &mut Vec<Merged<T>>) -> usize {
     let id = statics.len();
     statics.push(Merged {
-        base_target_level: usize::MAX,
         contents: HashMap::new(),
     });
     id

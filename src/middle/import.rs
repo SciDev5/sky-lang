@@ -726,7 +726,7 @@ pub fn resolve_imports<'src>(
 
 // todo! public/private
 pub struct ExportsLookup<'src> {
-    local: Vec<ModuleExports<'src>>,
+    pub local: Vec<ModuleExports<'src>>,
     // todo! dependency exports
 }
 impl<'src> ExportsLookup<'src> {

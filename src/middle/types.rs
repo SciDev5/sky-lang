@@ -28,7 +28,7 @@ use super::{
     module::LocalModule,
     statics::{
         scopes::{ScopeId, Scopes},
-        verify_merge::TraitAssociatedTyIdMap,
+        verify_merge::{TemplateNamesRef, TraitAssociatedTyIdMap},
         TypeAlias,
     },
 };
@@ -119,7 +119,7 @@ struct ConvertTypeDatalike<'a, 'src> {
     exports: &'a ExportsLookup<'src>,
     local_modules: &'a Vec<LocalModule<'src>>,
     mod_id: usize,
-    templates: &'a [(&'src str, Vec<TypeTraitlike>)],
+    templates: &'a TemplateNamesRef<'src>,
     self_ty: Option<&'a TypeDatalike>,
     diagnostics: &'a mut Diagnostics,
     trait_associated_ty_id_map: &'a TraitAssociatedTyIdMap<'src>,
@@ -161,7 +161,7 @@ pub struct StaticsInfo<'a, 'src> {
 pub fn convert_type_datalike<'src>(
     ty: ASTType<'src>,
     scope: ScopeId,
-    templates: &[(&str, Vec<TypeTraitlike>)],
+    templates: &TemplateNamesRef,
     self_ty: Option<&TypeDatalike>,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
     StaticsInfo {
@@ -260,7 +260,7 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
     ) -> Fallible<TypeDatalike> {
         if path.len() == 1 {
             let bounds = match &ty {
-                TypeDatalike::Template(t) => self.templates[t.id].1.as_slice(),
+                TypeDatalike::Template(t) => self.templates[t.id].2.as_slice(),
                 _ => todo!("get bounds from more complex types"),
             };
             let (path_0, loc_name) = if let Some(v) = f(&path[0]) {
@@ -317,11 +317,11 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
             value: ASTIdentValue::Name(name),
         } = path[0]
         {
-            if let Some(template_id) =
-                self.templates
-                    .iter()
-                    .enumerate()
-                    .find_map(|(i, (v, _))| if *v == name { Some(i) } else { None })
+            if let Some(template_id) = self
+                .templates
+                .iter()
+                .enumerate()
+                .find_map(|(i, (v, _, _))| if *v == name { Some(i) } else { None })
             {
                 return Some(self.access_inner(
                     TypeDatalike::Template(TypeTemplate {
@@ -383,7 +383,7 @@ impl<'a, 'src> ConvertTypeDatalike<'a, 'src> {
 pub fn convert_type_traitlike<'src>(
     ty: ASTType<'src>,
     scope: ScopeId,
-    templates: &[(&str, Vec<TypeTraitlike>)],
+    templates: &TemplateNamesRef,
     self_ty: Option<&TypeDatalike>,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
     StaticsInfo {

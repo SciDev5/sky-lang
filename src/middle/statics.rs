@@ -5,9 +5,10 @@ use scopes::ScopeId;
 use crate::{
     back::BackendId,
     front::{
-        ast::{ASTBlock, ASTExpr},
-        source::Loc,
+        ast::{ASTBlock, ASTExpr, ASTImpl, ASTName},
+        source::{HasLoc, Loc},
     },
+    impl_hasloc_simple,
     lint::diagnostic::Fallible,
 };
 
@@ -18,6 +19,7 @@ pub mod merge;
 pub mod scopes;
 pub mod verify_merge;
 
+#[derive(Debug, Clone)]
 pub struct UnresolvedStatics<'src> {
     pub functions: Vec<FunctionUnresolved<'src>>,
     pub datas: Vec<Data>,
@@ -26,18 +28,23 @@ pub struct UnresolvedStatics<'src> {
     pub typealiases: Vec<TypeAlias>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Data {
     pub annot: Annot,
-    pub name: String,
+    pub name: Name,
     pub templates: Templates,
 
     pub base_target: BackendId,
     pub variants: HashMap<BackendId, DataVariant>,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataVariant {
     pub loc: Loc,
     pub content: DataVariantContent,
 }
+impl_hasloc_simple!(DataVariant);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataVariantContent {
     Unit,
     Abstract,
@@ -52,20 +59,23 @@ pub enum DataVariantContent {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataProperty {
     pub loc: Loc,
     pub annot: Annot,
-    pub name: String,
+    pub name: Name,
     pub ty: Fallible<TypeDatalike>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataEnumVariant {
     pub loc: Loc,
     pub annot: Annot,
-    pub name: String,
+    pub name: Name,
     pub contents: DataEnumVariantContent,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataEnumVariantContent {
     Unit,
     Struct {
@@ -76,10 +86,18 @@ pub enum DataEnumVariantContent {
     },
 }
 
+pub struct FreedDataImpl<'src> {
+    pub templates: Templates,
+    pub containing_scope: ScopeId,
+    pub target: TypeDatalike,
+    pub attatched_impl: ASTImpl<'src>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitGeneric<BodyBlock> {
     pub loc: Loc,
     pub annot: Annot,
-    pub name: String,
+    pub name: Name,
     pub templates: Templates,
     pub bounds: Vec<TypeTraitlike>,
 
@@ -90,66 +108,75 @@ pub struct TraitGeneric<BodyBlock> {
 }
 pub type TraitUnresolved<'src> = TraitGeneric<ASTBlock<'src>>;
 // pub type Trait = TraitGeneric<___todo!____>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitConst {
     pub loc: Loc,
     pub annot: Annot,
-    pub name: String,
+    pub name: Name,
     pub ty: Fallible<TypeDatalike>,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitTypeAlias {
     pub loc: Loc,
     pub annot: Annot,
-    pub name: String,
+    pub name: Name,
     pub bounds: Vec<TypeTraitlike>,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitFunction<BodyBlock> {
     pub loc: Loc,
     pub annot: Annot,
-    pub name: String,
+    pub name: Name,
     pub templates: Templates,
-    pub args: Vec<Fallible<(Destructure, Fallible<TypeDatalike>)>>,
+    pub args: Vec<(Fallible<Destructure>, Fallible<TypeDatalike>)>,
     pub return_ty: Fallible<TypeDatalike>,
     pub body: Option<BodyBlock>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Destructure {
-    Name { loc: Loc, name: String },
+    Name { loc: Loc, name: Name },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstGeneric<Type, Initilizer> {
     pub annot: Annot,
-    pub name: String,
-    pub templates: Templates,
-    pub ty: Type,
-    pub initializer: Fallible<Initilizer>,
+    pub name: Name,
+    pub ty: Fallible<Type>,
 
     pub base_target: BackendId,
+    pub initializer: HashMap<BackendId, Fallible<Initilizer>>,
 }
 pub type ConstUnsolved<'src> = ConstGeneric<Option<TypeDatalike>, (ASTExpr<'src>, ScopeId, Loc)>;
 // pub type Const = ConstGeneric<TypeDatalike, ___todo!____>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionGeneric<ReturnTy, BodyBlock> {
     pub annot: Annot,
-    pub name: String,
+    pub name: Name,
     pub templates: Templates,
-    pub args: Vec<Fallible<TypeDatalike>>,
-    pub return_ty: Fallible<ReturnTy>,
+    pub ty_args: Vec<Fallible<TypeDatalike>>,
+    pub ty_return: Fallible<ReturnTy>,
 
     pub base_target: BackendId,
     pub variants: HashMap<BackendId, FunctionVariant<BodyBlock>>,
 }
-pub type FunctionUnresolved<'src> = FunctionGeneric<Option<TypeDatalike>, ASTBlock<'src>>;
+pub type FunctionUnresolved<'src> =
+    FunctionGeneric<Option<TypeDatalike>, (ASTBlock<'src>, Option<Vec<Name>>)>;
 // pub type Function = FunctionGeneric<TypeDatalike, ___todo!____>;
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionVariant<BodyBlock> {
     pub loc: Loc,
 
-    pub args: Vec<Destructure>,
+    pub args: Vec<Fallible<Destructure>>,
     pub body: BodyBlock,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeAlias {
     pub annot: Annot,
-    pub name: String,
+    pub name: Name,
     pub templates: Templates,
     pub ty: Fallible<TypeDatalike>,
 
@@ -157,10 +184,31 @@ pub struct TypeAlias {
     pub target: BackendId,
 }
 
-pub struct Templates {
-    pub def: Vec<(String, Vec<TypeTraitlike>)>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Name {
+    pub loc: Loc,
+    pub value: String,
+}
+impl Name {
+    pub fn from_astname(name: ASTName) -> Self {
+        Self {
+            loc: name.loc,
+            value: name.value.to_string(),
+        }
+    }
+}
+impl<'src> From<ASTName<'src>> for Name {
+    fn from(value: ASTName<'src>) -> Self {
+        Self::from_astname(value)
+    }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Templates {
+    pub def: Vec<(Name, Vec<TypeTraitlike>)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Annot {
     pub doc: Option<String>,
     pub is_public: Option<Loc>,

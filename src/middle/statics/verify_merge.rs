@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::{
     back::{BackendId, BackendInfo},
@@ -14,7 +14,7 @@ use crate::{
     middle::{
         statics::{
             ConstGeneric, DataEnumVariant, DataEnumVariantContent, FunctionGeneric, Templates,
-            TraitGeneric,
+            Trait,
         },
         types::{
             convert_type_datalike, convert_type_traitlike, eq_type_datalike, eq_type_traitlike,
@@ -29,17 +29,15 @@ use super::{
     scopes::ScopeId,
     Annot, ConstUnsolved, Data, DataProperty, DataVariant, DataVariantContent, Destructure,
     FreedDataImpl, FunctionUnresolved, FunctionVariant, Name, TraitConst, TraitFunction,
-    TraitTypeAlias, TraitUnresolved, TypeAlias, UnresolvedStatics,
+    TraitTypeAlias, TypeAlias, UnresolvedStatics,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaticVerifyDiagnostic {
-    TraitConstInitializersNotSupported,
     ConstInitializerMissing,
     TraitFunctionArgTyMissing,
     TraitFunctionReturnTypeMissing,
     SiblingNotInBackendTree,
-    ConstTypeMissing,
     MissingConcreteImpl,
     PropertyTyMissing,
     MismatchedCrossPlatTemplates,
@@ -481,12 +479,14 @@ fn verify_variants<T: HasLoc, R>(
 
 fn convert_trait<'src>(
     merged: Merged<ASTTrait<'src>>,
+    self_id: usize,
 
-    compat_spec: &CompatSpec,
+    register_function: &mut impl FnMut(FunctionUnresolved<'src>) -> usize,
+
     failed_name_gen: &mut FailedNameGenerator,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
     statics_info: &mut StaticsInfo<'_, 'src>,
-) -> TraitUnresolved<'src> {
+) -> Trait {
     if merged.contents.len() == 1 {
         // as it should
         let (
@@ -532,53 +532,108 @@ fn convert_trait<'src>(
                 }),
             })
             .collect::<Vec<_>>();
+        let self_bound_ty = TypeTraitlike {
+            constrained_associated: HashMap::new(),
+            loc,
+            id: Id::Local { id: self_id },
+            templates: template_names
+                .iter()
+                .enumerate()
+                .map(|(id, (_, loc, _))| TypeDatalike::Template(TypeTemplate { loc: *loc, id }))
+                .collect(),
+        };
         let functions = functions
             .into_iter()
             .map(|ast| {
                 let mut template_names = template_names.clone();
+                let self_template_id = template_names.len();
+                let fn_self_ty = TypeDatalike::Template(TypeTemplate {
+                    loc: Loc::INVALID,
+                    id: self_template_id,
+                });
+                template_names.push(("", loc, vec![self_bound_ty.clone()]));
                 template_names.extend(gen_template_names(&ast.templates).into_iter());
                 let templates = convert_templates(
                     ast.templates,
                     containing_scope,
                     &mut template_names,
-                    None,
+                    Some(&fn_self_ty),
                     trait_associated_ty_id_map,
                     statics_info,
                 );
 
+                let (args, ty_args) = convert_args(
+                    ast.args,
+                    containing_scope,
+                    &template_names,
+                    Some(&fn_self_ty),
+                    trait_associated_ty_id_map,
+                    statics_info,
+                );
+                let loc = ast.loc;
+                let name = failed_name_gen.convert_name(ast.name);
+                let annot = convert_annot(ast.annot);
+                let ty_return = ast
+                    .ty_return
+                    .ok_or_else(|| {
+                        statics_info.diagnostics.raise(
+                            StaticVerifyDiagnostic::TraitFunctionReturnTypeMissing,
+                            ast.loc,
+                        )
+                    })
+                    .and_then(|v| v)
+                    .and_then(|ty| {
+                        convert_type_datalike(
+                            ty,
+                            containing_scope,
+                            &template_names,
+                            Some(&fn_self_ty),
+                            trait_associated_ty_id_map,
+                            statics_info,
+                        )
+                    });
+
+                let dedault_impl = ast.block.map(|block| {
+                    register_function(FunctionGeneric {
+                        annot: annot.clone(),
+                        base_target: backend_id,
+                        name: name.clone(),
+                        templates: templates.clone(),
+                        ty_args: ty_args.clone(),
+                        ty_return: ty_return.clone().map(|v| Some(v)),
+                        variants: [(
+                            backend_id,
+                            FunctionVariant {
+                                loc,
+                                args: args.clone(),
+                                body: (
+                                    block,
+                                    Some(
+                                        template_names
+                                            .iter()
+                                            .map(|(name, loc, _)| Name {
+                                                loc: *loc,
+                                                value: name.to_string(),
+                                            })
+                                            .collect(),
+                                    ),
+                                ),
+                            },
+                        )]
+                        .into_iter()
+                        .collect::<HashMap<_, _>>(),
+                    })
+                });
+
                 TraitFunction {
-                    annot: convert_annot(ast.annot),
-                    loc: ast.loc,
-                    name: failed_name_gen.convert_name(ast.name),
+                    dedault_impl,
+                    annot,
+                    loc,
+                    name,
                     templates,
-                    body: ast.block,
-                    args: convert_args(
-                        ast.args,
-                        containing_scope,
-                        &template_names,
-                        None,
-                        trait_associated_ty_id_map,
-                        statics_info,
-                    ),
-                    return_ty: ast
-                        .ty_return
-                        .ok_or_else(|| {
-                            statics_info.diagnostics.raise(
-                                StaticVerifyDiagnostic::TraitFunctionReturnTypeMissing,
-                                ast.loc,
-                            )
-                        })
-                        .and_then(|v| v)
-                        .and_then(|ty| {
-                            convert_type_datalike(
-                                ty,
-                                containing_scope,
-                                &template_names,
-                                None,
-                                trait_associated_ty_id_map,
-                                statics_info,
-                            )
-                        }),
+                    args,
+                    ty_args,
+                    ty_return,
                 }
             })
             .collect::<Vec<_>>();
@@ -606,7 +661,7 @@ fn convert_trait<'src>(
             statics_info,
         );
 
-        TraitGeneric {
+        Trait {
             loc,
             annot: convert_annot(annot),
             name: failed_name_gen.convert_name(name),
@@ -1002,9 +1057,7 @@ fn convert_function<'src>(
         None,
         trait_associated_ty_id_map,
         statics_info,
-    )
-    .into_iter()
-    .unzip();
+    );
     let mut destruct_args_base = Some(destruct_args);
 
     let ty_return = match base.ty_return.clone() {
@@ -1057,9 +1110,7 @@ fn convert_function<'src>(
                         None,
                         trait_associated_ty_id_map,
                         statics_info,
-                    )
-                    .into_iter()
-                    .unzip();
+                    );
 
                     // handle too many args
                     if ty_args_variant.len() > ty_args_base.len() {
@@ -1163,7 +1214,7 @@ fn convert_args<'src>(
     self_ty: Option<&TypeDatalike>,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
     statics_info: &mut StaticsInfo<'_, 'src>,
-) -> Vec<(Fallible<Destructure>, Fallible<TypeDatalike>)> {
+) -> (Vec<Fallible<Destructure>>, Vec<Fallible<TypeDatalike>>) {
     args.into_iter()
         .map(|arg| match arg {
             Ok(arg) => {
@@ -1191,7 +1242,7 @@ fn convert_args<'src>(
             }
             Err(err) => (Err(err), Err(err)),
         })
-        .collect()
+        .unzip()
 }
 
 pub fn verify_merge<'src>(
@@ -1217,13 +1268,22 @@ pub fn verify_merge<'src>(
 
     let mut freed_impls = Vec::new();
 
+    let mut extra_functions = Vec::new();
+    let mut register_function = |new_fn| {
+        let id = statics.functions.len() + extra_functions.len();
+        extra_functions.push(new_fn);
+        id
+    };
+
     let traits = statics
         .traits
         .into_iter()
-        .map(|merged| {
+        .enumerate()
+        .map(|(self_id, merged)| {
             convert_trait(
                 merged,
-                compat_spec,
+                self_id,
+                &mut register_function,
                 &mut failed_name_gen,
                 &trait_associated_ty_id_map,
                 &mut statics_info,
@@ -1260,7 +1320,7 @@ pub fn verify_merge<'src>(
             )
         })
         .collect::<Vec<_>>();
-    let functions = statics
+    let mut functions = statics
         .functions
         .into_iter()
         .map(|merged| {
@@ -1274,6 +1334,7 @@ pub fn verify_merge<'src>(
             )
         })
         .collect::<Vec<_>>();
+    functions.extend(extra_functions.into_iter());
 
     (
         UnresolvedStatics {

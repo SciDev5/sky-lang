@@ -23,7 +23,7 @@ pub mod verify_merge;
 pub struct UnresolvedStatics<'src> {
     pub functions: Vec<FunctionUnresolved<'src>>,
     pub datas: Vec<Data>,
-    pub traits: Vec<TraitUnresolved<'src>>,
+    pub traits: Vec<Trait>,
     pub consts: Vec<ConstUnsolved<'src>>,
     pub typealiases: Vec<TypeAlias>,
 }
@@ -94,7 +94,7 @@ pub struct FreedDataImpl<'src> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TraitGeneric<BodyBlock> {
+pub struct Trait {
     pub loc: Loc,
     pub annot: Annot,
     pub name: Name,
@@ -103,11 +103,9 @@ pub struct TraitGeneric<BodyBlock> {
 
     pub base_target: BackendId,
     pub consts: Vec<TraitConst>,
-    pub functions: Vec<TraitFunction<BodyBlock>>,
+    pub functions: Vec<TraitFunction>,
     pub types: Vec<TraitTypeAlias>,
 }
-pub type TraitUnresolved<'src> = TraitGeneric<ASTBlock<'src>>;
-// pub type Trait = TraitGeneric<___todo!____>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitConst {
@@ -124,14 +122,15 @@ pub struct TraitTypeAlias {
     pub bounds: Vec<TypeTraitlike>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TraitFunction<BodyBlock> {
+pub struct TraitFunction {
     pub loc: Loc,
     pub annot: Annot,
     pub name: Name,
     pub templates: Templates,
-    pub args: Vec<(Fallible<Destructure>, Fallible<TypeDatalike>)>,
-    pub return_ty: Fallible<TypeDatalike>,
-    pub body: Option<BodyBlock>,
+    pub ty_args: Vec<Fallible<TypeDatalike>>,
+    pub ty_return: Fallible<TypeDatalike>,
+    pub args: Vec<Fallible<Destructure>>,
+    pub dedault_impl: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

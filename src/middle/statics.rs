@@ -5,7 +5,7 @@ use scopes::ScopeId;
 use crate::{
     back::BackendId,
     front::{
-        ast::{ASTBlock, ASTExpr, ASTImpl, ASTName},
+        ast::{ASTBlock, ASTExpr, ASTName},
         source::{HasLoc, Loc},
     },
     impl_hasloc_simple,
@@ -24,8 +24,10 @@ pub struct UnresolvedStatics<'src> {
     pub functions: Vec<FunctionUnresolved<'src>>,
     pub datas: Vec<Data>,
     pub traits: Vec<Trait>,
-    pub consts: Vec<ConstUnsolved<'src>>,
+    pub consts: Vec<ConstUnresolved<'src>>,
     pub typealiases: Vec<TypeAlias>,
+    pub impls_data: Vec<ImplData>,
+    pub impls_trait: Vec<ImplTrait>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,11 +88,24 @@ pub enum DataEnumVariantContent {
     },
 }
 
-pub struct FreedDataImpl<'src> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplData {
     pub templates: Templates,
-    pub containing_scope: ScopeId,
     pub target: TypeDatalike,
-    pub attatched_impl: ASTImpl<'src>,
+
+    pub functions: HashMap<String, usize>,
+    pub consts: HashMap<String, usize>,
+    pub typealiases: HashMap<String, usize>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplTrait {
+    pub templates: Templates,
+    pub target_data: TypeDatalike,
+    pub target_trait: TypeTraitlike,
+
+    pub functions: Vec<Option<usize>>,
+    pub consts: Vec<Option<usize>>,
+    pub typealiases: Vec<Option<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,7 +162,7 @@ pub struct ConstGeneric<Type, Initilizer> {
     pub base_target: BackendId,
     pub initializer: HashMap<BackendId, Fallible<Initilizer>>,
 }
-pub type ConstUnsolved<'src> = ConstGeneric<Option<TypeDatalike>, (ASTExpr<'src>, ScopeId, Loc)>;
+pub type ConstUnresolved<'src> = ConstGeneric<Option<TypeDatalike>, (ASTExpr<'src>, ScopeId, Loc)>;
 // pub type Const = ConstGeneric<TypeDatalike, ___todo!____>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

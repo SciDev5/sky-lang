@@ -5,8 +5,8 @@ use crate::{
     front::{
         ast::{
             ASTAnnot, ASTConst, ASTData, ASTDataContents, ASTDataProperty, ASTDestructure,
-            ASTEnumVariantType, ASTFreeImpl, ASTFunction, ASTName, ASTTemplateBound, ASTTemplates,
-            ASTTrait, ASTType, ASTTypeAlias, ASTTypedDestructure,
+            ASTEnumVariantType, ASTFreeImpl, ASTFunction, ASTImpl, ASTImplContents, ASTName,
+            ASTTemplateBound, ASTTemplates, ASTTrait, ASTType, ASTTypeAlias, ASTTypedDestructure,
         },
         source::{HasLoc, Loc},
     },
@@ -27,8 +27,8 @@ use crate::{
 use super::{
     merge::{Merged, MergedStatics},
     scopes::ScopeId,
-    Annot, ConstUnsolved, Data, DataProperty, DataVariant, DataVariantContent, Destructure,
-    FreedDataImpl, FunctionUnresolved, FunctionVariant, Name, TraitConst, TraitFunction,
+    Annot, ConstUnresolved, Data, DataProperty, DataVariant, DataVariantContent, Destructure,
+    FunctionUnresolved, FunctionVariant, ImplData, ImplTrait, Name, TraitConst, TraitFunction,
     TraitTypeAlias, TypeAlias, UnresolvedStatics,
 };
 
@@ -49,6 +49,7 @@ pub enum StaticVerifyDiagnostic {
     ChildVariantFunctionExtraArgs,
     ChildVariantFunctionMissingArgs,
     ChildVariantFunctionMismatchArgs,
+    ImplTraitFnNotInTrait,
 }
 impl ToDiagnostic for StaticVerifyDiagnostic {
     fn to_content(self) -> DiagnosticContent {
@@ -964,7 +965,7 @@ fn convert_const<'src>(
     failed_name_gen: &mut FailedNameGenerator,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
     statics_info: &mut StaticsInfo<'_, 'src>,
-) -> ConstUnsolved<'src> {
+) -> ConstUnresolved<'src> {
     let hierarchy = gen_backend_hierarchy(
         merged
             .contents
@@ -1245,20 +1246,243 @@ fn convert_args<'src>(
         .unzip()
 }
 
+fn convert_impls<'src>(
+    free_impls: Vec<ASTFreeImpl<'src>>,
+    freed_databound_impls: Vec<FreedDataImpl<'src>>,
+
+    register_function: &mut impl FnMut(FunctionUnresolved<'src>) -> usize,
+    register_const: &mut impl FnMut(ConstUnresolved<'src>) -> usize,
+    register_typealias: &mut impl FnMut(TypeAlias) -> usize,
+    traits: &Vec<Trait>,
+
+    compat_spec: &CompatSpec,
+    failed_name_gen: &mut FailedNameGenerator,
+    trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
+    typealiases: &Vec<TypeAlias>,
+    statics_info: &mut StaticsInfo<'_, 'src>,
+) -> (Vec<ImplData>, Vec<ImplTrait>) {
+    let impls_in = unify_impls(
+        free_impls,
+        freed_databound_impls,
+        trait_associated_ty_id_map,
+        statics_info,
+    );
+
+    let mut impls_data = Vec::new();
+    let mut impls_trait = Vec::new();
+    for UnifiedImpl {
+        loc,
+        containing_scope,
+        templates,
+        target,
+        target_trait,
+        contents:
+            ASTImplContents {
+                loc: _,
+                functions,
+                consts,
+                types,
+            },
+    } in impls_in
+    {
+        let template_names = templates
+            .def
+            .iter()
+            .map(|(name, bounds)| (name.value.as_str(), name.loc, bounds.clone()))
+            .collect::<Vec<_>>();
+        let target_trait = target_trait.map(|ty| {
+            convert_type_traitlike(
+                ty,
+                containing_scope,
+                &template_names,
+                target.as_ref().ok(),
+                trait_associated_ty_id_map,
+                statics_info,
+            )
+        });
+
+        if consts.len() > 0 || types.len() > 0 {
+            todo!("actually convert/verify impls");
+        }
+
+        let functions_converted = functions
+            .into_iter()
+            .map(|fn_| {
+                let backend_id = statics_info
+                    .scopes
+                    .find_map(containing_scope, |f| Some(f.backend_id))
+                    .expect("todo! handle empty scope");
+                // todo! allow argument type omission in trait impls
+                // todo! merge outer impl templates into function templates
+                let fn_ = convert_function(
+                    Merged {
+                        contents: [(backend_id, fn_)].into_iter().collect(),
+                    },
+                    compat_spec,
+                    failed_name_gen,
+                    trait_associated_ty_id_map,
+                    typealiases,
+                    statics_info,
+                );
+                (
+                    fn_.name.clone(),
+                    fn_.ty_args.clone(),
+                    fn_.ty_return.clone(),
+                    register_function(fn_),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let Ok(target) = target else {
+            continue;
+        };
+        if let Some(target_trait) = target_trait {
+            let Ok(target_trait) = target_trait else {
+                continue;
+            };
+            let target_trait_ref = match target_trait.id {
+                Id::Local { id } => &traits[id],
+                Id::Dependency { package_id, id } => todo!("lookup traits from other packages"),
+            };
+            let mut functions = Vec::from_iter(
+                std::iter::repeat_with(|| None).take(target_trait_ref.functions.len()),
+            );
+            for (name, ty_args, ty_return, id) in functions_converted {
+                if let Some((trait_fn_i, trait_fn)) = target_trait_ref
+                    .functions
+                    .iter()
+                    .enumerate()
+                    .find(|(_, trait_fn)| trait_fn.name.value == name.value)
+                {
+                    dbg!("todo! check trait types");
+
+                    functions[trait_fn_i] = Some(id);
+                } else {
+                    statics_info
+                        .diagnostics
+                        .raise(StaticVerifyDiagnostic::ImplTraitFnNotInTrait, name.loc);
+                }
+            }
+            dbg!("todo! check all required trait functions implemented");
+            impls_trait.push(ImplTrait {
+                templates,
+                target_data: target,
+                target_trait,
+                functions,
+                consts: Vec::new(),
+                typealiases: Vec::new(),
+            })
+        } else {
+            impls_data.push(ImplData {
+                templates,
+                target,
+                functions: functions_converted
+                    .into_iter()
+                    .map(|(name, ty_args, ty_return, id)| todo!("impl data"))
+                    .collect(),
+                consts: HashMap::new(),
+                typealiases: HashMap::new(),
+            })
+        }
+    }
+
+    (impls_data, impls_trait)
+}
+
+struct FreedDataImpl<'src> {
+    templates: Templates,
+    containing_scope: ScopeId,
+    target: TypeDatalike,
+    attatched_impl: ASTImpl<'src>,
+}
+struct UnifiedImpl<'src> {
+    loc: Loc,
+    containing_scope: ScopeId,
+    templates: Templates,
+    target: Fallible<TypeDatalike>,
+    target_trait: Option<ASTType<'src>>,
+    contents: ASTImplContents<'src>,
+}
+fn unify_impls<'src>(
+    free_impls: Vec<ASTFreeImpl<'src>>,
+    freed_databound_impls: Vec<FreedDataImpl<'src>>,
+
+    trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
+    statics_info: &mut StaticsInfo<'_, 'src>,
+) -> Vec<UnifiedImpl<'src>> {
+    let mut unified_impls = Vec::with_capacity(free_impls.len() + freed_databound_impls.len());
+    for impl_ in free_impls {
+        let mut template_names = gen_template_names(&impl_.attatched_impl.templates);
+        let target = impl_.target.and_then(|ty| {
+            convert_type_datalike(
+                ty,
+                impl_.containing_scope,
+                &template_names,
+                None,
+                trait_associated_ty_id_map,
+                statics_info,
+            )
+        });
+        let templates = convert_templates(
+            impl_.attatched_impl.templates,
+            impl_.containing_scope,
+            &mut template_names,
+            // Some(&target),
+            target.as_ref().ok(), // todo! this could lead to unexpected issues. what else could I even do tho?
+            trait_associated_ty_id_map,
+            statics_info,
+        );
+
+        unified_impls.push(UnifiedImpl {
+            loc: impl_.attatched_impl.loc,
+            containing_scope: impl_.containing_scope,
+            templates,
+            target,
+            target_trait: impl_.attatched_impl.target_trait,
+            contents: impl_.attatched_impl.contents,
+        });
+    }
+    for impl_ in freed_databound_impls {
+        // convert templates to from `data<A,B,C... > impl<D,E,F... >` to `impl<A,B,C... D,E,F... >`
+        // eg. concat the two template lists together.
+        let mut template_names = impl_
+            .templates
+            .def
+            .iter()
+            .map(|(name, bounds)| (name.value.as_str(), name.loc, bounds.clone()))
+            .chain(gen_template_names(&impl_.attatched_impl.templates).into_iter())
+            .collect::<Vec<_>>();
+        let templates = convert_templates(
+            impl_.attatched_impl.templates,
+            impl_.containing_scope,
+            &mut template_names,
+            Some(&impl_.target),
+            trait_associated_ty_id_map,
+            statics_info,
+        );
+        unified_impls.push(UnifiedImpl {
+            loc: impl_.attatched_impl.loc,
+            containing_scope: impl_.containing_scope,
+            templates,
+            target: Ok(impl_.target),
+            target_trait: impl_.attatched_impl.target_trait,
+            contents: impl_.attatched_impl.contents,
+        });
+    }
+
+    unified_impls
+}
+
 pub fn verify_merge<'src>(
     statics: MergedStatics<'src>,
     compat_spec: &CompatSpec,
     mut statics_info: StaticsInfo<'_, 'src>,
-) -> (
-    UnresolvedStatics<'src>,
-    Vec<ASTFreeImpl<'src>>,
-    Vec<FreedDataImpl<'src>>,
-) {
+) -> UnresolvedStatics<'src> {
     let mut failed_name_gen = FailedNameGenerator::new();
 
     let trait_associated_ty_id_map = gen_trait_associated_type_map(&statics.traits);
 
-    let typealiases = verify_merge_type_aliases(
+    let mut typealiases = verify_merge_type_aliases(
         statics.typealiases,
         compat_spec,
         &mut failed_name_gen,
@@ -1266,14 +1490,22 @@ pub fn verify_merge<'src>(
         &mut statics_info,
     );
 
-    let mut freed_impls = Vec::new();
+    let mut freed_databound_impls = Vec::new();
+
+    fn make_extras_registrar<'a, T>(extras: &'a mut Vec<T>) -> impl FnMut(T) -> usize + 'a {
+        let initial_n = extras.len();
+        move |new| {
+            extras.push(new);
+            initial_n + extras.len() - 1
+        }
+    }
 
     let mut extra_functions = Vec::new();
-    let mut register_function = |new_fn| {
-        let id = statics.functions.len() + extra_functions.len();
-        extra_functions.push(new_fn);
-        id
-    };
+    let mut extra_consts = Vec::new();
+    let mut extra_typealiases = Vec::new();
+    let mut register_function = make_extras_registrar(&mut extra_functions);
+    let mut register_const = make_extras_registrar(&mut extra_consts);
+    let mut register_typealias = make_extras_registrar(&mut extra_typealiases);
 
     let traits = statics
         .traits
@@ -1298,7 +1530,7 @@ pub fn verify_merge<'src>(
             convert_data(
                 merged,
                 self_id,
-                &mut freed_impls,
+                &mut freed_databound_impls,
                 compat_spec,
                 &mut failed_name_gen,
                 &trait_associated_ty_id_map,
@@ -1307,7 +1539,7 @@ pub fn verify_merge<'src>(
             )
         })
         .collect::<Vec<_>>();
-    let consts = statics
+    let mut consts = statics
         .consts
         .into_iter()
         .map(|merged| {
@@ -1334,17 +1566,33 @@ pub fn verify_merge<'src>(
             )
         })
         .collect::<Vec<_>>();
-    functions.extend(extra_functions.into_iter());
 
-    (
-        UnresolvedStatics {
-            consts,
-            datas,
-            functions,
-            traits,
-            typealiases,
-        },
+    let (impls_data, impls_trait) = convert_impls(
         statics.free_impls,
-        freed_impls,
-    )
+        freed_databound_impls,
+        &mut register_function,
+        &mut register_const,
+        &mut register_typealias,
+        &traits,
+        compat_spec,
+        &mut failed_name_gen,
+        &trait_associated_ty_id_map,
+        &typealiases,
+        &mut statics_info,
+    );
+
+    drop((register_function, register_const, register_typealias));
+    functions.extend(extra_functions.into_iter());
+    consts.extend(extra_consts.into_iter());
+    typealiases.extend(extra_typealiases.into_iter());
+
+    UnresolvedStatics {
+        consts,
+        datas,
+        functions,
+        traits,
+        typealiases,
+        impls_data,
+        impls_trait,
+    }
 }

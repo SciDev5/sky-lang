@@ -602,23 +602,13 @@ fn convert_trait<'src>(
                         templates: templates.clone(),
                         ty_args: ty_args.clone(),
                         ty_return: ty_return.clone().map(|v| Some(v)),
+                        ty_self: Some(fn_self_ty),
                         variants: [(
                             backend_id,
                             FunctionVariant {
                                 loc,
                                 args: args.clone(),
-                                body: (
-                                    block,
-                                    Some(
-                                        template_names
-                                            .iter()
-                                            .map(|(name, loc, _)| Name {
-                                                loc: *loc,
-                                                value: name.to_string(),
-                                            })
-                                            .collect(),
-                                    ),
-                                ),
+                                body: (block, Some(template_names)),
                             },
                         )]
                         .into_iter()
@@ -1021,6 +1011,8 @@ fn convert_const<'src>(
 fn convert_function<'src>(
     merged: Merged<ASTFunction<'src>>,
 
+    self_ty: Option<&TypeDatalike>,
+
     compat_spec: &CompatSpec,
     failed_name_gen: &mut FailedNameGenerator,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
@@ -1046,7 +1038,7 @@ fn convert_function<'src>(
         base.templates.clone(),
         base.containing_scope,
         &mut template_names,
-        None,
+        self_ty,
         trait_associated_ty_id_map,
         statics_info,
     );
@@ -1055,7 +1047,7 @@ fn convert_function<'src>(
         base.args.clone(),
         base.containing_scope,
         &template_names,
-        None,
+        self_ty,
         trait_associated_ty_id_map,
         statics_info,
     );
@@ -1066,7 +1058,7 @@ fn convert_function<'src>(
             ty_return,
             base.containing_scope,
             &template_names,
-            None,
+            self_ty,
             trait_associated_ty_id_map,
             statics_info,
         )
@@ -1098,7 +1090,7 @@ fn convert_function<'src>(
                         variant.templates,
                         &templates,
                         variant.containing_scope,
-                        None,
+                        self_ty,
                         trait_associated_ty_id_map,
                         typealiases,
                         statics_info,
@@ -1108,7 +1100,7 @@ fn convert_function<'src>(
                         variant.args,
                         variant.containing_scope,
                         template_names_variant.as_ref().unwrap_or(&template_names),
-                        None,
+                        self_ty,
                         trait_associated_ty_id_map,
                         statics_info,
                     );
@@ -1161,16 +1153,6 @@ fn convert_function<'src>(
                         }
                     }
 
-                    // fix for output
-                    let template_names_variant = template_names_variant.map(|template_names| {
-                        template_names
-                            .into_iter()
-                            .map(|(name, loc, _)| Name {
-                                loc,
-                                value: name.to_string(),
-                            })
-                            .collect::<Vec<_>>()
-                    });
                     (
                         backend_id,
                         ((args, variant.block, template_names_variant), variant.loc),
@@ -1200,6 +1182,8 @@ fn convert_function<'src>(
         name,
         base_target,
         templates,
+
+        ty_self: self_ty.cloned(),
 
         ty_args: ty_args_base,
         ty_return,
@@ -1318,6 +1302,7 @@ fn convert_impls<'src>(
                     Merged {
                         contents: [(backend_id, fn_)].into_iter().collect(),
                     },
+                    target.as_ref().ok(),
                     compat_spec,
                     failed_name_gen,
                     trait_associated_ty_id_map,
@@ -1558,6 +1543,7 @@ pub fn verify_merge<'src>(
         .map(|merged| {
             convert_function(
                 merged,
+                None,
                 compat_spec,
                 &mut failed_name_gen,
                 &trait_associated_ty_id_map,

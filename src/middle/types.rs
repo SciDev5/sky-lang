@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use crate::{
     front::{
-        ast::{ASTIdent, ASTIdentValue, ASTName, ASTType},
+        ast::{ASTIdent, ASTIdentValue, ASTType},
         source::{HasLoc, Loc},
     },
     lint::diagnostic::{DiagnosticContent, Diagnostics, Fallible, ToDiagnostic},
@@ -33,6 +33,7 @@ use super::{
     },
 };
 mod solve;
+mod solve_data;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeDiagnostic {

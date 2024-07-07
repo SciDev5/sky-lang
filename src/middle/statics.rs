@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use scopes::ScopeId;
+use verify_merge::TemplateNames;
 
 use crate::{
     back::BackendId,
@@ -173,11 +174,13 @@ pub struct FunctionGeneric<ReturnTy, BodyBlock> {
     pub ty_args: Vec<Fallible<TypeDatalike>>,
     pub ty_return: Fallible<ReturnTy>,
 
+    pub ty_self: Option<TypeDatalike>,
+
     pub base_target: BackendId,
     pub variants: HashMap<BackendId, FunctionVariant<BodyBlock>>,
 }
 pub type FunctionUnresolved<'src> =
-    FunctionGeneric<Option<TypeDatalike>, (ASTBlock<'src>, Option<Vec<Name>>)>;
+    FunctionGeneric<Option<TypeDatalike>, (ASTBlock<'src>, Option<TemplateNames<'src>>)>;
 // pub type Function = FunctionGeneric<TypeDatalike, ___todo!____>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionVariant<BodyBlock> {

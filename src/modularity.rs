@@ -1,5 +1,5 @@
-mod package;
-mod semver;
+pub mod package;
+pub mod semver;
 
 /// Ids that can point to any entity in this package or any dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

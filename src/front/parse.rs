@@ -13,10 +13,11 @@ use super::{
     ast::{
         ASTAnnot, ASTBlock, ASTConst, ASTData, ASTDataContents, ASTDataProperty, ASTDeclr,
         ASTDestructure, ASTDoc, ASTEnumVariantType, ASTExpr, ASTFreeImpl, ASTFunction, ASTIdent,
-        ASTIdentValue, ASTImpl, ASTImplContents, ASTImport, ASTImportTree, ASTLambda, ASTName,
-        ASTPostfixBlock, ASTScope, ASTSourceFile, ASTStmt, ASTSubBlocked, ASTTemplateBound,
-        ASTTemplates, ASTTrait, ASTTraitConst, ASTTraitTypeAlias, ASTType, ASTTypeAlias,
-        ASTTypedDestructure, ASTVarDeclare,
+        ASTIdentValue, ASTImpl, ASTImplContents, ASTImport, ASTImportTree, ASTLambda,
+        ASTMacroInvocation, ASTMacroInvocationBody, ASTName, ASTPostfixBlock, ASTScope,
+        ASTSourceFile, ASTStmt, ASTSubBlocked, ASTTemplateBound, ASTTemplates, ASTTrait,
+        ASTTraitConst, ASTTraitTypeAlias, ASTType, ASTTypeAlias, ASTTypedDestructure,
+        ASTVarDeclare,
     },
     source::{HasLoc, Loc, SourceFileId},
     tokenize::{TBracketType, TKeyword, Token, TokenContent},
@@ -107,6 +108,13 @@ pub enum ParseDiagnostic {
     ExpectedTypealiasName,
     ExpectedTypealiasValue,
     ExpectedTraitConstType,
+
+    // macro invocation //
+    ExpectedMacroName,
+    ExpectedMacroBody,
+    NonexistentMacro,
+    MacroPatternFailure,
+    IllegalCoreOverride,
 }
 impl ToDiagnostic for ParseDiagnostic {
     fn to_content(self) -> DiagnosticContent {
@@ -1953,7 +1961,7 @@ impl<'a, 'src> Parser<'a, 'src> {
     }
     fn parse_static_declaration_givenannot(
         &mut self,
-        annot: &mut ASTAnnot,
+        annot: &mut ASTAnnot<'src>,
     ) -> Option<ASTDeclr<'src>> {
         Some(if let Some(x) = self.parse_function(annot) {
             // ASTDeclr::Function //
@@ -1975,7 +1983,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         })
     }
 
-    fn parse_function(&mut self, annot: &mut ASTAnnot) -> Option<ASTFunction<'src>> {
+    fn parse_function(&mut self, annot: &mut ASTAnnot<'src>) -> Option<ASTFunction<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Fn))?;
 
         // function name
@@ -2051,7 +2059,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             name,
         })
     }
-    fn parse_const(&mut self, annot: &mut ASTAnnot) -> Option<ASTConst<'src>> {
+    fn parse_const(&mut self, annot: &mut ASTAnnot<'src>) -> Option<ASTConst<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Const))?;
 
         let name = self
@@ -2087,7 +2095,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             value,
         })
     }
-    fn parse_trait_const(&mut self, annot: &mut ASTAnnot) -> Option<ASTTraitConst<'src>> {
+    fn parse_trait_const(&mut self, annot: &mut ASTAnnot<'src>) -> Option<ASTTraitConst<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Const))?;
 
         let name = self
@@ -2110,7 +2118,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             ty,
         })
     }
-    fn parse_trait(&mut self, annot: &mut ASTAnnot) -> Option<ASTTrait<'src>> {
+    fn parse_trait(&mut self, annot: &mut ASTAnnot<'src>) -> Option<ASTTrait<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Trait))?;
 
         let name = self
@@ -2140,7 +2148,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             types,
         })
     }
-    fn parse_data(&mut self, annot: &mut ASTAnnot) -> Option<ASTData<'src>> {
+    fn parse_data(&mut self, annot: &mut ASTAnnot<'src>) -> Option<ASTData<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Data))?;
 
         let name = self
@@ -2475,7 +2483,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         })
         .map(|((functions, consts, types), loc)| (loc, functions, consts, types))
     }
-    fn parse_type_alias(&mut self, annot: &mut ASTAnnot) -> Option<ASTTypeAlias<'src>> {
+    fn parse_type_alias(&mut self, annot: &mut ASTAnnot<'src>) -> Option<ASTTypeAlias<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Type))?;
 
         let name = self
@@ -2506,7 +2514,10 @@ impl<'a, 'src> Parser<'a, 'src> {
             value,
         })
     }
-    fn parse_trait_type_alias(&mut self, annot: &mut ASTAnnot) -> Option<ASTTraitTypeAlias<'src>> {
+    fn parse_trait_type_alias(
+        &mut self,
+        annot: &mut ASTAnnot<'src>,
+    ) -> Option<ASTTraitTypeAlias<'src>> {
         let loc_start = self.next_if_eq(TokenContent::Keyword(TKeyword::Type))?;
 
         let name = self
@@ -2734,18 +2745,64 @@ impl<'a, 'src> Parser<'a, 'src> {
             }
         })
     }
-    fn parse_annot(&mut self) -> ASTAnnot {
+    fn parse_annot(&mut self) -> ASTAnnot<'src> {
         let mut doc = Vec::new();
+        let mut attrs = Vec::new();
         loop {
             if let Some(value) = self.parse_doc() {
                 doc.push(value);
+            } else if let Some(attr) = self.parse_macro(TSymbol::MacroAttr) {
+                if let Ok(attr) = attr {
+                    attrs.push(attr);
+                }
             } else {
-                // todo macro attrs
                 break;
             }
         }
         let is_public = self.next_if_eq(TokenContent::Keyword(TKeyword::Export));
-        ASTAnnot { doc, is_public }
+        ASTAnnot {
+            doc,
+            attrs,
+            is_public,
+        }
+    }
+
+    fn parse_macro(
+        &mut self,
+        leading_symbol: TSymbol,
+    ) -> Option<Fallible<ASTMacroInvocation<'src>>> {
+        let loc_start = self.next_if_eq(TokenContent::Symbol(leading_symbol))?;
+
+        Some((|| {
+            let name = self.parse_name().ok_or_else(|| {
+                self.diagnostics
+                    .raise(ParseDiagnostic::ExpectedMacroName, loc_start.new_from_end())
+            });
+
+            let body = self._parse_macro_body().ok_or_else(|| {
+                self.diagnostics.raise(
+                    ParseDiagnostic::ExpectedMacroBody,
+                    loc_start.merge_some(locr!(name)),
+                )
+            });
+
+            Ok(ASTMacroInvocation {
+                loc: loc_start,
+                name: name?,
+                body: body?,
+            })
+        })())
+    }
+    fn _parse_macro_body(&mut self) -> Option<ASTMacroInvocationBody<'src>> {
+        Some(if let Some(name) = self.parse_name() {
+            ASTMacroInvocationBody::Name { name }
+        } else if let Some((exprs, loc)) = self.parse_brackets(TBracketType::Curly, true, |p| {
+            p.parse_list_commasep(|p| p.parse_expr_greedy(), &ParseDiagnostic::ExpectedExpr)
+        }) {
+            ASTMacroInvocationBody::Expr { loc, exprs }
+        } else {
+            todo!("finish macro body parsing")
+        })
     }
 
     fn parse_subblocked(&mut self) -> Option<ASTSubBlocked<'src>> {

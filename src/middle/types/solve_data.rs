@@ -57,21 +57,6 @@ pub enum SolvingExpr<'src> {
         inner: Box<SolvingExpr<'src>>,
         postfix: (SolvingPostfixBlock<'src>, Loc),
     },
-    OpPrefix {
-        loc: Loc,
-        inner: Box<SolvingExpr<'src>>,
-        op: (TPrefixOperatorType, Loc),
-    },
-    OpPostfix {
-        loc: Loc,
-        inner: Box<SolvingExpr<'src>>,
-        op: (TPostfixOperatorType, Loc),
-    },
-    OpInfix {
-        loc: Loc,
-        inner: (Box<SolvingExpr<'src>>, Box<SolvingExpr<'src>>),
-        op: (TInfixOperatorType, Loc),
-    },
     Array {
         loc: Loc,
         inner: Vec<Fallible<SolvingExpr<'src>>>,
@@ -117,9 +102,6 @@ impl<'src> HasLoc for SolvingExpr<'src> {
             | Self::CallTrait { loc, .. }
             | Self::Fail { loc, .. }
             | Self::Ident(ASTIdent { loc, .. })
-            | Self::OpInfix { loc, .. }
-            | Self::OpPrefix { loc, .. }
-            | Self::OpPostfix { loc, .. }
             | Self::Return { loc, .. }
             | Self::Break { loc, .. }
             | Self::Continue { loc, .. }

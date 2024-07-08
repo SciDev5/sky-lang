@@ -51,3 +51,24 @@ impl<'src> ModuleExports<'src> {
         }
     }
 }
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltModuleExports {
+    pub functions: HashMap<String, Id>,
+    pub datas: HashMap<String, Id>,
+    pub traits: HashMap<String, Id>,
+    pub consts: HashMap<String, Id>,
+    pub typealiases: HashMap<String, Id>,
+    pub modules: HashMap<String, Id>,
+}
+impl BuiltModuleExports {
+    fn new() -> Self {
+        Self {
+            functions: HashMap::new(),
+            datas: HashMap::new(),
+            traits: HashMap::new(),
+            consts: HashMap::new(),
+            typealiases: HashMap::new(),
+            modules: HashMap::new(),
+        }
+    }
+}

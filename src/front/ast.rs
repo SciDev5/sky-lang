@@ -19,7 +19,9 @@ use crate::{
 
 use super::{
     source::{HasLoc, Loc},
-    tokenize::{TInfixOperatorType, TPostfixOperatorType, TPrefixOperatorType},
+    tokenize::{
+        TBracketType, TInfixOperatorType, TPostfixOperatorType, TPrefixOperatorType, TSeparatorType,
+    },
 };
 
 /// The definition of the abstract syntax tree for a given source file and all its
@@ -97,6 +99,8 @@ pub enum ASTExpr<'src> {
         is_tuple: bool,
     },
 
+    InlineMacroInvocation(ASTMacroInvocation<'src>),
+
     Return {
         loc: Loc,
         inner: Option<Expr<'src>>,
@@ -125,6 +129,7 @@ impl<'src> HasLoc for ASTExpr<'src> {
             Self::PostfixBlock { inner, postfix } => inner.loc().merge(postfix.1),
             Self::Lambda(lambda) => lambda.loc(),
             Self::SubBlocked(sb) => sb.loc(),
+            Self::InlineMacroInvocation(mc) => mc.loc(),
         }
     }
 }
@@ -331,7 +336,7 @@ impl_hasloc_simple!(ASTLambda<'src>);
 pub struct ASTFunction<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
-    pub annot: ASTAnnot,
+    pub annot: ASTAnnot<'src>,
     pub name: Fallible<ASTName<'src>>,
     pub templates: ASTTemplates<'src>,
     pub args: Vec<Fallible<ASTTypedDestructure<'src>>>,
@@ -395,16 +400,17 @@ pub enum ASTIdentValue<'src> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ASTAnnot {
+pub struct ASTAnnot<'src> {
     /// If public keyword, this is the location of that keyword.
     pub is_public: Option<Loc>,
     pub doc: Vec<ASTDoc>,
-    // TODO attr macros
+    pub attrs: Vec<ASTMacroInvocation<'src>>,
 }
-impl ASTAnnot {
+impl<'src> ASTAnnot<'src> {
     pub fn take(&mut self) -> Self {
         let mut replacement = Self {
             doc: Vec::new(),
+            attrs: Vec::new(),
             is_public: None,
         };
         std::mem::swap(self, &mut replacement);
@@ -463,7 +469,7 @@ impl<'src> HasLoc for ASTType<'src> {
             | Self::TypeParam { loc, .. }
             | Self::Tuple { loc, .. }
             | Self::Paren { loc, .. } => *loc,
-            Self::Access { ident, inner, .. } => ident.loc().merge(inner.loc()),
+            Self::Access { ident, inner, .. } => inner.loc().merge(ident.loc()),
         }
     }
 }
@@ -511,7 +517,7 @@ impl<'src> HasLoc for ASTTypedDestructure<'src> {
 pub struct ASTConst<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
-    pub annot: ASTAnnot,
+    pub annot: ASTAnnot<'src>,
     pub name: Fallible<ASTName<'src>>,
     pub ty: Option<Fallible<ASTType<'src>>>,
     pub value: Option<Fallible<ASTExpr<'src>>>,
@@ -521,7 +527,7 @@ impl_hasloc_simple!(ASTConst<'src>);
 pub struct ASTTraitConst<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
-    pub annot: ASTAnnot,
+    pub annot: ASTAnnot<'src>,
     pub name: Fallible<ASTName<'src>>,
     pub ty: Fallible<ASTType<'src>>,
 }
@@ -531,7 +537,7 @@ impl_hasloc_simple!(ASTTraitConst<'src>);
 pub struct ASTTrait<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
-    pub annot: ASTAnnot,
+    pub annot: ASTAnnot<'src>,
     pub name: Fallible<ASTName<'src>>,
     pub templates: ASTTemplates<'src>,
     pub bounds: Vec<ASTType<'src>>,
@@ -546,7 +552,7 @@ impl_hasloc_simple!(ASTTrait<'src>);
 pub struct ASTData<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
-    pub annot: ASTAnnot,
+    pub annot: ASTAnnot<'src>,
     pub name: Fallible<ASTName<'src>>,
     pub templates: ASTTemplates<'src>,
     pub contents: ASTDataContents<'src>,
@@ -571,7 +577,7 @@ pub enum ASTDataContents<'src> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTEnumVariant<'src> {
     pub loc: Loc,
-    pub annot: ASTAnnot,
+    pub annot: ASTAnnot<'src>,
     pub name: ASTName<'src>,
     pub contents: ASTEnumVariantType<'src>,
 }
@@ -589,7 +595,7 @@ pub enum ASTEnumVariantType<'src> {
 pub struct ASTTypeAlias<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
-    pub annot: ASTAnnot,
+    pub annot: ASTAnnot<'src>,
     pub templates: ASTTemplates<'src>,
     pub name: Fallible<ASTName<'src>>,
     pub value: Fallible<ASTType<'src>>,
@@ -599,7 +605,7 @@ impl_hasloc_simple!(ASTTypeAlias<'src>);
 pub struct ASTTraitTypeAlias<'src> {
     pub loc: Loc,
     pub containing_scope: ScopeId,
-    pub annot: ASTAnnot,
+    pub annot: ASTAnnot<'src>,
     pub name: Fallible<ASTName<'src>>,
     pub bounds: Vec<ASTType<'src>>,
 }
@@ -615,7 +621,7 @@ pub struct ASTFreeImpl<'src> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ASTDataProperty<'src> {
     pub loc: Loc,
-    pub annot: ASTAnnot,
+    pub annot: ASTAnnot<'src>,
     pub name: ASTName<'src>,
     pub ty: Option<Fallible<ASTType<'src>>>,
 }
@@ -637,3 +643,54 @@ pub struct ASTImplContents<'src> {
     pub types: Vec<ASTTypeAlias<'src>>,
 }
 impl_hasloc_simple!(ASTImplContents<'src>);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASTMacroInvocation<'src> {
+    pub loc: Loc,
+    pub name: ASTName<'src>,
+    pub body: ASTMacroInvocationBody<'src>,
+}
+impl_hasloc_simple!(ASTMacroInvocation<'src>);
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ASTMacroInvocationBody<'src> {
+    /// String literal interspersed with expressions
+    InterpolatedString {
+        loc: Loc,
+        inner: Vec<ASTMacroInvocationBody<'src>>,
+        text: Vec<&'src str>,
+    },
+    /// Some literal name, such as `abc` (for example `$hello[world]`)
+    Name {
+        name: ASTName<'src>,
+    },
+    Literal {
+        loc: Loc,
+        inner: ASTLiteral<'src>,
+    },
+    Expr {
+        loc: Loc,
+        exprs: Vec<Fallible<ASTExpr<'src>>>,
+    },
+    Group {
+        loc: Loc,
+        bracket_ty: TBracketType,
+        inner: Vec<ASTMacroInvocationBody<'src>>,
+    },
+    Separator {
+        loc: Loc,
+        sep: TSeparatorType,
+    },
+}
+impl<'src> HasLoc for ASTMacroInvocationBody<'src> {
+    fn loc(&self) -> Loc {
+        match self {
+            Self::Name { name } => name.loc(),
+            Self::Group { loc, .. }
+            | Self::InterpolatedString { loc, .. }
+            | Self::Expr { loc, .. }
+            | Self::Separator { loc, .. }
+            | Self::Literal { loc, .. } => *loc,
+        }
+    }
+}

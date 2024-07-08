@@ -5,13 +5,15 @@ use crate::{
     front::{
         ast::{
             ASTAnnot, ASTConst, ASTData, ASTDataContents, ASTDataProperty, ASTDestructure,
-            ASTEnumVariantType, ASTFreeImpl, ASTFunction, ASTImpl, ASTImplContents, ASTName,
-            ASTTemplateBound, ASTTemplates, ASTTrait, ASTType, ASTTypeAlias, ASTTypedDestructure,
+            ASTEnumVariantType, ASTFreeImpl, ASTFunction, ASTImpl, ASTImplContents,
+            ASTMacroInvocation, ASTName, ASTTemplateBound, ASTTemplates, ASTTrait, ASTType,
+            ASTTypeAlias, ASTTypedDestructure,
         },
         source::{HasLoc, Loc},
     },
     lint::diagnostic::{DiagnosticContent, Diagnostics, Fallible, ToDiagnostic},
     middle::{
+        macro_processing::BackendProcessMacros,
         statics::{
             ConstGeneric, DataEnumVariant, DataEnumVariantContent, FunctionGeneric, Templates,
             Trait,
@@ -57,8 +59,17 @@ impl ToDiagnostic for StaticVerifyDiagnostic {
     }
 }
 
-fn convert_annot<'src>(ASTAnnot { is_public, doc }: ASTAnnot) -> Annot {
-    Annot {
+type AttrsOut<'src> = Vec<ASTMacroInvocation<'src>>;
+fn convert_annot<'src>(
+    ASTAnnot {
+        is_public,
+        doc,
+        attrs,
+    }: ASTAnnot<'src>,
+    backend_id: BackendId,
+    attrs_out: &mut AttrsOut<'src>,
+) -> Annot {
+    let mut annot = Annot {
         is_public,
         doc: doc
             .into_iter()
@@ -68,7 +79,39 @@ fn convert_annot<'src>(ASTAnnot { is_public, doc }: ASTAnnot) -> Annot {
                 a.push_str(&b);
                 a
             }),
+        attrs: HashMap::new(),
+    };
+    annot_add_attrs(&mut annot, attrs, backend_id, attrs_out);
+    annot
+}
+fn verify_convert_annot<'src>(
+    annot_variant: ASTAnnot<'src>,
+    annot_base: &mut Annot,
+    backend_id: BackendId,
+    attrs_out: &mut AttrsOut<'src>,
+    loc: Loc,
+    diagnostics: &mut Diagnostics,
+) {
+    if !annot_variant.doc.is_empty() {
+        diagnostics.raise(StaticVerifyDiagnostic::ChildVariantHasDoc, loc);
     }
+    annot_add_attrs(annot_base, annot_variant.attrs, backend_id, attrs_out);
+}
+fn annot_add_attrs<'src>(
+    annot_base: &mut Annot,
+    attrs_in: Vec<ASTMacroInvocation<'src>>,
+
+    backend_id: BackendId,
+    attrs_out: &mut AttrsOut<'src>,
+) {
+    annot_base
+        .attrs
+        .entry(backend_id)
+        .or_insert(Vec::new())
+        .extend(attrs_in.into_iter().map(|attr| {
+            attrs_out.push(attr);
+            attrs_out.len() - 1
+        }));
 }
 
 struct FailedNameGenerator {
@@ -96,6 +139,7 @@ pub type TemplateNames<'src> = Vec<(&'src str, Loc, Vec<TypeTraitlike>)>;
 
 fn verify_merge_type_aliases<'src>(
     typealiases: Vec<Merged<ASTTypeAlias<'src>>>,
+    attrs_out: &mut AttrsOut<'src>,
     compat_spec: &CompatSpec,
     failed_name_gen: &mut FailedNameGenerator,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
@@ -108,6 +152,7 @@ fn verify_merge_type_aliases<'src>(
             convert_typealias(
                 self_id,
                 merged,
+                attrs_out,
                 compat_spec,
                 failed_name_gen,
                 trait_associated_ty_id_map,
@@ -173,6 +218,7 @@ fn convert_typealias<'src>(
     self_id: usize,
     merged: Merged<ASTTypeAlias<'src>>,
 
+    attrs_out: &mut AttrsOut<'src>,
     compat_spec: &CompatSpec,
     failed_name_gen: &mut FailedNameGenerator,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
@@ -220,7 +266,7 @@ fn convert_typealias<'src>(
         });
 
         TypeAlias {
-            annot: convert_annot(annot),
+            annot: convert_annot(annot, backend_id, attrs_out),
             name: failed_name_gen.convert_name(name),
             templates,
             ty,
@@ -299,6 +345,7 @@ pub struct CompatSpec {
     /// A list of all backends that the program must be able to compile (and so have no abstract stuff at that level).
     pub compat: Vec<BackendId>,
     pub backend_infos: HashMap<BackendId, BackendInfo>,
+    pub backend_macro_infos: HashMap<BackendId, Box<dyn BackendProcessMacros>>,
 }
 impl CompatSpec {
     /// Generates a HashMap containing the ids and infos of all backends in self.compat who are children base_backend_id
@@ -314,6 +361,26 @@ impl CompatSpec {
                 None
             })
             .collect::<HashMap<_, _>>()
+    }
+    /// Gets a list of infos of compatible backends, starting at the specified one and working outwards until the common
+    /// platform is reached.
+    pub fn get_compatible_backend_infos(
+        &self,
+        backend_id: BackendId,
+    ) -> Vec<&dyn BackendProcessMacros> {
+        self.backend_infos
+            .get(&backend_id)
+            .expect("backend in src not in CompatSpec")
+            .compat_ids
+            .iter()
+            .rev()
+            .map(|compat_backend_id| {
+                self.backend_macro_infos
+                    .get(compat_backend_id)
+                    .expect("parent backend of backend in src not in CompatSpec")
+                    .as_ref()
+            })
+            .collect()
     }
 }
 struct BackendHierarchy {
@@ -372,11 +439,6 @@ fn gen_backend_hierarchy(
     tree
 }
 
-fn verify_annot(annot: ASTAnnot, loc: Loc, diagnostics: &mut Diagnostics) {
-    if !annot.doc.is_empty() {
-        diagnostics.raise(StaticVerifyDiagnostic::ChildVariantHasDoc, loc);
-    }
-}
 fn verify_crossplatform_templates<'src>(
     templates_variant: ASTTemplates<'src>,
     templates_base: &Templates,
@@ -484,6 +546,7 @@ fn convert_trait<'src>(
 
     register_function: &mut impl FnMut(FunctionUnresolved<'src>) -> usize,
 
+    attrs_out: &mut AttrsOut<'src>,
     failed_name_gen: &mut FailedNameGenerator,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
     statics_info: &mut StaticsInfo<'_, 'src>,
@@ -518,7 +581,7 @@ fn convert_trait<'src>(
         let consts = consts
             .into_iter()
             .map(|ast| TraitConst {
-                annot: convert_annot(ast.annot),
+                annot: convert_annot(ast.annot, backend_id, attrs_out),
                 loc: ast.loc,
                 name: failed_name_gen.convert_name(ast.name),
                 ty: ast.ty.and_then(|ty| {
@@ -573,7 +636,7 @@ fn convert_trait<'src>(
                 );
                 let loc = ast.loc;
                 let name = failed_name_gen.convert_name(ast.name);
-                let annot = convert_annot(ast.annot);
+                let annot = convert_annot(ast.annot, backend_id, attrs_out);
                 let ty_return = ast
                     .ty_return
                     .ok_or_else(|| {
@@ -631,7 +694,7 @@ fn convert_trait<'src>(
         let types = types
             .into_iter()
             .map(|ast| TraitTypeAlias {
-                annot: convert_annot(ast.annot),
+                annot: convert_annot(ast.annot, backend_id, attrs_out),
                 loc: ast.loc,
                 name: failed_name_gen.convert_name(ast.name),
                 bounds: convert_bounds(
@@ -654,7 +717,7 @@ fn convert_trait<'src>(
 
         Trait {
             loc,
-            annot: convert_annot(annot),
+            annot: convert_annot(annot, backend_id, attrs_out),
             name: failed_name_gen.convert_name(name),
             templates,
             bounds,
@@ -679,6 +742,7 @@ fn convert_data<'src>(
     compat_spec: &CompatSpec,
     failed_name_gen: &mut FailedNameGenerator,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
+    attrs_out: &mut AttrsOut<'src>,
     typealiases: &Vec<TypeAlias>,
     statics_info: &mut StaticsInfo<'_, 'src>,
 ) -> Data {
@@ -691,7 +755,7 @@ fn convert_data<'src>(
         statics_info.diagnostics,
     );
     let base = merged.contents.get(&hierarchy.backend_id).unwrap();
-    let annot = convert_annot(base.annot.clone());
+    let mut annot = convert_annot(base.annot.clone(), hierarchy.backend_id, attrs_out);
     let name = failed_name_gen.convert_name(base.name);
     let base_target = hierarchy.backend_id;
     let loc_base = base.loc;
@@ -724,7 +788,14 @@ fn convert_data<'src>(
             .into_iter()
             .map(|(backend_id, variant)| {
                 let template_names_variant = if backend_id != base_target {
-                    verify_annot(variant.annot, variant.loc, statics_info.diagnostics);
+                    verify_convert_annot(
+                        variant.annot,
+                        &mut annot,
+                        backend_id,
+                        attrs_out,
+                        variant.loc,
+                        statics_info.diagnostics,
+                    );
                     verify_crossplatform_templates(
                         variant.templates,
                         &templates,
@@ -774,6 +845,8 @@ fn convert_data<'src>(
                     variant.loc,
                     Some(&self_ty),
                     template_names_variant.as_ref().unwrap_or(&template_names),
+                    backend_id,
+                    attrs_out,
                     trait_associated_ty_id_map,
                     statics_info,
                 );
@@ -816,12 +889,14 @@ fn convert_dataproperty<'src>(
     self_ty: Option<&TypeDatalike>,
     template_names: &TemplateNames,
 
+    backend_id: BackendId,
+    attrs_out: &mut AttrsOut<'src>,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
     statics_info: &mut StaticsInfo<'_, 'src>,
 ) -> DataProperty {
     DataProperty {
         loc,
-        annot: convert_annot(annot),
+        annot: convert_annot(annot, backend_id, attrs_out),
         name: name.into(),
         ty: ty
             .ok_or_else(|| {
@@ -850,6 +925,8 @@ fn convert_datavariant<'src>(
     self_ty: Option<&TypeDatalike>,
     template_names: &TemplateNames,
 
+    backend_id: BackendId,
+    attrs_out: &mut AttrsOut<'src>,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
     statics_info: &mut StaticsInfo<'_, 'src>,
 ) -> DataVariant {
@@ -872,6 +949,8 @@ fn convert_datavariant<'src>(
                             containing_scope,
                             self_ty,
                             &template_names,
+                            backend_id,
+                            attrs_out,
                             trait_associated_ty_id_map,
                             statics_info,
                         )
@@ -900,7 +979,7 @@ fn convert_datavariant<'src>(
                     .into_iter()
                     .map(|v| DataEnumVariant {
                         loc: v.loc,
-                        annot: convert_annot(v.annot),
+                        annot: convert_annot(v.annot, backend_id, attrs_out),
                         name: v.name.into(),
                         contents: match v.contents {
                             ASTEnumVariantType::Unit => DataEnumVariantContent::Unit,
@@ -914,6 +993,8 @@ fn convert_datavariant<'src>(
                                                 containing_scope,
                                                 self_ty,
                                                 &template_names,
+                                                backend_id,
+                                                attrs_out,
                                                 trait_associated_ty_id_map,
                                                 statics_info,
                                             )
@@ -951,6 +1032,7 @@ fn convert_datavariant<'src>(
 fn convert_const<'src>(
     merged: Merged<ASTConst<'src>>,
 
+    attrs_out: &mut AttrsOut<'src>,
     compat_spec: &CompatSpec,
     failed_name_gen: &mut FailedNameGenerator,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
@@ -981,7 +1063,7 @@ fn convert_const<'src>(
 
     if hierarchy.children.is_empty() {
         return ConstGeneric {
-            annot: convert_annot(base.annot.clone()),
+            annot: convert_annot(base.annot.clone(), hierarchy.backend_id, attrs_out),
             name: failed_name_gen.convert_name(base.name),
             base_target: hierarchy.backend_id,
             ty: match ty {
@@ -1016,6 +1098,7 @@ fn convert_function<'src>(
     compat_spec: &CompatSpec,
     failed_name_gen: &mut FailedNameGenerator,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
+    attrs_out: &mut AttrsOut<'src>,
     typealiases: &Vec<TypeAlias>,
     statics_info: &mut StaticsInfo<'_, 'src>,
 ) -> FunctionUnresolved<'src> {
@@ -1028,7 +1111,7 @@ fn convert_function<'src>(
         statics_info.diagnostics,
     );
     let base = merged.contents.get(&hierarchy.backend_id).unwrap();
-    let annot = convert_annot(base.annot.clone());
+    let mut annot = convert_annot(base.annot.clone(), hierarchy.backend_id, attrs_out);
     let name = failed_name_gen.convert_name(base.name);
     let base_target = hierarchy.backend_id;
     let loc_base = base.loc;
@@ -1085,7 +1168,14 @@ fn convert_function<'src>(
 
                     (backend_id, ((args, variant.block, None), variant.loc))
                 } else {
-                    verify_annot(variant.annot, variant.loc, statics_info.diagnostics);
+                    verify_convert_annot(
+                        variant.annot,
+                        &mut annot,
+                        backend_id,
+                        attrs_out,
+                        variant.loc,
+                        statics_info.diagnostics,
+                    );
                     let template_names_variant = verify_crossplatform_templates(
                         variant.templates,
                         &templates,
@@ -1242,6 +1332,7 @@ fn convert_impls<'src>(
     compat_spec: &CompatSpec,
     failed_name_gen: &mut FailedNameGenerator,
     trait_associated_ty_id_map: &TraitAssociatedTyIdMap<'src>,
+    attrs_out: &mut AttrsOut<'src>,
     typealiases: &Vec<TypeAlias>,
     statics_info: &mut StaticsInfo<'_, 'src>,
 ) -> (Vec<ImplData>, Vec<ImplTrait>) {
@@ -1306,6 +1397,7 @@ fn convert_impls<'src>(
                     compat_spec,
                     failed_name_gen,
                     trait_associated_ty_id_map,
+                    attrs_out,
                     typealiases,
                     statics_info,
                 );
@@ -1462,13 +1554,16 @@ pub fn verify_merge<'src>(
     statics: MergedStatics<'src>,
     compat_spec: &CompatSpec,
     mut statics_info: StaticsInfo<'_, 'src>,
-) -> UnresolvedStatics<'src> {
+) -> (UnresolvedStatics<'src>, Vec<ASTMacroInvocation<'src>>) {
     let mut failed_name_gen = FailedNameGenerator::new();
 
     let trait_associated_ty_id_map = gen_trait_associated_type_map(&statics.traits);
 
+    let mut macro_attrs = Vec::new();
+
     let mut typealiases = verify_merge_type_aliases(
         statics.typealiases,
+        &mut macro_attrs,
         compat_spec,
         &mut failed_name_gen,
         &trait_associated_ty_id_map,
@@ -1501,6 +1596,7 @@ pub fn verify_merge<'src>(
                 merged,
                 self_id,
                 &mut register_function,
+                &mut macro_attrs,
                 &mut failed_name_gen,
                 &trait_associated_ty_id_map,
                 &mut statics_info,
@@ -1519,6 +1615,7 @@ pub fn verify_merge<'src>(
                 compat_spec,
                 &mut failed_name_gen,
                 &trait_associated_ty_id_map,
+                &mut macro_attrs,
                 &typealiases,
                 &mut statics_info,
             )
@@ -1530,6 +1627,7 @@ pub fn verify_merge<'src>(
         .map(|merged| {
             convert_const(
                 merged,
+                &mut macro_attrs,
                 compat_spec,
                 &mut failed_name_gen,
                 &trait_associated_ty_id_map,
@@ -1547,6 +1645,7 @@ pub fn verify_merge<'src>(
                 compat_spec,
                 &mut failed_name_gen,
                 &trait_associated_ty_id_map,
+                &mut macro_attrs,
                 &typealiases,
                 &mut statics_info,
             )
@@ -1563,6 +1662,7 @@ pub fn verify_merge<'src>(
         compat_spec,
         &mut failed_name_gen,
         &trait_associated_ty_id_map,
+        &mut macro_attrs,
         &typealiases,
         &mut statics_info,
     );
@@ -1572,13 +1672,16 @@ pub fn verify_merge<'src>(
     consts.extend(extra_consts.into_iter());
     typealiases.extend(extra_typealiases.into_iter());
 
-    UnresolvedStatics {
-        consts,
-        datas,
-        functions,
-        traits,
-        typealiases,
-        impls_data,
-        impls_trait,
-    }
+    (
+        UnresolvedStatics {
+            consts,
+            datas,
+            functions,
+            traits,
+            typealiases,
+            impls_data,
+            impls_trait,
+        },
+        macro_attrs,
+    )
 }

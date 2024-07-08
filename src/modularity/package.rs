@@ -7,27 +7,39 @@
 //! as libraries or similar.
 //!
 
+use crate::middle::{module::BuiltModuleExports, statics::BuiltStatics};
+
 use super::semver::SemVerBound;
 
-struct PackageSpec {
-    name: String,
+pub struct PackageSpec {
+    pub name: String,
     /// Map of dependency ids to the relevant information to look them up
-    deps: Vec<DependencySpec>,
+    pub deps: Vec<DependencySpec>,
 }
 
 /// Information that can be used to look up a package to include as a
 /// dependency.
-struct DependencySpec {
-    name: String,
-    version: SemVerBound,
+pub struct DependencySpec {
+    pub name: String,
+    pub version: SemVerBound,
 }
 
 /// Mappings from dependency ids to package ids, valid for the duration of
 /// this build.
-struct BuildDependencies {
+pub struct BuildDependencies {
     /// Uses the same index as [`PackageSpec::deps`].
     ///
     /// Stores the current true package id that these dependencies
     /// map to.
-    dep_packages: Vec<usize>,
+    pub dep_packages: Vec<usize>,
+}
+
+pub struct BuiltPackage {
+    pub name: String,
+
+    pub statics: BuiltStatics,
+    pub exports: Vec<BuiltModuleExports>,
+
+    pub deps: Vec<DependencySpec>,
+    pub reexpoted: Vec<usize>,
 }

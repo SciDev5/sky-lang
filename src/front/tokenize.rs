@@ -23,7 +23,7 @@ pub enum TSeparatorType {
     ThinArrow,
     WideArrow,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TPrefixOperatorType {
     // ---- Arithmetic ---- //
     Neg,
@@ -51,8 +51,26 @@ impl TPrefixOperatorType {
             Self::RangeTo => 10,
         }
     }
+    pub const ALL: &'static [Self] = &[
+        Self::Neg,
+        Self::Inverse,
+        Self::Not,
+        Self::Ref,
+        Self::Deref,
+        Self::RangeTo,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Ref => "Ref",
+            Self::Deref => "Deref",
+            Self::Inverse => "Inverse",
+            Self::Neg => "Neg",
+            Self::Not => "Not",
+            Self::RangeTo => "RangeTo",
+        }
+    }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TPostfixOperatorType {
     // ---- Arithmetic ---- //
     Conjugate,
@@ -70,8 +88,16 @@ impl TPostfixOperatorType {
             Self::RangeFrom => 10,
         }
     }
+    pub const ALL: &'static [Self] = &[Self::Conjugate, Self::Factorial, Self::RangeFrom];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Conjugate => "Conjugate",
+            Self::Factorial => "Factorial",
+            Self::RangeFrom => "RangeFrom",
+        }
+    }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TInfixOperatorType {
     // ---- Compare ---- //
     CompareGreater,
@@ -137,6 +163,51 @@ impl TInfixOperatorType {
     /// associative).
     pub fn right_associative(self) -> bool {
         matches!(self, Self::Exponentiate)
+    }
+    pub const ALL: &'static [Self] = &[
+        Self::CompareGreater,
+        Self::CompareLess,
+        Self::CompareGreaterEqual,
+        Self::CompareLessEqual,
+        Self::CompareEqual,
+        Self::CompareNotEqual,
+        Self::Add,
+        Self::Subtract,
+        Self::Multiply,
+        Self::Divide,
+        Self::Modulo,
+        Self::Remainder,
+        Self::Exponentiate,
+        Self::Or,
+        Self::And,
+        Self::Xor,
+        Self::Shl,
+        Self::Shr,
+        Self::RangeFromTo,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Exponentiate => "Exponentiate",
+            Self::Multiply => "Multiply",
+            Self::Divide => "Divide",
+            Self::Modulo => "Modulo",
+            Self::Remainder => "Remainder",
+            Self::Add => "Add",
+            Self::Subtract => "Subtract",
+            Self::Shl => "Shl",
+            Self::Shr => "Shr",
+            Self::CompareGreater => "CompareGreater",
+            Self::CompareLess => "CompareLess",
+            Self::CompareGreaterEqual => "CompareGreaterEqual",
+            Self::CompareLessEqual => "CompareLessEqual",
+            Self::CompareEqual => "CompareEqual",
+            Self::CompareNotEqual => "CompareNotEqual",
+            Self::Or => "Or",
+            Self::And => "And",
+            Self::Xor => "Xor",
+            Self::RangeFromTo => "RangeFromTo",
+        }
     }
 }
 

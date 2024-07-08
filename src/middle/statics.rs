@@ -6,7 +6,7 @@ use verify_merge::TemplateNames;
 use crate::{
     back::BackendId,
     front::{
-        ast::{ASTBlock, ASTExpr, ASTName},
+        ast::{ASTBlock, ASTExpr, ASTMacroInvocation, ASTName},
         source::{HasLoc, Loc},
     },
     impl_hasloc_simple,
@@ -26,6 +26,16 @@ pub struct UnresolvedStatics<'src> {
     pub datas: Vec<Data>,
     pub traits: Vec<Trait>,
     pub consts: Vec<ConstUnresolved<'src>>,
+    pub typealiases: Vec<TypeAlias>,
+    pub impls_data: Vec<ImplData>,
+    pub impls_trait: Vec<ImplTrait>,
+}
+#[derive(Debug, Clone)]
+pub struct BuiltStatics {
+    // pub functions: Vec<Function>,
+    pub datas: Vec<Data>,
+    pub traits: Vec<Trait>,
+    // pub consts: Vec<Const>,
     pub typealiases: Vec<TypeAlias>,
     pub impls_data: Vec<ImplData>,
     pub impls_trait: Vec<ImplTrait>,
@@ -229,4 +239,5 @@ pub struct Templates {
 pub struct Annot {
     pub doc: Option<String>,
     pub is_public: Option<Loc>,
+    pub attrs: HashMap<BackendId, Vec<usize>>,
 }

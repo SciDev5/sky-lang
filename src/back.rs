@@ -4,10 +4,14 @@
 //! for lookup.
 //!
 
-use crate::{macros::MacroSpec, TODO_common_source};
+use crate::{
+    macros::{ConstMacroSpec, MacroSpec},
+    middle::macro_processing::BackendProcessMacros,
+    TODO_common_source,
+};
 
-mod common;
-mod common_garbage_collected;
+pub mod common;
+pub mod common_garbage_collected;
 
 /// Type alias for a number representing a [`Backend`]'s id.
 pub type BackendId = usize;
@@ -19,7 +23,8 @@ pub trait Backend {
     const ID: BackendId;
     /// Extra information for this backend, including, name and
     /// code compatibility info.
-    const INFO: &'static BackendInfo;
+    fn info() -> (BackendInfo, Self::MacroInfo);
+    type MacroInfo: BackendProcessMacros;
 
     type Config<'a>;
     type Output;
@@ -27,6 +32,7 @@ pub trait Backend {
     fn compile<'a>(src: &TODO_common_source, config: &Self::Config<'a>) -> Self::Output;
 }
 
+#[derive(Debug, Clone)]
 pub struct BackendInfo {
     /// Reference to [`Backend::ID`].
     pub id: BackendId,
@@ -48,5 +54,5 @@ pub struct BackendInfo {
     /// Macros from more general backends remain accessible in code
     /// when using this backend, but more specialized backends take
     /// priority in the event of name collisions.
-    pub macro_specs: &'static [MacroSpec<'static>],
+    pub macro_specs: Vec<MacroSpec>,
 }

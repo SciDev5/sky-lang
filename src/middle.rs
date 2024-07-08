@@ -45,14 +45,18 @@
 //!     - verify impls (and compact)
 //!     - types fit trait bounds sanity check
 //!
+//! - middle macro processing
+//!
 //! - resolve local scope variables
 //! - resolve types
 //! - escape analysis / borrow checking
 //!
 //! - assemble package
 
+pub mod core;
 pub mod impls;
 pub mod import;
+pub mod macro_processing;
 pub mod memory;
 pub mod module;
 pub mod optimize;

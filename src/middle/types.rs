@@ -24,6 +24,7 @@ use crate::{
 };
 
 use super::{
+    core::Core,
     import::{resolve_data, ExportsLookup, ImportedScope},
     module::LocalModule,
     statics::{

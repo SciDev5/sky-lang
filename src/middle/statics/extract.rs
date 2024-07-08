@@ -4,8 +4,8 @@ use crate::{
     front::{
         ast::{
             ASTBlock, ASTConst, ASTData, ASTDeclr, ASTExpr, ASTFunction, ASTImpl, ASTImplContents,
-            ASTLambda, ASTName, ASTPostfixBlock, ASTScope, ASTSourceFile, ASTStatics, ASTStmt,
-            ASTSubBlocked, ASTTrait, ASTVarDeclare,
+            ASTLambda, ASTMacroInvocation, ASTMacroInvocationBody, ASTName, ASTPostfixBlock,
+            ASTScope, ASTSourceFile, ASTStatics, ASTStmt, ASTSubBlocked, ASTTrait, ASTVarDeclare,
         },
         source::HasLoc,
     },
@@ -199,6 +199,10 @@ impl<'a, 'src> ScopeExtractor<'a, 'src> {
                 inner: Some(inner), ..
             } => self.scope_expr(inner.as_mut(), scope),
 
+            ASTExpr::InlineMacroInvocation(macro_invocation) => {
+                self.scope_macro_invocation(&mut macro_invocation.body, scope)
+            }
+
             ASTExpr::Literal { .. }
             | ASTExpr::Ident { .. }
             | ASTExpr::Parentheses { inner: Err(_), .. }
@@ -344,6 +348,26 @@ impl<'a, 'src> ScopeExtractor<'a, 'src> {
     fn scope_const(&mut self, const_: &mut ASTConst<'src>, scope: ScopeId) {
         if let Some(Ok(value)) = &mut const_.value {
             self.scope_expr(value, scope);
+        }
+    }
+
+    fn scope_macro_invocation(
+        &mut self,
+        macro_invocation: &mut ASTMacroInvocationBody<'src>,
+        scope: ScopeId,
+    ) {
+        match macro_invocation {
+            ASTMacroInvocationBody::Expr { exprs, .. } => exprs
+                .iter_mut()
+                .filter_map(|v| v.as_mut().ok())
+                .for_each(|expr| self.scope_expr(expr, scope)),
+            ASTMacroInvocationBody::Group { inner, .. }
+            | ASTMacroInvocationBody::InterpolatedString { inner, .. } => {
+                for ent in inner {
+                    self.scope_macro_invocation(ent, scope);
+                }
+            }
+            _ => {}
         }
     }
 }

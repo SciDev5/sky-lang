@@ -1,6 +1,0 @@
-pub mod bytecode;
-pub mod compile;
-pub mod gc;
-pub mod interpreter;
-pub mod intrinsics;
-pub mod value;

@@ -114,6 +114,8 @@ pub struct ImplTrait {
     pub target_data: TypeDatalike,
     pub target_trait: TypeTraitlike,
 
+    pub fully_implemented_at: Vec<BackendId>,
+
     pub functions: Vec<Option<usize>>,
     pub consts: Vec<Option<usize>>,
     pub typealiases: Vec<Option<usize>>,

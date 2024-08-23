@@ -55,6 +55,7 @@ impl ToDiagnostic for TypeDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeDatalike {
     Data(TypeData),
+    Ref(TypeRef),
     Template(TypeTemplate),
     Associated(TypeDataTraitAssociated),
     Aliased(TypeDtatlikeAliased),
@@ -63,6 +64,7 @@ impl HasLoc for TypeDatalike {
     fn loc(&self) -> Loc {
         match self {
             Self::Data(v) => v.loc,
+            Self::Ref(v) => v.loc,
             Self::Template(v) => v.loc,
             Self::Associated(v) => v.loc,
             Self::Aliased(v) => v.loc,
@@ -73,6 +75,7 @@ impl TypeDatalike {
     fn edit_loc(&mut self) -> &mut Loc {
         match self {
             Self::Data(v) => &mut v.loc,
+            Self::Ref(v) => &mut v.loc,
             Self::Template(v) => &mut v.loc,
             Self::Associated(v) => &mut v.loc,
             Self::Aliased(v) => &mut v.loc,
@@ -93,6 +96,13 @@ pub struct TypeData {
     pub id: Id,
     pub templates: Vec<Fallible<TypeDatalike>>,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeRef {
+    pub loc: Loc,
+    pub data: TypeData,
+    pub mutable: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeTraitlike {
     pub loc: Loc,

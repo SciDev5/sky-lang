@@ -451,12 +451,13 @@ pub enum ASTType<'src> {
         loc: Loc,
         inner: Fallible<Box<ASTType<'src>>>,
     },
+    Ref {
+        loc: Loc,
+        mutable: bool,
+        inner: Box<Fallible<ASTType<'src>>>,
+    },
     //// TODO not included for the time being, as they are aliases for other types
     //// and I need to decide how to handle that:
-    // Ref {
-    //     mutable: bool,
-    //     inner: Box<ASTType<'src>>,
-    // },
     // Array {
     //     inner: Box<ASTType<'src>>,
     // },
@@ -466,6 +467,7 @@ impl<'src> HasLoc for ASTType<'src> {
         match self {
             Self::Ident(ASTIdent { loc, .. })
             | Self::Unit { loc }
+            | Self::Ref { loc, .. }
             | Self::TypeParam { loc, .. }
             | Self::Tuple { loc, .. }
             | Self::Paren { loc, .. } => *loc,

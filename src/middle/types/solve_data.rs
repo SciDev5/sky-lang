@@ -50,13 +50,35 @@ pub enum SolvingExpr<'src> {
         loc: Loc,
         value: SolvingLiteral,
     },
-    Ident(ASTIdent<'src>),
+
+    LocalVar {
+        loc: Loc,
+        id: LocalVarId,
+    },
+
     Lambda(SolvingLambda<'src>),
+
     SubBlocked(SolvingSubBlocked<'src>),
     PostfixBlock {
         inner: Box<SolvingExpr<'src>>,
         postfix: (SolvingPostfixBlock<'src>, Loc),
     },
+
+    /// `x.{ a = b, c }`
+    DataStructInit {
+        loc: Loc,
+        data_id: Id,
+        template_values: Vec<SolvingType>,
+        entries: Vec<(ASTName<'src>, Fallible<SolvingExpr<'src>>)>,
+    },
+    /// `x.( a, b, c )`
+    DataTupleInit {
+        loc: Loc,
+        data_id: Id,
+        template_values: Vec<SolvingType>,
+        entries: Vec<Fallible<SolvingExpr<'src>>>,
+    },
+
     Array {
         loc: Loc,
         inner: Vec<Fallible<SolvingExpr<'src>>>,
@@ -74,6 +96,14 @@ pub enum SolvingExpr<'src> {
     CallTrait {
         loc: Loc,
         reifier: TypeDatalike,
+        template_values: Vec<SolvingType>,
+        trait_id: Id,
+        fn_id: usize,
+        args: Vec<SolvingExpr<'src>>,
+    },
+    UncheckedCallTrait {
+        // reifier is type of first arg
+        loc: Loc,
         template_values: Vec<SolvingType>,
         trait_id: Id,
         fn_id: usize,
@@ -101,7 +131,10 @@ impl<'src> HasLoc for SolvingExpr<'src> {
             | Self::Call { loc, .. }
             | Self::CallTrait { loc, .. }
             | Self::Fail { loc, .. }
-            | Self::Ident(ASTIdent { loc, .. })
+            | Self::LocalVar { loc, .. }
+            | Self::DataStructInit { loc, .. }
+            | Self::DataTupleInit { loc, .. }
+            | Self::UncheckedCallTrait { loc, .. }
             | Self::Return { loc, .. }
             | Self::Break { loc, .. }
             | Self::Continue { loc, .. }
@@ -133,14 +166,6 @@ pub enum SolvingPostfixBlock<'src> {
     },
     /// `x { a, b -> c }``
     Lambda { lambda: SolvingLambda<'src> },
-    /// `x.{ a = b, c }`
-    DataStructInit {
-        entries: Vec<(ASTName<'src>, Fallible<SolvingExpr<'src>>)>,
-    },
-    /// `x.( a, b, c)`
-    DataTupleInit {
-        entries: Vec<Fallible<SolvingExpr<'src>>>,
-    },
     /// `x.abc`
     PropertyAccess { name: ASTName<'src> },
 }

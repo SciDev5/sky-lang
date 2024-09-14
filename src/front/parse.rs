@@ -1841,6 +1841,32 @@ impl<'a, 'src> Parser<'a, 'src> {
         }
     }
     fn parse_type(&mut self) -> Option<ASTType<'src>> {
+        if let Some((loc, mutable)) = self.guard_state(|p| {
+            let ampersand = p.next_if_eq(TokenContent::Symbol(TSymbol::Ampersand));
+            let (loc, mutable) = if let Some(loc_amp) = ampersand {
+                let mutable = p.next_if_eq(TokenContent::Keyword(TKeyword::Mut));
+                (loc_amp.merge_some(mutable), mutable.is_some())
+            } else {
+                let loc = p.next_if_eq(TokenContent::Symbol(TSymbol::RefMut))?;
+                (loc, true)
+            };
+            Some((loc, mutable))
+        }) {
+            // ASTType::Ref //
+            let inner = self.parse_type().ok_or_else(|| {
+                self.diagnostics
+                    .raise(ParseDiagnostic::ExpectedTypeInner, loc.new_from_end())
+            });
+            Some(ASTType::Ref {
+                loc: loc.merge_some(locr!(inner)),
+                mutable,
+                inner: Box::new(inner),
+            })
+        } else {
+            self.parse_type_no_prefix()
+        }
+    }
+    fn parse_type_no_prefix(&mut self) -> Option<ASTType<'src>> {
         let mut current = self._parse_type_no_postfix()?;
         loop {
             if let Some(ident) = self.guard_state(|p| {

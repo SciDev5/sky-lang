@@ -1380,6 +1380,8 @@ fn convert_impls<'src>(
             todo!("actually convert/verify impls");
         }
 
+        let mut fully_implemented_at = Vec::new();
+
         let functions_converted = functions
             .into_iter()
             .map(|fn_| {
@@ -1401,6 +1403,9 @@ fn convert_impls<'src>(
                     typealiases,
                     statics_info,
                 );
+                if !fully_implemented_at.contains(&fn_.base_target) {
+                    fully_implemented_at.push(fn_.base_target);
+                }
                 (
                     fn_.name.clone(),
                     fn_.ty_args.clone(),
@@ -1442,6 +1447,7 @@ fn convert_impls<'src>(
             }
             dbg!("todo! check all required trait functions implemented");
             impls_trait.push(ImplTrait {
+                fully_implemented_at,
                 templates,
                 target_data: target,
                 target_trait,

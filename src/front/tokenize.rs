@@ -34,6 +34,7 @@ pub enum TPrefixOperatorType {
 
     // ---- Pointers ---- //   (everybody's favorite /s)
     Ref,
+    RefMut,
     Deref,
 
     // ---- Range ---- //
@@ -44,6 +45,7 @@ impl TPrefixOperatorType {
     pub fn precedence(self) -> u8 {
         match self {
             Self::Ref => 100,
+            Self::RefMut => 100,
             Self::Deref => 100,
             Self::Inverse => 71,
             Self::Neg => 61,
@@ -56,12 +58,14 @@ impl TPrefixOperatorType {
         Self::Inverse,
         Self::Not,
         Self::Ref,
+        Self::RefMut,
         Self::Deref,
         Self::RangeTo,
     ];
     pub fn name(self) -> &'static str {
         match self {
             Self::Ref => "Ref",
+            Self::RefMut => "RefMut",
             Self::Deref => "Deref",
             Self::Inverse => "Inverse",
             Self::Neg => "Neg",
@@ -217,7 +221,7 @@ macro_rules! gen_TSymbol {
             $(#[doc = $doc: expr])?
             $name:ident
             (
-                $text:expr
+                $($text:expr)?
                 $(; separator [$separator_ty:expr] )?
                 $(; bracket_open [$bracket_open_ty:expr] )?
                 $(; bracket_close [$bracket_close_ty:expr] )?
@@ -239,7 +243,7 @@ macro_rules! gen_TSymbol {
             fn str() -> &'static [(&'static str, Self)] {
                 &[
                     $(
-                        ( $text, Self:: $name )
+                        $( ( $text, Self:: $name ) )?
                     ),*
                 ]
             }
@@ -372,6 +376,30 @@ gen_TSymbol! {
     MacroInline("$")
     MacroAttr("@")
     Lambda("\\"; bracket_open[LambdaArgs])
+
+    RefMut(; prefix_op[RefMut]) // matcher is explicitly defined in tokenize_ref_mut because it's weird and special
+}
+
+/// Specifically parse `&mut` because it's special and weird
+fn tokenize_symbol_ref_mut<'src>(state: &mut TokenizeIter<'src>) -> Option<TSymbol> {
+    state.push();
+    // `&`
+    if state.next_if(|char| char == '&').is_none() {
+        state.pop_rewind();
+        return None;
+    }
+    // <inline whitespace>
+    while state
+        .next_if(|char| char.is_whitespace() && char != '\n')
+        .is_some()
+    {}
+    // `mut`
+    if !tokenize_matches_str_exact::<true>(state, "mut") {
+        state.pop_rewind();
+        return None;
+    }
+    let _ = state.pop_continue();
+    Some(TSymbol::RefMut)
 }
 
 macro_rules! gen_TKeyword {
@@ -407,6 +435,7 @@ macro_rules! gen_TKeyword {
 gen_TKeyword! {
     Const ("const")
     Let ("let")
+    Mut ("mut")
     Del ("del")
     Return ("return")
     For ("for")
@@ -828,6 +857,7 @@ fn tokenize_next<'src>(state: &mut TokenizeIter<'src>) -> Option<TokenContent<'s
         tokenize_whitespace => |has_linebreak| TokenContent::Space { has_linebreak },
         tokenize_comment,
         tokenize_matches_any::<TKeyword> => |keyword| TokenContent::Keyword(keyword),
+        tokenize_symbol_ref_mut => |symbol| TokenContent::Symbol(symbol),
         tokenize_matches_any::<TSymbol> => |symbol| TokenContent::Symbol(symbol),
         tokenize_matches_any::<bool> => |bool| TokenContent::Bool(bool),
         tokenize_numeric,
